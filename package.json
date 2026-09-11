@@ -1,0 +1,5 @@
+{
+  "name": "violetdagger",
+  "private": true,
+  "workspaces": ["packages/*"]
+}
