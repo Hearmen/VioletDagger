@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { createTestDb } from '../../src/storage/db';
-import { createRoom, getRoom, listRooms, setRoomStatus, increaseMaxSessions } from '../../src/storage/rooms';
+import { createRoom, getRoom, listRooms, setRoomStatus, increaseMaxSessions, getRoomAgents, setAgentState } from '../../src/storage/rooms';
 
 describe('rooms', () => {
   it('createRoom sets defaults and getRoom reads them back', () => {
@@ -32,5 +32,22 @@ describe('rooms', () => {
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     increaseMaxSessions(db, room.id, 5);
     expect(getRoom(db, room.id)!.maxSessions).toBe(25);
+  });
+
+  it('getRoomAgents returns agents ordered by join order', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const agents = getRoomAgents(db, room.id);
+    expect(agents.map((a) => a.agentId)).toEqual(['codex', 'claude']);
+    expect(agents[0]).toMatchObject({ joinOrder: 0, state: 'idle', currentSessionSeq: null });
+  });
+
+  it('setAgentState updates state and current session', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    setAgentState(db, room.id, 'codex', 'running', 1);
+    expect(getRoomAgents(db, room.id)[0]).toMatchObject({ state: 'running', currentSessionSeq: 1 });
+    setAgentState(db, room.id, 'codex', 'idle');
+    expect(getRoomAgents(db, room.id)[0]).toMatchObject({ state: 'idle', currentSessionSeq: null });
   });
 });

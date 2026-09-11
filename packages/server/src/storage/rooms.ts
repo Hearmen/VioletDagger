@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { Room, RoomSummary, RoomStatus } from './types';
+import type { Room, RoomSummary, RoomStatus, RoomAgentState } from './types';
 
 const DEFAULT_MAX_SESSIONS = 20;
 
@@ -57,4 +57,33 @@ export function setRoomStatus(db: Database.Database, roomId: number, status: Roo
 
 export function increaseMaxSessions(db: Database.Database, roomId: number, additional: number): void {
   db.prepare(`UPDATE rooms SET max_sessions = max_sessions + ? WHERE id = ?`).run(additional, roomId);
+}
+
+function mapRoomAgentRow(row: any): RoomAgentState {
+  return {
+    roomId: row.room_id,
+    agentId: row.agent_id,
+    joinOrder: row.join_order,
+    state: row.state,
+    currentSessionSeq: row.current_session_seq,
+  };
+}
+
+export function getRoomAgents(db: Database.Database, roomId: number): RoomAgentState[] {
+  const rows = db
+    .prepare(`SELECT * FROM room_agents WHERE room_id = ? ORDER BY join_order ASC`)
+    .all(roomId) as any[];
+  return rows.map(mapRoomAgentRow);
+}
+
+export function setAgentState(
+  db: Database.Database,
+  roomId: number,
+  agentId: string,
+  state: 'idle' | 'running',
+  sessionSeq: number | null = null,
+): void {
+  db.prepare(
+    `UPDATE room_agents SET state = ?, current_session_seq = ? WHERE room_id = ? AND agent_id = ?`,
+  ).run(state, sessionSeq, roomId, agentId);
 }
