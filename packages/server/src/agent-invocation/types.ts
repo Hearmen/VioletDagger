@@ -6,3 +6,17 @@ export interface AgentConfig {
 export interface AgentRegistry {
   agents: Record<string, AgentConfig>;
 }
+
+export type OnSessionEnded = (event: {
+  roomId: number;
+  seq: number;
+  agentId: string;
+  result: 'exited-zero' | 'exited-nonzero';
+  rawLogPath: string;
+}) => void;
+
+export type StartSession = (params: { roomId: number; seq: number; agentId: string }) => void;
+
+export interface AgentInvocation {
+  startSession: StartSession;
+}
