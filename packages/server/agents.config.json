@@ -1,0 +1,8 @@
+{
+  "agents": {
+    "codex": { "command": "codex exec --json < {{promptFile}}" },
+    "claude": { "command": "claude -p \"$(cat {{promptFile}})\"" },
+    "opencode": { "command": "opencode run --prompt-file {{promptFile}}" },
+    "kimi": { "command": "kimi chat --file {{promptFile}}" }
+  }
+}
