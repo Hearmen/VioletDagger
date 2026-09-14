@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -200,5 +200,89 @@ describe('createAgentInvocation - startSession', () => {
 
     expect(mkdirSync).toHaveBeenCalledWith(`/logs/${room.id}`, { recursive: true });
     expect(spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('createAgentInvocation - killSession', () => {
+  beforeEach(() => {
+    vi.mocked(spawn).mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  async function startFakeSession(db: ReturnType<typeof createTestDb>, roomId: number, seq: number) {
+    const fakeChild = createFakeChild();
+    vi.mocked(spawn).mockReturnValue(fakeChild as any);
+    const onSessionEnded = vi.fn();
+    const invocation = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
+    invocation.startSession({ roomId, seq, agentId: 'codex' });
+    await new Promise((resolve) => setImmediate(resolve));
+    return { invocation, fakeChild, onSessionEnded };
+  }
+
+  it('returns killed:false with an empty rawLogPath for an unknown session', async () => {
+    const db = createTestDb();
+    const invocation = createAgentInvocation({ db, registry, onSessionEnded: vi.fn(), logsDir: '/logs' });
+    const result = await invocation.killSession(999, 1);
+    expect(result).toEqual({ killed: false, rawLogPath: '' });
+  });
+
+  it('sends SIGTERM and does not SIGKILL if the process already exited within the grace period', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
+    const { invocation, fakeChild } = await startFakeSession(db, room.id, session.seq);
+
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true as any);
+
+    const resultPromise = invocation.killSession(room.id, session.seq);
+    fakeChild.exitCode = 0;
+    await vi.advanceTimersByTimeAsync(2000);
+    const result = await resultPromise;
+
+    expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    expect(killSpy).not.toHaveBeenCalledWith(-4242, 'SIGKILL');
+    expect(result.killed).toBe(true);
+  });
+
+  it('sends SIGKILL if the process is still alive after the grace period', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
+    const { invocation } = await startFakeSession(db, room.id, session.seq);
+
+    vi.useFakeTimers();
+    const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true as any);
+
+    const resultPromise = invocation.killSession(room.id, session.seq);
+    await vi.advanceTimersByTimeAsync(2000);
+    const result = await resultPromise;
+
+    expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
+    expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL');
+    expect(result.rawLogPath).toContain(`${room.id}/${session.seq}.log`);
+  });
+
+  it('returns killed:false when SIGTERM itself throws, but still waits out the grace period', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
+    const { invocation } = await startFakeSession(db, room.id, session.seq);
+
+    vi.useFakeTimers();
+    vi.spyOn(process, 'kill').mockImplementation(() => { throw new Error('ESRCH'); });
+
+    const resultPromise = invocation.killSession(room.id, session.seq);
+    await vi.advanceTimersByTimeAsync(2000);
+    const result = await resultPromise;
+
+    expect(result.killed).toBe(false);
   });
 });

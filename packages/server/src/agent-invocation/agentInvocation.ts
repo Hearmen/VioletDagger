@@ -6,7 +6,9 @@ import type Database from 'better-sqlite3';
 import { setSessionPgid } from '../storage';
 import { buildOverview } from '../memory';
 import { buildPromptText, writePromptFile } from './prompt';
-import type { AgentRegistry, OnSessionEnded, StartSession, AgentInvocation } from './types';
+import type { AgentRegistry, OnSessionEnded, StartSession, KillSession, AgentInvocation } from './types';
+
+const KILL_GRACE_PERIOD_MS = 2000;
 
 interface RunningSession {
   child: ChildProcess;
@@ -92,5 +94,30 @@ export function createAgentInvocation(deps: {
       });
   };
 
-  return { startSession };
+  const killSession: KillSession = async (roomId, seq) => {
+    const entry = sessions.get(sessionKey(roomId, seq));
+    if (!entry) return { killed: false, rawLogPath: '' };
+
+    entry.resolved = true;
+    let killed = true;
+    try {
+      process.kill(-entry.pgid, 'SIGTERM');
+    } catch {
+      killed = false;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, KILL_GRACE_PERIOD_MS));
+
+    if (entry.child.exitCode === null) {
+      try {
+        process.kill(-entry.pgid, 'SIGKILL');
+      } catch {
+        // best-effort cleanup per 04-agent-invocation.md §6 —— 进程可能已经不在了
+      }
+    }
+
+    return { killed, rawLogPath: entry.rawLogPath };
+  };
+
+  return { startSession, killSession };
 }

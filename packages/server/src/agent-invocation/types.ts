@@ -17,6 +17,12 @@ export type OnSessionEnded = (event: {
 
 export type StartSession = (params: { roomId: number; seq: number; agentId: string }) => void;
 
+export type KillSession = (
+  roomId: number,
+  seq: number,
+) => Promise<{ killed: boolean; rawLogPath: string }>;
+
 export interface AgentInvocation {
   startSession: StartSession;
+  killSession: KillSession;
 }
