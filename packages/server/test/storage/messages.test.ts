@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { createTestDb } from '../../src/storage/db';
 import { createRoom } from '../../src/storage/rooms';
 import { createSession } from '../../src/storage/sessions';
-import { insertMessage } from '../../src/storage/messages';
+import {
+  insertMessage,
+  getFirstMessage, getMessagesBySession, listMessages, getMessagesByType,
+  getActiveExploring, getRecentRawMessages, getAnnotations,
+} from '../../src/storage/messages';
 
 describe('insertMessage', () => {
   it('inserts a plain chat message with an auto-truncated summary', () => {
@@ -79,5 +83,85 @@ describe('insertMessage', () => {
       content: 'a very long message '.repeat(10), summary: 'short summary',
     });
     expect(message.summary).toBe('short summary');
+  });
+});
+
+describe('message read queries', () => {
+  it('getFirstMessage returns the room\'s earliest message', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    const first = insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'goal: build X' });
+    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'second message' });
+    expect(getFirstMessage(db, room.id)!.id).toBe(first.message.id);
+  });
+
+  it('getMessagesBySession returns only that session\'s messages in order', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    const s2 = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'in session 1' });
+    insertMessage(db, { roomId: room.id, sessionSeq: s2.seq, authorId: 'codex', content: 'in session 2' });
+    const msgs = getMessagesBySession(db, room.id, s1.seq);
+    expect(msgs.map((m) => m.content)).toEqual(['in session 1']);
+  });
+
+  it('listMessages paginates newest-first with a cursor for older history', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    for (let i = 1; i <= 5; i++) {
+      insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: `m${i}` });
+    }
+    const page1 = listMessages(db, room.id, undefined, 2);
+    expect(page1.messages.map((m) => m.content)).toEqual(['m4', 'm5']);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = listMessages(db, room.id, page1.nextCursor!, 2);
+    expect(page2.messages.map((m) => m.content)).toEqual(['m2', 'm3']);
+  });
+
+  it('getMessagesByType filters by type within the room', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'a fact', type: 'fact' });
+    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'chit chat' });
+    expect(getMessagesByType(db, room.id, 'fact').map((m) => m.content)).toEqual(['a fact']);
+  });
+
+  it('getActiveExploring returns only active exploring messages', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'exploring X', type: 'exploring' });
+    const s2 = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: s2.seq, authorId: 'codex', content: 'exploring Y', type: 'exploring' });
+    const active = getActiveExploring(db, room.id);
+    expect(active.map((m) => m.content)).toEqual(['exploring Y']);
+  });
+
+  it('getRecentRawMessages returns the last n messages regardless of type, oldest first', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    for (let i = 1; i <= 3; i++) {
+      insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: `m${i}` });
+    }
+    expect(getRecentRawMessages(db, room.id, 2).map((m) => m.content)).toEqual(['m2', 'm3']);
+  });
+
+  it('getAnnotations returns reactions targeting a message', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    const fact = insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'a fact', type: 'fact' });
+    const s2 = createSession(db, room.id, 'claude');
+    insertMessage(db, {
+      roomId: room.id, sessionSeq: s2.seq, authorId: 'claude', content: 'confirmed',
+      type: 'verify', targetMessageId: fact.message.id,
+    });
+    expect(getAnnotations(db, fact.message.id).map((m) => m.type)).toEqual(['verify']);
   });
 });

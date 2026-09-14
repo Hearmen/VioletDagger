@@ -75,3 +75,65 @@ export function insertMessage(
   const { id, supersededExploringId } = messageId;
   return { message: getMessageById(db, id)!, supersededExploringId };
 }
+
+export function getFirstMessage(db: Database.Database, roomId: number): Message | null {
+  const row = db.prepare(`SELECT * FROM messages WHERE room_id = ? ORDER BY id ASC LIMIT 1`).get(roomId);
+  return row ? mapMessageRow(db, row) : null;
+}
+
+export function getMessagesBySession(db: Database.Database, roomId: number, seq: number): Message[] {
+  const rows = db
+    .prepare(`SELECT * FROM messages WHERE room_id = ? AND session_seq = ? ORDER BY id ASC`)
+    .all(roomId, seq) as any[];
+  return rows.map((row) => mapMessageRow(db, row));
+}
+
+export function listMessages(
+  db: Database.Database,
+  roomId: number,
+  cursor?: number,
+  limit = 30,
+): { messages: Message[]; nextCursor: number | null } {
+  const rows = (
+    cursor
+      ? db
+          .prepare(`SELECT * FROM messages WHERE room_id = ? AND id < ? ORDER BY id DESC LIMIT ?`)
+          .all(roomId, cursor, limit)
+      : db
+          .prepare(`SELECT * FROM messages WHERE room_id = ? ORDER BY id DESC LIMIT ?`)
+          .all(roomId, limit)
+  ) as any[];
+  const messages = rows.map((row) => mapMessageRow(db, row)).reverse();
+  const nextCursor = rows.length === limit ? messages[0].id : null;
+  return { messages, nextCursor };
+}
+
+export function getMessagesByType(db: Database.Database, roomId: number, type: string): Message[] {
+  const rows = db
+    .prepare(`SELECT * FROM messages WHERE room_id = ? AND type = ? ORDER BY id ASC`)
+    .all(roomId, type) as any[];
+  return rows.map((row) => mapMessageRow(db, row));
+}
+
+export function getActiveExploring(db: Database.Database, roomId: number): Message[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM messages WHERE room_id = ? AND type = 'exploring' AND exploring_status = 'active' ORDER BY id ASC`,
+    )
+    .all(roomId) as any[];
+  return rows.map((row) => mapMessageRow(db, row));
+}
+
+export function getRecentRawMessages(db: Database.Database, roomId: number, n: number): Message[] {
+  const rows = db
+    .prepare(`SELECT * FROM messages WHERE room_id = ? ORDER BY id DESC LIMIT ?`)
+    .all(roomId, n) as any[];
+  return rows.map((row) => mapMessageRow(db, row)).reverse();
+}
+
+export function getAnnotations(db: Database.Database, messageId: number): Message[] {
+  const rows = db
+    .prepare(`SELECT * FROM messages WHERE target_message_id = ? ORDER BY id ASC`)
+    .all(messageId) as any[];
+  return rows.map((row) => mapMessageRow(db, row));
+}
