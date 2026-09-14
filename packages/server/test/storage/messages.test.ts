@@ -5,7 +5,7 @@ import { createSession } from '../../src/storage/sessions';
 import {
   insertMessage,
   getFirstMessage, getMessagesBySession, listMessages, getMessagesByType,
-  getActiveExploring, getRecentRawMessages, getAnnotations,
+  getActiveExploring, getRecentRawMessages, getAnnotations, getMessageById, completeExploring,
 } from '../../src/storage/messages';
 
 describe('insertMessage', () => {
@@ -179,5 +179,21 @@ describe('message read queries', () => {
     const page2 = listMessages(db, room.id, page1.nextCursor!, 2);
     expect(page2.messages.map((m) => m.content)).toEqual(['m1', 'm2']);
     expect(page2.nextCursor).toBeNull();
+  });
+});
+
+describe('completeExploring', () => {
+  it('marks the message completed with an optional note', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    const { message } = insertMessage(db, {
+      roomId: room.id, sessionSeq: s1.seq, authorId: 'codex',
+      content: 'exploring X', type: 'exploring',
+    });
+    completeExploring(db, message.id, 'human forced termination');
+    const updated = getMessageById(db, message.id)!;
+    expect(updated.exploringStatus).toBe('completed');
+    expect(updated.exploringNote).toBe('human forced termination');
   });
 });

@@ -139,3 +139,10 @@ export function getAnnotations(db: Database.Database, messageId: number): Messag
     .all(messageId) as any[];
   return rows.map((row) => mapMessageRow(db, row));
 }
+
+export function completeExploring(db: Database.Database, messageId: number, note?: string): void {
+  db.prepare(`UPDATE messages SET exploring_status = 'completed', exploring_note = ? WHERE id = ?`).run(
+    note ?? null,
+    messageId,
+  );
+}
