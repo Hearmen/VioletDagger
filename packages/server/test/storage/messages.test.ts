@@ -195,5 +195,11 @@ describe('completeExploring', () => {
     const updated = getMessageById(db, message.id)!;
     expect(updated.exploringStatus).toBe('completed');
     expect(updated.exploringNote).toBe('human forced termination');
+    // append-only invariant: completeExploring must not touch anything else
+    expect(updated.content).toBe(message.content);
+    expect(updated.type).toBe(message.type);
+    expect(updated.authorId).toBe(message.authorId);
+    expect(updated.sessionSeq).toBe(message.sessionSeq);
+    expect(updated.createdAt).toBe(message.createdAt);
   });
 });
