@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { InsertMessageParams, Message } from './types';
+import type { InsertMessageParams, Message, MessageType } from './types';
 
 const SUMMARY_MAX_LEN = 80;
 
@@ -95,7 +95,7 @@ export function listMessages(
   limit = 30,
 ): { messages: Message[]; nextCursor: number | null } {
   const rows = (
-    cursor
+    cursor !== undefined
       ? db
           .prepare(`SELECT * FROM messages WHERE room_id = ? AND id < ? ORDER BY id DESC LIMIT ?`)
           .all(roomId, cursor, limit + 1)
@@ -106,11 +106,11 @@ export function listMessages(
   const hasMore = rows.length > limit;
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
   const messages = pageRows.map((row) => mapMessageRow(db, row)).reverse();
-  const nextCursor = hasMore ? messages[0].id : null;
+  const nextCursor = hasMore && messages.length > 0 ? messages[0].id : null;
   return { messages, nextCursor };
 }
 
-export function getMessagesByType(db: Database.Database, roomId: number, type: string): Message[] {
+export function getMessagesByType(db: Database.Database, roomId: number, type: MessageType): Message[] {
   const rows = db
     .prepare(`SELECT * FROM messages WHERE room_id = ? AND type = ? ORDER BY id ASC`)
     .all(roomId, type) as any[];
@@ -141,8 +141,7 @@ export function getAnnotations(db: Database.Database, messageId: number): Messag
 }
 
 export function completeExploring(db: Database.Database, messageId: number, note?: string): void {
-  db.prepare(`UPDATE messages SET exploring_status = 'completed', exploring_note = ? WHERE id = ?`).run(
-    note ?? null,
-    messageId,
-  );
+  db.prepare(
+    `UPDATE messages SET exploring_status = 'completed', exploring_note = COALESCE(?, exploring_note) WHERE id = ? AND type = 'exploring'`,
+  ).run(note ?? null, messageId);
 }

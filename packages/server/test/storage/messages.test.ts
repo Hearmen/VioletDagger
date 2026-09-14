@@ -146,9 +146,9 @@ describe('message read queries', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const s1 = createSession(db, room.id, 'codex');
-    for (let i = 1; i <= 3; i++) {
-      insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: `m${i}` });
-    }
+    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'm1' });
+    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'm2', type: 'fact' });
+    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'm3' });
     expect(getRecentRawMessages(db, room.id, 2).map((m) => m.content)).toEqual(['m2', 'm3']);
   });
 
@@ -180,6 +180,16 @@ describe('message read queries', () => {
     expect(page2.messages.map((m) => m.content)).toEqual(['m1', 'm2']);
     expect(page2.nextCursor).toBeNull();
   });
+
+  it('listMessages does not throw for limit=0', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'm1' });
+    expect(() => listMessages(db, room.id, undefined, 0)).not.toThrow();
+    const result = listMessages(db, room.id, undefined, 0);
+    expect(result.messages).toEqual([]);
+  });
 });
 
 describe('completeExploring', () => {
@@ -201,5 +211,36 @@ describe('completeExploring', () => {
     expect(updated.authorId).toBe(message.authorId);
     expect(updated.sessionSeq).toBe(message.sessionSeq);
     expect(updated.createdAt).toBe(message.createdAt);
+  });
+
+  it('does not affect a message that is not of type exploring', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    const { message } = insertMessage(db, {
+      roomId: room.id, sessionSeq: s1.seq, authorId: 'codex',
+      content: 'a fact', type: 'fact',
+    });
+    completeExploring(db, message.id, 'should not apply');
+    const updated = getMessageById(db, message.id)!;
+    expect(updated.exploringStatus).toBeNull();
+    expect(updated.exploringNote).toBeNull();
+    expect(updated.type).toBe('fact');
+    expect(updated.content).toBe(message.content);
+  });
+
+  it('preserves the existing note when called again without a note', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    const { message } = insertMessage(db, {
+      roomId: room.id, sessionSeq: s1.seq, authorId: 'codex',
+      content: 'exploring X', type: 'exploring',
+    });
+    completeExploring(db, message.id, 'first note');
+    completeExploring(db, message.id);
+    const updated = getMessageById(db, message.id)!;
+    expect(updated.exploringStatus).toBe('completed');
+    expect(updated.exploringNote).toBe('first note');
   });
 });
