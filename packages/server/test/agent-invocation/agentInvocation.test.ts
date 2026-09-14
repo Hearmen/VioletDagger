@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
 import { createTestDb } from '../../src/storage/db';
 import { createRoom } from '../../src/storage/rooms';
 import { createSession, getSession } from '../../src/storage/sessions';
@@ -12,7 +14,8 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 vi.mock('node:fs', () => ({
-  createWriteStream: vi.fn(() => ({ end: vi.fn() })),
+  createWriteStream: vi.fn(() => ({ end: vi.fn(), on: vi.fn() })),
+  mkdirSync: vi.fn(),
 }));
 vi.mock('node:fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
@@ -36,6 +39,8 @@ const registry: AgentRegistry = {
 describe('createAgentInvocation - startSession', () => {
   beforeEach(() => {
     vi.mocked(spawn).mockReset();
+    vi.mocked(mkdirSync).mockReset();
+    vi.mocked(writeFile).mockReset().mockResolvedValue(undefined);
   });
 
   it('spawns the configured command with the prompt file substituted, and records the pgid', async () => {
@@ -156,5 +161,44 @@ describe('createAgentInvocation - startSession', () => {
     fakeChild.emit('exit', 1);
 
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports exited-nonzero via onSessionEnded (with the real rawLogPath) when writePromptFile rejects, without spawning', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
+
+    vi.mocked(writeFile).mockRejectedValueOnce(new Error('ENOSPC: no space left on device'));
+    const onSessionEnded = vi.fn();
+    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
+
+    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    expect(onSessionEnded).toHaveBeenCalledWith({
+      roomId: room.id, seq: session.seq, agentId: 'codex',
+      result: 'exited-nonzero', rawLogPath: expect.stringContaining(`${room.id}/${session.seq}.log`),
+    });
+  });
+
+  it('creates the log directory before opening the log stream, and attaches an error listener on it', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
+
+    const fakeChild = createFakeChild();
+    vi.mocked(spawn).mockReturnValue(fakeChild as any);
+    const onSessionEnded = vi.fn();
+    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
+
+    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(mkdirSync).toHaveBeenCalledWith(`/logs/${room.id}`, { recursive: true });
+    expect(spawn).toHaveBeenCalledTimes(1);
   });
 });
