@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import { getActiveExploring, getRoomAgents } from '../storage';
+import { roomEvents } from '../events';
 
 export interface StuckCounter {
   increment(roomId: number, agentId: string): void;
@@ -37,4 +38,9 @@ export function getStuckAgents(
     .filter((a) => activeExploringAgentIds.has(a.agentId))
     .map((a) => ({ agentId: a.agentId, stuckCount: stuckCounter.get(roomId, a.agentId) }))
     .filter((a) => a.stuckCount >= STUCK_THRESHOLD);
+}
+
+export function resetStuckCount(stuckCounter: StuckCounter, roomId: number, agentId: string): void {
+  stuckCounter.reset(roomId, agentId);
+  roomEvents.emit('roomStatus', { roomId });
 }
