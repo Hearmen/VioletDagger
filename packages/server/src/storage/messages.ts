@@ -98,13 +98,15 @@ export function listMessages(
     cursor
       ? db
           .prepare(`SELECT * FROM messages WHERE room_id = ? AND id < ? ORDER BY id DESC LIMIT ?`)
-          .all(roomId, cursor, limit)
+          .all(roomId, cursor, limit + 1)
       : db
           .prepare(`SELECT * FROM messages WHERE room_id = ? ORDER BY id DESC LIMIT ?`)
-          .all(roomId, limit)
+          .all(roomId, limit + 1)
   ) as any[];
-  const messages = rows.map((row) => mapMessageRow(db, row)).reverse();
-  const nextCursor = rows.length === limit ? messages[0].id : null;
+  const hasMore = rows.length > limit;
+  const pageRows = hasMore ? rows.slice(0, limit) : rows;
+  const messages = pageRows.map((row) => mapMessageRow(db, row)).reverse();
+  const nextCursor = hasMore ? messages[0].id : null;
   return { messages, nextCursor };
 }
 

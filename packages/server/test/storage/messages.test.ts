@@ -164,4 +164,20 @@ describe('message read queries', () => {
     });
     expect(getAnnotations(db, fact.message.id).map((m) => m.type)).toEqual(['verify']);
   });
+
+  it('listMessages has null nextCursor at true end of history (boundary case)', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s1 = createSession(db, room.id, 'codex');
+    for (let i = 1; i <= 4; i++) {
+      insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: `m${i}` });
+    }
+    const page1 = listMessages(db, room.id, undefined, 2);
+    expect(page1.messages.map((m) => m.content)).toEqual(['m3', 'm4']);
+    expect(page1.nextCursor).not.toBeNull();
+
+    const page2 = listMessages(db, room.id, page1.nextCursor!, 2);
+    expect(page2.messages.map((m) => m.content)).toEqual(['m1', 'm2']);
+    expect(page2.nextCursor).toBeNull();
+  });
 });
