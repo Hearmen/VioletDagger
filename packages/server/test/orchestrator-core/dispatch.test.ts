@@ -1,10 +1,15 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createTestDb } from '../../src/storage/db';
 import { createRoom, getRoom, getRoomAgents, setRoomStatus, setAgentState } from '../../src/storage/rooms';
 import { createSession } from '../../src/storage/sessions';
 import { insertMessage } from '../../src/storage/messages';
 import { createStuckCounter } from '../../src/orchestrator-core/stuckCounter';
 import { checkAndDispatch, onSubstantiveMessagePosted } from '../../src/orchestrator-core/dispatch';
+import { roomEvents } from '../../src/events';
+
+afterEach(() => {
+  roomEvents.removeAllListeners('roomStatus');
+});
 
 describe('checkAndDispatch', () => {
   it('dispatches to the first idle agent in join order', () => {
@@ -49,11 +54,14 @@ describe('checkAndDispatch', () => {
       createSession(db, room.id, 'codex');
     }
     const startSession = vi.fn();
+    const roomStatusListener = vi.fn();
+    roomEvents.once('roomStatus', roomStatusListener);
 
     checkAndDispatch(db, room.id, startSession, createStuckCounter());
 
     expect(startSession).not.toHaveBeenCalled();
     expect(getRoom(db, room.id)!.status).toBe('paused_limit');
+    expect(roomStatusListener).toHaveBeenCalledWith({ roomId: room.id });
   });
 
   it('increments stuckCount for running agents with active exploring, scanned before the idle target', () => {

@@ -5,7 +5,7 @@ import {
 import { roomEvents } from '../events';
 import type { StuckCounter } from './stuckCounter';
 
-export type StartSession = (params: { roomId: number; seq: number; agentId: string }) => void;
+export type StartSession = (params: { roomId: number; seq: number; agentId: string }) => void | Promise<void>;
 
 export function checkAndDispatch(
   db: Database.Database,
@@ -43,7 +43,12 @@ export function checkAndDispatch(
 
   const session = createSession(db, roomId, dispatchTarget);
   setAgentState(db, roomId, dispatchTarget, 'running', session.seq);
-  startSession({ roomId, seq: session.seq, agentId: dispatchTarget });
+  const result = startSession({ roomId, seq: session.seq, agentId: dispatchTarget });
+  if (result && typeof (result as Promise<void>).then === 'function') {
+    (result as Promise<void>).catch((err) => {
+      console.error(`startSession failed for room ${roomId}, agent ${dispatchTarget}:`, err);
+    });
+  }
   roomEvents.emit('roomStatus', { roomId });
 }
 

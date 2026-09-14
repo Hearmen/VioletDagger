@@ -58,8 +58,15 @@ export async function terminateAgentSession(
   const session = getSession(db, roomId, seq);
   if (!session || session.outcome !== 'running') return;
 
-  const { rawLogPath } = await killSession(roomId, seq);
-  finishSession(db, roomId, seq, 'terminated', rawLogPath ?? undefined);
+  // Claim the session as terminated BEFORE the await, so a concurrent
+  // onSessionEnded (triggered by the same kill) sees outcome !== 'running'
+  // and is discarded by its own idempotency guard.
+  finishSession(db, roomId, seq, 'terminated');
+
+  const { rawLogPath } = await killSession(roomId, seq).catch(() => ({ rawLogPath: null as string | null }));
+  if (rawLogPath) {
+    finishSession(db, roomId, seq, 'terminated', rawLogPath);
+  }
 
   const activeExploring = getActiveExploring(db, roomId).find((m) => m.authorId === session.agentId);
   if (activeExploring) {
