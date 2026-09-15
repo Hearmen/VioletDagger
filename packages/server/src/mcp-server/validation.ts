@@ -19,8 +19,8 @@ export function assertNotReservedAuthor(authorId: string): void {
 
 export function resolveSessionBinding(db: Database.Database, roomId: number, authorId: string): number {
   const agent = getRoomAgents(db, roomId).find((a) => a.agentId === authorId);
-  if (!agent || agent.state !== 'running') {
+  if (!agent || agent.state !== 'running' || agent.currentSessionSeq == null) {
     throw new McpToolError(`agent "${authorId}" is not in an active session for room ${roomId}`);
   }
-  return agent.currentSessionSeq!;
+  return agent.currentSessionSeq;
 }

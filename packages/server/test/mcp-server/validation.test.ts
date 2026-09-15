@@ -48,4 +48,11 @@ describe('resolveSessionBinding', () => {
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     expect(() => resolveSessionBinding(db, room.id, 'claude')).toThrow(McpToolError);
   });
+
+  it('throws when the agent is running but has no currentSessionSeq', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    setAgentState(db, room.id, 'codex', 'running');
+    expect(() => resolveSessionBinding(db, room.id, 'codex')).toThrow(McpToolError);
+  });
 });
