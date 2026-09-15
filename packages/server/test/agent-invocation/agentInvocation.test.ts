@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
+import { createWriteStream, mkdirSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { createTestDb } from '../../src/storage/db';
 import { createRoom } from '../../src/storage/rooms';
@@ -14,7 +14,13 @@ vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
 }));
 vi.mock('node:fs', () => ({
-  createWriteStream: vi.fn(() => ({ end: vi.fn(), on: vi.fn() })),
+  createWriteStream: vi.fn(() => {
+    const stream: any = { writableEnded: false, on: vi.fn() };
+    stream.end = vi.fn(() => {
+      stream.writableEnded = true;
+    });
+    return stream;
+  }),
   mkdirSync: vi.fn(),
 }));
 vi.mock('node:fs/promises', () => ({
@@ -184,6 +190,60 @@ describe('createAgentInvocation - startSession', () => {
     });
   });
 
+  it('ends the log stream on "close" (stdio fully drained), not on "exit", and never ends it twice', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
+
+    const fakeChild = createFakeChild();
+    vi.mocked(spawn).mockReturnValue(fakeChild as any);
+    const onSessionEnded = vi.fn();
+    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
+
+    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const logStream = vi.mocked(createWriteStream).mock.results.at(-1)!.value as any;
+
+    fakeChild.emit('exit', 0);
+    expect(logStream.end).not.toHaveBeenCalled();
+
+    fakeChild.emit('close', 0);
+    expect(logStream.end).toHaveBeenCalledTimes(1);
+
+    // 'error' 兜底路径与 'close' 共存时也不能重复 end（writableEnded 守卫）
+    fakeChild.emit('error', new Error('late error'));
+    expect(logStream.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports exited-nonzero, without recording a pgid, when spawn returns a child with no pid', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
+
+    // spawn 同步失败（EAGAIN/EMFILE 等）时 Node 返回的 child 没有 pid
+    const fakeChild = createFakeChild();
+    fakeChild.pid = undefined;
+    vi.mocked(spawn).mockReturnValue(fakeChild as any);
+    const onSessionEnded = vi.fn();
+    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
+
+    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(getSession(db, room.id, session.seq)!.pgid).toBeNull();
+    expect(onSessionEnded).toHaveBeenCalledWith({
+      roomId: room.id, seq: session.seq, agentId: 'codex',
+      result: 'exited-nonzero', rawLogPath: expect.stringContaining(`${room.id}/${session.seq}.log`),
+    });
+
+    // 监听器已在 spawn 之后立刻挂好：随后的 'error' 有人接，且不会重复上报
+    fakeChild.emit('error', new Error('EAGAIN'));
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+  });
+
   it('creates the log directory before opening the log stream, and attaches an error listener on it', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
@@ -267,6 +327,55 @@ describe('createAgentInvocation - killSession', () => {
     expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
     expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL');
     expect(result.rawLogPath).toContain(`${room.id}/${session.seq}.log`);
+  });
+
+  it('does not report via onSessionEnded when the child exits after killSession has already resolved it', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
+    const { invocation, fakeChild, onSessionEnded } = await startFakeSession(db, room.id, session.seq);
+
+    vi.useFakeTimers();
+    vi.spyOn(process, 'kill').mockReturnValue(true as any);
+
+    const resultPromise = invocation.killSession(room.id, session.seq);
+    await vi.advanceTimersByTimeAsync(2000);
+    await resultPromise;
+
+    // 被杀掉的进程随后自然退出——resolved 已在发信号前置位，这次 'exit' 必须是 no-op
+    fakeChild.exitCode = 143;
+    fakeChild.emit('exit', 143);
+
+    expect(onSessionEnded).not.toHaveBeenCalled();
+  });
+
+  it('does not spawn an orphan when killSession lands during the prompt-write window', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
+
+    let releaseWrite: () => void = () => {};
+    vi.mocked(writeFile).mockImplementationOnce(
+      () => new Promise<void>((resolve) => { releaseWrite = () => resolve(); }) as any,
+    );
+
+    vi.mocked(spawn).mockReturnValue(createFakeChild() as any);
+    const onSessionEnded = vi.fn();
+    const invocation = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
+
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
+    const result = await invocation.killSession(room.id, session.seq);
+
+    expect(result.killed).toBe(false);
+    expect(result.rawLogPath).toContain(`${room.id}/${session.seq}.log`);
+
+    releaseWrite();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(spawn).not.toHaveBeenCalled();
+    expect(onSessionEnded).not.toHaveBeenCalled();
   });
 
   it('returns killed:false when SIGTERM itself throws, but still waits out the grace period', async () => {
