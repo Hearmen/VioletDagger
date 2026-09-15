@@ -81,4 +81,17 @@ describe('createHttpServer', () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it('POST /api/rooms returns 400 for malformed JSON body', async () => {
+    const db = createTestDb();
+    httpServer = createHttpServer({ db, registry });
+    const port = await listen(httpServer);
+
+    const res = await fetch(`http://localhost:${port}/api/rooms`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{not valid json',
+    });
+    expect(res.status).toBe(400);
+  });
 });

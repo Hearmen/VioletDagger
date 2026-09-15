@@ -19,7 +19,12 @@ async function readJsonBody(req: import('node:http').IncomingMessage): Promise<a
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
   const raw = Buffer.concat(chunks).toString('utf-8');
-  return raw ? JSON.parse(raw) : {};
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new ApiError('invalid JSON body', 400);
+  }
 }
 
 export function createHttpServer(deps: HttpServerDeps): Server {
