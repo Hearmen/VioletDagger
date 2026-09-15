@@ -43,6 +43,19 @@ describe('createRpcHandlers', () => {
     expect(startSession).toHaveBeenCalledWith({ roomId: room.id, seq: 1, agentId: 'codex' });
   });
 
+  it('postHumanMessage emits memoryUpdate with the superseded exploring message id', () => {
+    const { room, roomEvents, handlers } = setup();
+    const memoryUpdateEvents: any[] = [];
+    roomEvents.on('memoryUpdate', (e) => memoryUpdateEvents.push(e));
+
+    const first: any = handlers.postHumanMessage({ content: 'first exploring', type: 'exploring' });
+    const second: any = handlers.postHumanMessage({ content: 'second exploring', type: 'exploring' });
+
+    expect(memoryUpdateEvents).toHaveLength(1);
+    expect(memoryUpdateEvents[0]).toEqual({ roomId: room.id, messageId: first.messageId });
+    expect(second.messageId).toBeGreaterThan(first.messageId);
+  });
+
   it('getMemoryView returns full-text groups for the bound room', () => {
     const { db, room, handlers } = setup();
     const s1 = createSession(db, room.id, 'codex');
