@@ -1,4 +1,9 @@
-import { createServer, type Server as HttpServer } from 'node:http';
+import {
+  createServer,
+  type IncomingMessage,
+  type Server as HttpServer,
+  type ServerResponse,
+} from 'node:http';
 import type { EventEmitter } from 'node:events';
 import { z } from 'zod';
 import type Database from 'better-sqlite3';
@@ -102,13 +107,37 @@ export function createMcpServer(deps: McpServerDeps): McpServer {
 }
 
 export function startMcpServer(server: McpServer, port: number): Promise<HttpServer> {
+  // A single McpServer instance can only be connected to one transport at a
+  // time (the SDK throws if connect() is called again before the previous
+  // transport is closed). Multiple agents across multiple rooms share this
+  // one HTTP port, so concurrent requests are expected, not an edge case.
+  // Chain each request's connect -> handle -> close sequence onto the
+  // previous one so they are always fully serialized.
+  let chain: Promise<void> = Promise.resolve();
+
   return new Promise((resolve) => {
-    const httpServer = createServer(async (req, res) => {
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      res.on('close', () => transport.close());
-      await server.connect(transport);
-      await transport.handleRequest(req, res);
+    const httpServer = createServer((req, res) => {
+      chain = chain.then(() => handleMcpRequest(server, req, res));
     });
     httpServer.listen(port, () => resolve(httpServer));
   });
+}
+
+export async function handleMcpRequest(
+  server: McpServer,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  try {
+    await server.connect(transport);
+    await transport.handleRequest(req, res);
+  } catch (err) {
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.end('internal error');
+    }
+  } finally {
+    await transport.close();
+  }
 }
