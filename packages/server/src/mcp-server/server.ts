@@ -117,7 +117,7 @@ export function startMcpServer(server: McpServer, port: number): Promise<HttpSer
 
   return new Promise((resolve) => {
     const httpServer = createServer((req, res) => {
-      chain = chain.then(() => handleMcpRequest(server, req, res));
+      chain = chain.then(() => handleMcpRequest(server, req, res)).catch(() => {});
     });
     httpServer.listen(port, () => resolve(httpServer));
   });
@@ -138,6 +138,10 @@ export async function handleMcpRequest(
       res.end('internal error');
     }
   } finally {
-    await transport.close();
+    try {
+      await transport.close();
+    } catch {
+      // Closing an already-broken transport should never wedge the request queue.
+    }
   }
 }

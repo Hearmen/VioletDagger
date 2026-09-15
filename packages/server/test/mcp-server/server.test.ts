@@ -77,4 +77,11 @@ describe('handleMcpRequest', () => {
     await handleMcpRequest(failingServer, {} as IncomingMessage, buildRes());
     expect(transportMocks.close).toHaveBeenCalledTimes(2);
   });
+
+  it('resolves even when transport.close() itself rejects', async () => {
+    transportMocks.close.mockRejectedValueOnce(new Error('close boom'));
+    const okServer = { connect: vi.fn().mockResolvedValue(undefined) } as unknown as McpServer;
+
+    await expect(handleMcpRequest(okServer, {} as IncomingMessage, buildRes())).resolves.toBeUndefined();
+  });
 });
