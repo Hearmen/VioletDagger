@@ -21,8 +21,14 @@ export function createGetDetailHandler(db: Database.Database) {
     if (hasMessageId === hasType) {
       throw new McpToolError('get_detail requires exactly one of messageId or type');
     }
-    return hasMessageId
-      ? buildDetail(db, params.roomId, { messageId: params.messageId! })
-      : buildDetail(db, params.roomId, { type: params.type! });
+    if (hasMessageId) {
+      try {
+        return buildDetail(db, params.roomId, { messageId: params.messageId! });
+      } catch (err) {
+        if (err instanceof McpToolError) throw err;
+        throw new McpToolError(err instanceof Error ? err.message : 'message not found');
+      }
+    }
+    return buildDetail(db, params.roomId, { type: params.type! });
   };
 }

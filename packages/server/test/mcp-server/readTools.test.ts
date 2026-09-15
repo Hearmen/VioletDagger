@@ -64,4 +64,11 @@ describe('createGetDetailHandler', () => {
     const getDetail = createGetDetailHandler(db);
     expect(() => getDetail({ roomId: room.id })).toThrow(McpToolError);
   });
+
+  it('rejects a non-existent messageId in an existing room as McpToolError, not an opaque internal error', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const getDetail = createGetDetailHandler(db);
+    expect(() => getDetail({ roomId: room.id, messageId: 999999 })).toThrow(McpToolError);
+  });
 });

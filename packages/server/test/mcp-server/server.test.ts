@@ -5,10 +5,16 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createTestDb } from '../../src/storage/db';
 import { createMcpServer, startMcpServer, handleMcpRequest } from '../../src/mcp-server/server';
 
+const httpMocks = vi.hoisted(() => ({
+  listen: vi.fn((_port: number, _host: string, cb: () => void) => cb()),
+  requestListener: undefined as undefined | ((req: unknown, res: unknown) => void),
+}));
+
 vi.mock('node:http', () => ({
-  createServer: vi.fn(() => ({
-    listen: vi.fn((port: number, cb: () => void) => cb()),
-  })),
+  createServer: vi.fn((listener: (req: unknown, res: unknown) => void) => {
+    httpMocks.requestListener = listener;
+    return { listen: httpMocks.listen };
+  }),
 }));
 
 const transportMocks = vi.hoisted(() => ({
@@ -40,10 +46,31 @@ describe('createMcpServer', () => {
 });
 
 describe('startMcpServer', () => {
-  it('starts an HTTP server listening on the given port', async () => {
+  it('starts an HTTP server listening on loopback only, on the given port', async () => {
     const server = createMcpServer(buildDeps());
     const httpServer: any = await startMcpServer(server, 4319);
-    expect(httpServer.listen).toHaveBeenCalledWith(4319, expect.any(Function));
+    expect(httpServer.listen).toHaveBeenCalledWith(4319, '127.0.0.1', expect.any(Function));
+  });
+
+  it('rejects a non-POST request with 405 before it ever reaches the request chain', async () => {
+    transportMocks.handleRequest.mockClear();
+    const server = createMcpServer(buildDeps());
+    await startMcpServer(server, 4320);
+
+    const listener = httpMocks.requestListener!;
+    const req = { method: 'GET' } as IncomingMessage;
+    const res = { statusCode: 200, end: vi.fn(), headersSent: false } as unknown as ServerResponse;
+
+    listener(req, res);
+
+    expect((res as any).statusCode).toBe(405);
+    expect((res as any).end).toHaveBeenCalled();
+
+    // Give any (incorrectly) queued chain work a tick to run, then confirm
+    // the request never reached handleMcpRequest / the transport.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(transportMocks.handleRequest).not.toHaveBeenCalled();
   });
 });
 

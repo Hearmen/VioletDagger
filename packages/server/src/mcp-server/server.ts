@@ -117,9 +117,22 @@ export function startMcpServer(server: McpServer, port: number): Promise<HttpSer
 
   return new Promise((resolve) => {
     const httpServer = createServer((req, res) => {
+      // This module is stateless per spec (§1) and never pushes
+      // server-initiated messages over a GET SSE stream — MCP tool calls are
+      // POST-only here. A GET request with an SSE Accept header would make
+      // transport.handleRequest(...) hang open indefinitely (closed only by
+      // client disconnect), which would wedge the shared request chain for
+      // every agent in every room. Reject non-POST before it ever queues.
+      if (req.method !== 'POST') {
+        res.statusCode = 405;
+        res.end();
+        return;
+      }
       chain = chain.then(() => handleMcpRequest(server, req, res)).catch(() => {});
     });
-    httpServer.listen(port, () => resolve(httpServer));
+    // Bind loopback only: authorId is self-asserted per spec, with no auth
+    // layer, so this must not be reachable from the network.
+    httpServer.listen(port, '127.0.0.1', () => resolve(httpServer));
   });
 }
 
