@@ -34,7 +34,7 @@ describe('RoomPage', () => {
       if (method === 'getEventTree') return Promise.resolve({ sessions: [] });
       return Promise.resolve({ ok: true });
     });
-    vi.mocked(useRoomSocket).mockReturnValue({ call, subscribe });
+    vi.mocked(useRoomSocket).mockReturnValue({ call, subscribe, connectionState: 'connected' });
   });
 
   it('shows a loading state before room/status resolve, then renders the header', async () => {
@@ -55,5 +55,30 @@ describe('RoomPage', () => {
         content: 'the goal', type: undefined, targetMessageId: undefined, referencedMessageIds: undefined,
       }),
     );
+  });
+
+  it('shows an error banner when postHumanMessage fails', async () => {
+    call.mockImplementation((method: string) => {
+      if (method === 'getRoomStatus') return Promise.resolve({ currentSessionCount: 1, status: 'active', agents: [] });
+      if (method === 'listMessages') return Promise.resolve({ messages: [], nextCursor: null });
+      if (method === 'getMemoryView') return Promise.resolve({ facts: [], boundaries: [], openQuestions: [], chains: [], hypotheses: [], exploring: [] });
+      if (method === 'getEventTree') return Promise.resolve({ sessions: [] });
+      if (method === 'postHumanMessage') return Promise.reject(new Error('rpc failed'));
+      return Promise.resolve({ ok: true });
+    });
+    renderRoomPage();
+    await screen.findByText('room a');
+
+    fireEvent.change(screen.getByLabelText('content'), { target: { value: 'hi' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('rpc failed');
+  });
+
+  it('passes connectionState through to RoomHeader so the disconnect banner can show', async () => {
+    vi.mocked(useRoomSocket).mockReturnValue({ call, subscribe, connectionState: 'disconnected' });
+    renderRoomPage();
+    await screen.findByText('room a');
+    expect(screen.getByText('连接已断开，正在重连…')).toBeInTheDocument();
   });
 });

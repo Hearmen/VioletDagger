@@ -26,26 +26,31 @@ export function RoomPage() {
   const [eventTree, setEventTree] = useState<EventTreePayload | null>(null);
   const [sessionDetail, setSessionDetail] = useState<SessionDetailPayload | null>(null);
   const [tab, setTab] = useState<TabName>('messages');
+  const [error, setError] = useState<string | null>(null);
+
+  function reportError(err: unknown) {
+    setError(err instanceof Error ? err.message : 'unknown error');
+  }
 
   useEffect(() => {
-    fetchRoom(roomIdNum).then(setRoom);
-    socket.call<RoomStatusPayload>('getRoomStatus').then(setStatus);
-    socket.call<{ messages: Message[]; nextCursor: number | null }>('listMessages', {}).then((r) => setMessages(r.messages));
-    socket.call<MemoryViewPayload>('getMemoryView').then(setMemory);
-    socket.call<EventTreePayload>('getEventTree').then(setEventTree);
+    fetchRoom(roomIdNum).then(setRoom).catch(reportError);
+    socket.call<RoomStatusPayload>('getRoomStatus').then(setStatus).catch(reportError);
+    socket.call<{ messages: Message[]; nextCursor: number | null }>('listMessages', {}).then((r) => setMessages(r.messages)).catch(reportError);
+    socket.call<MemoryViewPayload>('getMemoryView').then(setMemory).catch(reportError);
+    socket.call<EventTreePayload>('getEventTree').then(setEventTree).catch(reportError);
 
     const unsubMessage = socket.subscribe('newMessage', (message: Message) => {
       setMessages((prev) => [...prev, message]);
       if (message.type != null) {
-        socket.call<MemoryViewPayload>('getMemoryView').then(setMemory);
+        socket.call<MemoryViewPayload>('getMemoryView').then(setMemory).catch(reportError);
       }
     });
     const unsubMemory = socket.subscribe('memoryUpdate', () => {
-      socket.call<MemoryViewPayload>('getMemoryView').then(setMemory);
+      socket.call<MemoryViewPayload>('getMemoryView').then(setMemory).catch(reportError);
     });
     const unsubStatus = socket.subscribe('roomStatus', () => {
-      socket.call<RoomStatusPayload>('getRoomStatus').then(setStatus);
-      fetchRoom(roomIdNum).then(setRoom);
+      socket.call<RoomStatusPayload>('getRoomStatus').then(setStatus).catch(reportError);
+      fetchRoom(roomIdNum).then(setRoom).catch(reportError);
     });
 
     return () => {
@@ -63,25 +68,27 @@ export function RoomPage() {
     targetMessageId?: number;
     referencedMessageIds?: number[];
   }) {
-    socket.call('postHumanMessage', params);
+    socket.call('postHumanMessage', params).catch(reportError);
   }
 
   function handleOpenSession(seq: number) {
-    socket.call<SessionDetailPayload>('getSessionDetail', { sessionId: seq }).then(setSessionDetail);
+    socket.call<SessionDetailPayload>('getSessionDetail', { sessionId: seq }).then(setSessionDetail).catch(reportError);
   }
 
   return (
     <div>
+      {error && <p role="alert">{error}</p>}
       <RoomHeader
         room={room}
         status={status}
-        onPause={() => socket.call('pauseRoom')}
-        onResume={(additionalSessions) => socket.call('resumeRoom', { additionalSessions })}
-        onConfirmCompletion={() => socket.call('confirmCompletion')}
+        connectionState={socket.connectionState}
+        onPause={() => socket.call('pauseRoom').catch(reportError)}
+        onResume={(additionalSessions) => socket.call('resumeRoom', { additionalSessions }).catch(reportError)}
+        onConfirmCompletion={() => socket.call('confirmCompletion').catch(reportError)}
       />
       <AgentStatusBar
         agents={status.agents}
-        onTerminate={(sessionId) => socket.call('terminateAgentSession', { sessionId })}
+        onTerminate={(sessionId) => socket.call('terminateAgentSession', { sessionId }).catch(reportError)}
       />
       <nav>
         <button onClick={() => setTab('messages')}>Messages</button>

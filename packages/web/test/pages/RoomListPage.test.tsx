@@ -50,4 +50,22 @@ describe('RoomListPage', () => {
       expect(rest.createRoom).toHaveBeenCalledWith({ name: 'new room', agentIds: ['codex'], schedulingMode: 'sequential' }),
     );
   });
+
+  it('shows an error message when the initial room list fails to load', async () => {
+    vi.mocked(rest.fetchRooms).mockRejectedValue(new Error('failed to fetch rooms'));
+    render(<MemoryRouter><RoomListPage /></MemoryRouter>);
+    expect(await screen.findByRole('alert')).toHaveTextContent('failed to fetch rooms');
+  });
+
+  it('shows an error message when createRoom fails', async () => {
+    vi.mocked(rest.createRoom).mockRejectedValue(new Error('failed to create room'));
+    render(<MemoryRouter><RoomListPage /></MemoryRouter>);
+    await screen.findByLabelText('codex');
+
+    fireEvent.change(screen.getByLabelText('room name'), { target: { value: 'new room' } });
+    fireEvent.click(screen.getByLabelText('codex'));
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('failed to create room');
+  });
 });

@@ -15,14 +15,14 @@ describe('RoomHeader', () => {
   });
 
   it('shows the room name and session count', () => {
-    render(<RoomHeader room={room} status={status()} onPause={vi.fn()} onResume={vi.fn()} onConfirmCompletion={vi.fn()} />);
+    render(<RoomHeader room={room} status={status()} connectionState="connected" onPause={vi.fn()} onResume={vi.fn()} onConfirmCompletion={vi.fn()} />);
     expect(screen.getByText('room a')).toBeInTheDocument();
     expect(screen.getByText('3/20 sessions')).toBeInTheDocument();
   });
 
   it('calls onPause when active and Pause is clicked', () => {
     const onPause = vi.fn();
-    render(<RoomHeader room={room} status={status()} onPause={onPause} onResume={vi.fn()} onConfirmCompletion={vi.fn()} />);
+    render(<RoomHeader room={room} status={status()} connectionState="connected" onPause={onPause} onResume={vi.fn()} onConfirmCompletion={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
     expect(onPause).toHaveBeenCalled();
   });
@@ -30,7 +30,7 @@ describe('RoomHeader', () => {
   it('resumes without a prompt when paused_manual', () => {
     const onResume = vi.fn();
     render(
-      <RoomHeader room={room} status={status({ status: 'paused_manual' })} onPause={vi.fn()} onResume={onResume} onConfirmCompletion={vi.fn()} />,
+      <RoomHeader room={room} status={status({ status: 'paused_manual' })} connectionState="connected" onPause={vi.fn()} onResume={onResume} onConfirmCompletion={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
     expect(onResume).toHaveBeenCalledWith();
@@ -40,15 +40,29 @@ describe('RoomHeader', () => {
     vi.spyOn(window, 'prompt').mockReturnValue('5');
     const onResume = vi.fn();
     render(
-      <RoomHeader room={room} status={status({ status: 'paused_limit' })} onPause={vi.fn()} onResume={onResume} onConfirmCompletion={vi.fn()} />,
+      <RoomHeader room={room} status={status({ status: 'paused_limit' })} connectionState="connected" onPause={vi.fn()} onResume={onResume} onConfirmCompletion={vi.fn()} />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
     expect(onResume).toHaveBeenCalledWith(5);
   });
 
   it('hides controls when the room is completed', () => {
-    render(<RoomHeader room={room} status={status({ status: 'completed' })} onPause={vi.fn()} onResume={vi.fn()} onConfirmCompletion={vi.fn()} />);
+    render(<RoomHeader room={room} status={status({ status: 'completed' })} connectionState="connected" onPause={vi.fn()} onResume={vi.fn()} onConfirmCompletion={vi.fn()} />);
     expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument();
+  });
+
+  it('shows a disconnect banner when connectionState is disconnected', () => {
+    render(
+      <RoomHeader room={room} status={status()} connectionState="disconnected" onPause={vi.fn()} onResume={vi.fn()} onConfirmCompletion={vi.fn()} />,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('连接已断开');
+  });
+
+  it('does not show a disconnect banner when connected', () => {
+    render(
+      <RoomHeader room={room} status={status()} connectionState="connected" onPause={vi.fn()} onResume={vi.fn()} onConfirmCompletion={vi.fn()} />,
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

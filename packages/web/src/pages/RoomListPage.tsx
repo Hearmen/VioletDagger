@@ -9,10 +9,13 @@ export function RoomListPage() {
   const [agentIds, setAgentIds] = useState<string[]>([]);
   const [name, setName] = useState('');
   const [selectedAgents, setSelectedAgents] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchRooms().then(setRooms);
-    fetchAgents().then((agents) => setAgentIds(agents.map((a) => a.agentId)));
+    fetchRooms().then(setRooms).catch((err: Error) => setError(err.message));
+    fetchAgents()
+      .then((agents) => setAgentIds(agents.map((a) => a.agentId)))
+      .catch((err: Error) => setError(err.message));
   }, []);
 
   function toggleAgent(agentId: string) {
@@ -23,13 +26,19 @@ export function RoomListPage() {
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    const room = await createRoom({ name, agentIds: selectedAgents, schedulingMode: 'sequential' });
-    navigate(`/rooms/${room.id}`);
+    setError(null);
+    try {
+      const room = await createRoom({ name, agentIds: selectedAgents, schedulingMode: 'sequential' });
+      navigate(`/rooms/${room.id}`);
+    } catch (err) {
+      setError((err as Error).message);
+    }
   }
 
   return (
     <div>
       <h1>Rooms</h1>
+      {error && <p role="alert">{error}</p>}
       <ul>
         {rooms.map((room) => (
           <li key={room.id}>
