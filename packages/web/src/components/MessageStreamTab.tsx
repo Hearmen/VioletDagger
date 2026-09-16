@@ -16,6 +16,7 @@ export function MessageStreamTab(props: {
     targetMessageId?: number;
     referencedMessageIds?: number[];
   }) => void;
+  readOnly: boolean;
 }) {
   const [content, setContent] = useState('');
   const [type, setType] = useState<MessageType | ''>('');
@@ -48,15 +49,15 @@ export function MessageStreamTab(props: {
           </li>
         ))}
       </ul>
-      <select aria-label="message type" value={type} onChange={(e) => setType(e.target.value as MessageType | '')}>
+      <select aria-label="message type" value={type} onChange={(e) => setType(e.target.value as MessageType | '')} disabled={props.readOnly}>
         <option value="">(chat)</option>
         {MESSAGE_TYPES.map((t) => (
           <option key={t} value={t}>{t}</option>
         ))}
       </select>
       {needsTarget && <span>target: {targetMessageId ?? '(click a message above)'}</span>}
-      <textarea aria-label="content" value={content} onChange={(e) => setContent(e.target.value)} />
-      <button onClick={handleSend} disabled={!canSend}>Send</button>
+      <textarea aria-label="content" value={content} onChange={(e) => setContent(e.target.value)} disabled={props.readOnly} />
+      <button onClick={handleSend} disabled={props.readOnly || !canSend}>Send</button>
     </div>
   );
 }

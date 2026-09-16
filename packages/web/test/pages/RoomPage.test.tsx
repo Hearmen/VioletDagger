@@ -43,6 +43,20 @@ describe('RoomPage', () => {
     expect(await screen.findByText('room a')).toBeInTheDocument();
   });
 
+  it('shows the error banner during initial load when a load call fails, alongside Loading...', async () => {
+    call.mockImplementation((method: string) => {
+      if (method === 'getRoomStatus') return Promise.reject(new Error('status fetch failed'));
+      if (method === 'listMessages') return Promise.resolve({ messages: [], nextCursor: null });
+      if (method === 'getMemoryView') return Promise.resolve({ facts: [], boundaries: [], openQuestions: [], chains: [], hypotheses: [], exploring: [] });
+      if (method === 'getEventTree') return Promise.resolve({ sessions: [] });
+      return Promise.resolve({ ok: true });
+    });
+    renderRoomPage();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('status fetch failed');
+    expect(screen.getByText('Loading...')).toBeInTheDocument();
+  });
+
   it('sends a human message via postHumanMessage', async () => {
     renderRoomPage();
     await screen.findByText('room a');
@@ -80,5 +94,27 @@ describe('RoomPage', () => {
     renderRoomPage();
     await screen.findByText('room a');
     expect(screen.getByText('连接已断开，正在重连…')).toBeInTheDocument();
+  });
+
+  it('disables the send box and hides Terminate when the room is completed', async () => {
+    call.mockImplementation((method: string) => {
+      if (method === 'getRoomStatus') {
+        return Promise.resolve({
+          currentSessionCount: 1,
+          status: 'completed',
+          agents: [{ agentId: 'claude', state: 'running', sessionId: 3, sessionStartedAt: new Date().toISOString() }],
+        });
+      }
+      if (method === 'listMessages') return Promise.resolve({ messages: [], nextCursor: null });
+      if (method === 'getMemoryView') return Promise.resolve({ facts: [], boundaries: [], openQuestions: [], chains: [], hypotheses: [], exploring: [] });
+      if (method === 'getEventTree') return Promise.resolve({ sessions: [] });
+      return Promise.resolve({ ok: true });
+    });
+    renderRoomPage();
+    await screen.findByText('room a');
+
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    expect(screen.getByLabelText('content')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Terminate' })).not.toBeInTheDocument();
   });
 });

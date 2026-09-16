@@ -9,7 +9,7 @@ describe('AgentStatusBar', () => {
       { agentId: 'codex', state: 'idle' },
       { agentId: 'claude', state: 'running', sessionId: 3, sessionStartedAt: new Date().toISOString() },
     ];
-    render(<AgentStatusBar agents={agents} onTerminate={vi.fn()} />);
+    render(<AgentStatusBar agents={agents} onTerminate={vi.fn()} readOnly={false} />);
     expect(screen.getByTestId('agent-codex')).toHaveTextContent('idle');
     expect(screen.getByTestId('agent-claude')).toHaveTextContent('running');
   });
@@ -20,7 +20,7 @@ describe('AgentStatusBar', () => {
       { agentId: 'codex', state: 'idle' },
       { agentId: 'claude', state: 'running', sessionId: 3, sessionStartedAt: new Date().toISOString() },
     ];
-    render(<AgentStatusBar agents={agents} onTerminate={onTerminate} />);
+    render(<AgentStatusBar agents={agents} onTerminate={onTerminate} readOnly={false} />);
     const claudeBar = screen.getByTestId('agent-claude');
     fireEvent.click(within(claudeBar).getByRole('button', { name: 'Terminate' }));
     expect(onTerminate).toHaveBeenCalledWith(3);
@@ -30,7 +30,15 @@ describe('AgentStatusBar', () => {
     const agents: RoomStatusPayload['agents'] = [
       { agentId: 'codex', state: 'running', sessionId: 1, sessionStartedAt: new Date().toISOString(), stuck: true },
     ];
-    render(<AgentStatusBar agents={agents} onTerminate={vi.fn()} />);
+    render(<AgentStatusBar agents={agents} onTerminate={vi.fn()} readOnly={false} />);
     expect(screen.getByTitle('这个 agent 可能卡住了，要不要看看')).toBeInTheDocument();
+  });
+
+  it('hides the Terminate button for running agents when readOnly', () => {
+    const agents: RoomStatusPayload['agents'] = [
+      { agentId: 'claude', state: 'running', sessionId: 3, sessionStartedAt: new Date().toISOString() },
+    ];
+    render(<AgentStatusBar agents={agents} onTerminate={vi.fn()} readOnly />);
+    expect(screen.queryByRole('button', { name: 'Terminate' })).not.toBeInTheDocument();
   });
 });

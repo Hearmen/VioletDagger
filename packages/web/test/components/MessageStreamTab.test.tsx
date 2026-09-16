@@ -17,6 +17,7 @@ describe('MessageStreamTab', () => {
       <MessageStreamTab
         messages={[makeMessage({ id: 1, content: 'chat' }), makeMessage({ id: 2, type: 'propose_completion', content: 'done?' })]}
         onSend={vi.fn()}
+        readOnly={false}
       />,
     );
     expect(screen.getByText(/\[human\].*chat/)).toBeInTheDocument();
@@ -25,7 +26,7 @@ describe('MessageStreamTab', () => {
 
   it('disables Send for a reaction type until a target message is clicked', () => {
     const onSend = vi.fn();
-    render(<MessageStreamTab messages={[makeMessage({ id: 5, content: 'the target' })]} onSend={onSend} />);
+    render(<MessageStreamTab messages={[makeMessage({ id: 5, content: 'the target' })]} onSend={onSend} readOnly={false} />);
 
     fireEvent.change(screen.getByLabelText('content'), { target: { value: 'I agree' } });
     fireEvent.change(screen.getByLabelText('message type'), { target: { value: 'endorse' } });
@@ -40,9 +41,25 @@ describe('MessageStreamTab', () => {
 
   it('sends a plain chat message with no type', () => {
     const onSend = vi.fn();
-    render(<MessageStreamTab messages={[]} onSend={onSend} />);
+    render(<MessageStreamTab messages={[]} onSend={onSend} readOnly={false} />);
     fireEvent.change(screen.getByLabelText('content'), { target: { value: 'just chatting' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect(onSend).toHaveBeenCalledWith({ content: 'just chatting', type: undefined, targetMessageId: undefined, referencedMessageIds: undefined });
+  });
+
+  it('disables the textarea, type select, and Send button when readOnly', () => {
+    const onSend = vi.fn();
+    render(
+      <MessageStreamTab
+        messages={[makeMessage({ id: 5, content: 'the target' })]}
+        onSend={onSend}
+        readOnly
+      />,
+    );
+    fireEvent.change(screen.getByLabelText('content'), { target: { value: 'should not send' } });
+
+    expect(screen.getByLabelText('content')).toBeDisabled();
+    expect(screen.getByLabelText('message type')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 });

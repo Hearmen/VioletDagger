@@ -18,6 +18,7 @@ const RECONNECT_DELAY_MS = 2000;
 
 export function useRoomSocket(roomId: number): RoomSocket {
   const wsRef = useRef<WebSocket | null>(null);
+  const pendingFramesRef = useRef<string[]>([]);
   const pendingRef = useRef<Map<string, PendingCall>>(new Map());
   const subscribersRef = useRef<Map<PushEvent, Set<(data: any) => void>>>(new Map());
   const nextIdRef = useRef(1);
@@ -29,10 +30,16 @@ export function useRoomSocket(roomId: number): RoomSocket {
 
     function connect() {
       setConnectionState('connecting');
+      pendingFramesRef.current = [];
       const ws = new WebSocket(`ws://${window.location.host}/api/rooms/${roomId}/ws`);
       wsRef.current = ws;
 
-      ws.onopen = () => setConnectionState('connected');
+      ws.onopen = () => {
+        setConnectionState('connected');
+        const frames = pendingFramesRef.current;
+        pendingFramesRef.current = [];
+        frames.forEach((frame) => ws.send(frame));
+      };
 
       ws.onmessage = (event: { data: string }) => {
         const payload = JSON.parse(event.data);
@@ -69,7 +76,13 @@ export function useRoomSocket(roomId: number): RoomSocket {
     return new Promise((resolve, reject) => {
       const id = String(nextIdRef.current++);
       pendingRef.current.set(id, { resolve, reject });
-      wsRef.current?.send(JSON.stringify({ id, method, params }));
+      const frame = JSON.stringify({ id, method, params });
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(frame);
+      } else {
+        pendingFramesRef.current.push(frame);
+      }
     });
   }, []);
 

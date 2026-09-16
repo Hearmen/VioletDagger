@@ -3,7 +3,10 @@ import { renderHook, act } from '@testing-library/react';
 import { useRoomSocket } from '../../src/hooks/useRoomSocket';
 
 class FakeWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
   static instances: FakeWebSocket[] = [];
+  readyState = FakeWebSocket.CONNECTING;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -21,6 +24,11 @@ class FakeWebSocket {
 
   close() {
     this.onclose?.();
+  }
+
+  open() {
+    this.readyState = FakeWebSocket.OPEN;
+    this.onopen?.();
   }
 
   emit(payload: unknown) {
@@ -46,6 +54,9 @@ describe('useRoomSocket', () => {
   it('call() sends an envelope and resolves when a matching response arrives', async () => {
     const { result } = renderHook(() => useRoomSocket(7));
     const ws = FakeWebSocket.instances[0];
+    act(() => {
+      ws.open();
+    });
 
     let resolved: any;
     const promise = act(async () => {
@@ -67,6 +78,9 @@ describe('useRoomSocket', () => {
   it('call() rejects when the response carries an error', async () => {
     const { result } = renderHook(() => useRoomSocket(7));
     const ws = FakeWebSocket.instances[0];
+    act(() => {
+      ws.open();
+    });
 
     const promise = result.current.call('pauseRoom');
     const sentEnvelope = JSON.parse(ws.sent[0]);
@@ -101,7 +115,7 @@ describe('useRoomSocket', () => {
 
     const ws = FakeWebSocket.instances[0];
     act(() => {
-      ws.onopen?.();
+      ws.open();
     });
     expect(result.current.connectionState).toBe('connected');
   });
@@ -111,7 +125,7 @@ describe('useRoomSocket', () => {
     const { result } = renderHook(() => useRoomSocket(7));
     const ws = FakeWebSocket.instances[0];
     act(() => {
-      ws.onopen?.();
+      ws.open();
     });
 
     act(() => {
@@ -126,10 +140,42 @@ describe('useRoomSocket', () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
 
     act(() => {
-      FakeWebSocket.instances[1].onopen?.();
+      FakeWebSocket.instances[1].open();
     });
     expect(result.current.connectionState).toBe('connected');
 
     vi.useRealTimers();
+  });
+
+  it('queues call() while CONNECTING and flushes it in order once the socket opens', async () => {
+    const { result } = renderHook(() => useRoomSocket(7));
+    const ws = FakeWebSocket.instances[0];
+    expect(ws.readyState).toBe(FakeWebSocket.CONNECTING);
+
+    let resolved: any;
+    let promise: Promise<any>;
+    act(() => {
+      promise = result.current.call<{ facts: [] }>('getMemoryView');
+      promise.then((r) => (resolved = r));
+    });
+
+    expect(ws.sent).toHaveLength(0);
+
+    act(() => {
+      ws.open();
+    });
+
+    expect(ws.sent).toHaveLength(1);
+    const sentEnvelope = JSON.parse(ws.sent[0]);
+    expect(sentEnvelope.method).toBe('getMemoryView');
+
+    act(() => {
+      ws.emit({ id: sentEnvelope.id, result: { facts: [] } });
+    });
+    await act(async () => {
+      await promise;
+    });
+
+    expect(resolved).toEqual({ facts: [] });
   });
 });

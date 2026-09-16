@@ -60,7 +60,16 @@ export function RoomPage() {
     };
   }, [roomIdNum]);
 
-  if (!room || !status) return <p>Loading...</p>;
+  if (!room || !status) {
+    return (
+      <div>
+        {error && <p role="alert">{error}</p>}
+        <p>Loading...</p>
+      </div>
+    );
+  }
+
+  const readOnly = status.status === 'completed';
 
   function handleSend(params: {
     content: string;
@@ -89,13 +98,14 @@ export function RoomPage() {
       <AgentStatusBar
         agents={status.agents}
         onTerminate={(sessionId) => socket.call('terminateAgentSession', { sessionId }).catch(reportError)}
+        readOnly={readOnly}
       />
       <nav>
         <button onClick={() => setTab('messages')}>Messages</button>
         <button onClick={() => setTab('memory')}>Memory</button>
         <button onClick={() => setTab('events')}>Events</button>
       </nav>
-      {tab === 'messages' && <MessageStreamTab messages={messages} onSend={handleSend} />}
+      {tab === 'messages' && <MessageStreamTab messages={messages} onSend={handleSend} readOnly={readOnly} />}
       {tab === 'memory' && memory && <MemoryPanelTab memory={memory} />}
       {tab === 'events' && eventTree && <EventTreeTab eventTree={eventTree} onOpenSession={handleOpenSession} />}
       <SessionDetailModal detail={sessionDetail} onClose={() => setSessionDetail(null)} />
