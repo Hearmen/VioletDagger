@@ -116,6 +116,65 @@ describe('attachRoomWebSocket', () => {
     expect(client.readyState).toBe(WebSocket.OPEN);
   });
 
+  it('drops a JSON `null` frame silently and keeps the connection open', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    httpServer = createServer();
+    const roomEvents = new EventEmitter();
+    attachRoomWebSocket(httpServer, {
+      db, roomEvents, startSession: vi.fn(), killSession: vi.fn(), stuckCounter: createStuckCounter(),
+    });
+    const port = await listen(httpServer);
+
+    client = new WebSocket(`ws://localhost:${port}/api/rooms/${room.id}/ws`);
+    await waitForOpen(client);
+
+    client.send('null');
+    client.send(JSON.stringify({ id: '1', method: 'getMemoryView' }));
+    const response = await waitForMessage(client);
+    expect(response.id).toBe('1');
+    expect(client.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('drops a JSON string (non-object) frame silently and keeps the connection open', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    httpServer = createServer();
+    const roomEvents = new EventEmitter();
+    attachRoomWebSocket(httpServer, {
+      db, roomEvents, startSession: vi.fn(), killSession: vi.fn(), stuckCounter: createStuckCounter(),
+    });
+    const port = await listen(httpServer);
+
+    client = new WebSocket(`ws://localhost:${port}/api/rooms/${room.id}/ws`);
+    await waitForOpen(client);
+
+    client.send(JSON.stringify('abc'));
+    client.send(JSON.stringify({ id: '1', method: 'getMemoryView' }));
+    const response = await waitForMessage(client);
+    expect(response.id).toBe('1');
+    expect(client.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('responds with the unknown-method error for an inherited Object.prototype name instead of crashing', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    httpServer = createServer();
+    const roomEvents = new EventEmitter();
+    attachRoomWebSocket(httpServer, {
+      db, roomEvents, startSession: vi.fn(), killSession: vi.fn(), stuckCounter: createStuckCounter(),
+    });
+    const port = await listen(httpServer);
+
+    client = new WebSocket(`ws://localhost:${port}/api/rooms/${room.id}/ws`);
+    await waitForOpen(client);
+
+    client.send(JSON.stringify({ id: '1', method: 'toString' }));
+    const response = await waitForMessage(client);
+    expect(response).toEqual({ id: '1', error: { message: 'unknown method: toString' } });
+    expect(client.readyState).toBe(WebSocket.OPEN);
+  });
+
   it('responds with an error envelope for an unknown method, without closing the connection', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');

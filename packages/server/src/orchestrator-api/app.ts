@@ -62,6 +62,11 @@ export function composeApp(config: AppConfig): App {
 }
 
 export async function startApp(app: App, ports: { httpPort: number; mcpPort: number }): Promise<void> {
-  await new Promise<void>((resolve) => app.httpServer.listen(ports.httpPort, resolve));
+  // Bind loopback only, matching mcp-server's convention: the REST/WS surface
+  // this module adds (pauseRoom, terminateAgentSession which kills process
+  // groups, postHumanMessage which injects goals agents then act on) is
+  // strictly more dangerous than MCP's post_message, and there is no auth
+  // layer, so it must not be reachable from the network.
+  await new Promise<void>((resolve) => app.httpServer.listen(ports.httpPort, '127.0.0.1', resolve));
   app.mcpHttpServer = await startMcpServer(app.mcpServer, ports.mcpPort);
 }

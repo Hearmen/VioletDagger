@@ -51,6 +51,20 @@ describe('createRoomHandler', () => {
     expect(room.name).toBe('a');
   });
 
+  it('rejects a missing name', () => {
+    const db = createTestDb();
+    expect(() =>
+      createRoomHandler(db, registry, { agentIds: ['codex'], schedulingMode: 'sequential' } as any),
+    ).toThrow(ApiError);
+  });
+
+  it('rejects an empty string name', () => {
+    const db = createTestDb();
+    expect(() =>
+      createRoomHandler(db, registry, { name: '', agentIds: ['codex'], schedulingMode: 'sequential' }),
+    ).toThrow(ApiError);
+  });
+
   it('rejects an empty agentIds array', () => {
     const db = createTestDb();
     expect(() =>

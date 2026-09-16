@@ -30,6 +30,9 @@ export function createRoomHandler(
   registry: AgentRegistry,
   body: { name: string; agentIds: string[]; schedulingMode: string },
 ): Room {
+  if (typeof body.name !== 'string' || body.name.length === 0) {
+    throw new ApiError('name must be a non-empty string');
+  }
   if (!body.agentIds || body.agentIds.length === 0) {
     throw new ApiError('agentIds must be a non-empty array');
   }

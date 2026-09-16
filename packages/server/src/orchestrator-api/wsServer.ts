@@ -70,7 +70,23 @@ export function attachRoomWebSocket(httpServer: HttpServer, deps: WsServerDeps):
       } catch {
         return;
       }
-      const handler = handlers[envelope.method];
+      // A frame can parse as valid JSON while still not being an RPC
+      // envelope (e.g. the literal text `null`, `"abc"`, or `42`). There is
+      // no reliable `id` to respond with in that case, so drop it silently
+      // and keep the connection open, same as the JSON.parse failure above.
+      if (
+        typeof envelope !== 'object' ||
+        envelope === null ||
+        typeof envelope.method !== 'string'
+      ) {
+        return;
+      }
+      // Use hasOwnProperty so inherited Object.prototype names (toString,
+      // constructor, valueOf, __proto__, ...) hit the "unknown method"
+      // branch below instead of resolving to a builtin function.
+      const handler = Object.prototype.hasOwnProperty.call(handlers, envelope.method)
+        ? handlers[envelope.method]
+        : undefined;
       if (!handler) {
         ws.send(JSON.stringify({ id: envelope.id, error: { message: `unknown method: ${envelope.method}` } }));
         return;
