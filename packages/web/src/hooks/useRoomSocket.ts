@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 type PushEvent = 'newMessage' | 'memoryUpdate' | 'roomStatus';
+export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
 
 interface PendingCall {
   resolve: (value: any) => void;
@@ -10,33 +11,58 @@ interface PendingCall {
 export interface RoomSocket {
   call<T>(method: string, params?: object): Promise<T>;
   subscribe(event: PushEvent, handler: (data: any) => void): () => void;
+  connectionState: ConnectionState;
 }
+
+const RECONNECT_DELAY_MS = 2000;
 
 export function useRoomSocket(roomId: number): RoomSocket {
   const wsRef = useRef<WebSocket | null>(null);
   const pendingRef = useRef<Map<string, PendingCall>>(new Map());
   const subscribersRef = useRef<Map<PushEvent, Set<(data: any) => void>>>(new Map());
   const nextIdRef = useRef(1);
+  const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
 
   useEffect(() => {
-    const ws = new WebSocket(`ws://${window.location.host}/api/rooms/${roomId}/ws`);
-    wsRef.current = ws;
+    let stopped = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
-    ws.onmessage = (event: { data: string }) => {
-      const payload = JSON.parse(event.data);
-      if ('id' in payload) {
-        const pending = pendingRef.current.get(payload.id);
-        if (!pending) return;
-        pendingRef.current.delete(payload.id);
-        if (payload.error) pending.reject(new Error(payload.error.message));
-        else pending.resolve(payload.result);
-      } else if ('event' in payload) {
-        const handlers = subscribersRef.current.get(payload.event as PushEvent);
-        handlers?.forEach((handler) => handler(payload.data));
-      }
+    function connect() {
+      setConnectionState('connecting');
+      const ws = new WebSocket(`ws://${window.location.host}/api/rooms/${roomId}/ws`);
+      wsRef.current = ws;
+
+      ws.onopen = () => setConnectionState('connected');
+
+      ws.onmessage = (event: { data: string }) => {
+        const payload = JSON.parse(event.data);
+        if ('id' in payload) {
+          const pending = pendingRef.current.get(payload.id);
+          if (!pending) return;
+          pendingRef.current.delete(payload.id);
+          if (payload.error) pending.reject(new Error(payload.error.message));
+          else pending.resolve(payload.result);
+        } else if ('event' in payload) {
+          const handlers = subscribersRef.current.get(payload.event as PushEvent);
+          handlers?.forEach((handler) => handler(payload.data));
+        }
+      };
+
+      ws.onclose = () => {
+        if (stopped) return;
+        setConnectionState('disconnected');
+        reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
+      };
+      ws.onerror = () => ws.close();
+    }
+
+    connect();
+
+    return () => {
+      stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      wsRef.current?.close();
     };
-
-    return () => ws.close();
   }, [roomId]);
 
   const call = useCallback(<T,>(method: string, params?: object): Promise<T> => {
@@ -53,5 +79,5 @@ export function useRoomSocket(roomId: number): RoomSocket {
     return () => subscribersRef.current.get(event)?.delete(handler);
   }, []);
 
-  return { call, subscribe };
+  return { call, subscribe, connectionState };
 }

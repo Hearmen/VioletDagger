@@ -94,4 +94,42 @@ describe('useRoomSocket', () => {
     });
     expect(handler).toHaveBeenCalledTimes(1);
   });
+
+  it('starts in "connecting" and becomes "connected" once the socket opens', () => {
+    const { result } = renderHook(() => useRoomSocket(7));
+    expect(result.current.connectionState).toBe('connecting');
+
+    const ws = FakeWebSocket.instances[0];
+    act(() => {
+      ws.onopen?.();
+    });
+    expect(result.current.connectionState).toBe('connected');
+  });
+
+  it('goes to "disconnected" on close, reconnects after 2s, and recovers to "connected"', () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useRoomSocket(7));
+    const ws = FakeWebSocket.instances[0];
+    act(() => {
+      ws.onopen?.();
+    });
+
+    act(() => {
+      ws.onclose?.();
+    });
+    expect(result.current.connectionState).toBe('disconnected');
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    act(() => {
+      FakeWebSocket.instances[1].onopen?.();
+    });
+    expect(result.current.connectionState).toBe('connected');
+
+    vi.useRealTimers();
+  });
 });
