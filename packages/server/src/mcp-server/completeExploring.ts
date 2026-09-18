@@ -23,10 +23,9 @@ export function createCompleteExploringHandler(deps: CompleteExploringDeps) {
     assertNotReservedAuthor(params.authorId);
     resolveSessionBinding(db, params.roomId, params.authorId);
 
-    const message = getMessageById(db, params.messageId);
+    const message = getMessageById(db, params.roomId, params.messageId);
     if (
       !message ||
-      message.roomId !== params.roomId ||
       message.authorId !== params.authorId ||
       message.type !== 'exploring' ||
       message.exploringStatus !== 'active'
@@ -36,7 +35,7 @@ export function createCompleteExploringHandler(deps: CompleteExploringDeps) {
       );
     }
 
-    markExploringCompleted(db, params.messageId);
+    markExploringCompleted(db, params.roomId, params.messageId);
     roomEvents.emit('memoryUpdate', { roomId: params.roomId, messageId: params.messageId });
     resetStuckCount(params.roomId, params.authorId);
 

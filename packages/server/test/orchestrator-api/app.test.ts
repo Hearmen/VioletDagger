@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { createServer, type Server } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -47,12 +48,13 @@ describe('composeApp', () => {
   it('wires all five modules into an App without throwing', () => {
     dir = mkdtempSync(path.join(tmpdir(), 'violetdagger-app-'));
     const agentsConfigPath = path.join(dir, 'agents.config.json');
-    writeFileSync(agentsConfigPath, JSON.stringify({ agents: { codex: { command: 'codex exec {{promptFile}}' } } }));
+    writeFileSync(agentsConfigPath, JSON.stringify({ agents: { codex: { command: ['codex', 'exec', '{{promptFile}}'] } } }));
 
     const app = composeApp({
       dbPath: ':memory:',
       agentsConfigPath,
       logsDir: path.join(dir, 'logs'),
+      mcpUrl: 'http://127.0.0.1:0',
     });
 
     expect(app.registry.agents.codex).toBeDefined();
@@ -63,12 +65,13 @@ describe('composeApp', () => {
   it('startApp listens the REST/WS server and the MCP server on the given ports', async () => {
     dir = mkdtempSync(path.join(tmpdir(), 'violetdagger-app-'));
     const agentsConfigPath = path.join(dir, 'agents.config.json');
-    writeFileSync(agentsConfigPath, JSON.stringify({ agents: { codex: { command: 'codex exec {{promptFile}}' } } }));
+    writeFileSync(agentsConfigPath, JSON.stringify({ agents: { codex: { command: ['codex', 'exec', '{{promptFile}}'] } } }));
 
     const app = composeApp({
       dbPath: ':memory:',
       agentsConfigPath,
       logsDir: path.join(dir, 'logs'),
+      mcpUrl: 'http://127.0.0.1:0',
     });
 
     await startApp(app, { httpPort: 0, mcpPort: 0 });
@@ -76,6 +79,39 @@ describe('composeApp', () => {
 
     app.httpServer.close();
     app.mcpHttpServer?.close();
+  });
+
+  it('rejects with a clean error (instead of crashing) when the HTTP port is already in use', async () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'violetdagger-app-'));
+    const agentsConfigPath = path.join(dir, 'agents.config.json');
+    writeFileSync(agentsConfigPath, JSON.stringify({ agents: { codex: { command: ['codex', 'exec', '{{promptFile}}'] } } }));
+    app = composeApp({
+      dbPath: ':memory:', agentsConfigPath, logsDir: path.join(dir, 'logs'), mcpUrl: 'http://127.0.0.1:0',
+    });
+
+    const blocker: Server = createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+    const busyPort = (blocker.address() as { port: number }).port;
+
+    await expect(startApp(app, { httpPort: busyPort, mcpPort: 0 })).rejects.toThrow(/EADDRINUSE/);
+    blocker.close();
+  });
+
+  it('closes the REST/WS server when the MCP port is already in use', async () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'violetdagger-app-'));
+    const agentsConfigPath = path.join(dir, 'agents.config.json');
+    writeFileSync(agentsConfigPath, JSON.stringify({ agents: { codex: { command: ['codex', 'exec', '{{promptFile}}'] } } }));
+    app = composeApp({
+      dbPath: ':memory:', agentsConfigPath, logsDir: path.join(dir, 'logs'), mcpUrl: 'http://127.0.0.1:0',
+    });
+
+    const blocker: Server = createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+    const busyPort = (blocker.address() as { port: number }).port;
+
+    await expect(startApp(app, { httpPort: 0, mcpPort: busyPort })).rejects.toThrow(/EADDRINUSE/);
+    expect(app.httpServer.listening).toBe(false);
+    blocker.close();
   });
 
   it(
@@ -89,12 +125,13 @@ describe('composeApp', () => {
       // would land on an emitter nobody is listening on.
       dir = mkdtempSync(path.join(tmpdir(), 'violetdagger-app-'));
       const agentsConfigPath = path.join(dir, 'agents.config.json');
-      writeFileSync(agentsConfigPath, JSON.stringify({ agents: { codex: { command: 'codex exec {{promptFile}}' } } }));
+      writeFileSync(agentsConfigPath, JSON.stringify({ agents: { codex: { command: ['codex', 'exec', '{{promptFile}}'] } } }));
 
       app = composeApp({
         dbPath: ':memory:',
         agentsConfigPath,
         logsDir: path.join(dir, 'logs'),
+        mcpUrl: 'http://127.0.0.1:0',
       });
 
       await startApp(app, { httpPort: 0, mcpPort: 0 });

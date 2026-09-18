@@ -162,7 +162,7 @@ describe('message read queries', () => {
       roomId: room.id, sessionSeq: s2.seq, authorId: 'claude', content: 'confirmed',
       type: 'verify', targetMessageId: fact.message.id,
     });
-    expect(getAnnotations(db, fact.message.id).map((m) => m.type)).toEqual(['verify']);
+    expect(getAnnotations(db, room.id, fact.message.id).map((m) => m.type)).toEqual(['verify']);
   });
 
   it('listMessages has null nextCursor at true end of history (boundary case)', () => {
@@ -201,8 +201,8 @@ describe('completeExploring', () => {
       roomId: room.id, sessionSeq: s1.seq, authorId: 'codex',
       content: 'exploring X', type: 'exploring',
     });
-    completeExploring(db, message.id, 'human forced termination');
-    const updated = getMessageById(db, message.id)!;
+    completeExploring(db, room.id, message.id, 'human forced termination');
+    const updated = getMessageById(db, room.id, message.id)!;
     expect(updated.exploringStatus).toBe('completed');
     expect(updated.exploringNote).toBe('human forced termination');
     // append-only invariant: completeExploring must not touch anything else
@@ -221,8 +221,8 @@ describe('completeExploring', () => {
       roomId: room.id, sessionSeq: s1.seq, authorId: 'codex',
       content: 'a fact', type: 'fact',
     });
-    completeExploring(db, message.id, 'should not apply');
-    const updated = getMessageById(db, message.id)!;
+    completeExploring(db, room.id, message.id, 'should not apply');
+    const updated = getMessageById(db, room.id, message.id)!;
     expect(updated.exploringStatus).toBeNull();
     expect(updated.exploringNote).toBeNull();
     expect(updated.type).toBe('fact');
@@ -237,10 +237,50 @@ describe('completeExploring', () => {
       roomId: room.id, sessionSeq: s1.seq, authorId: 'codex',
       content: 'exploring X', type: 'exploring',
     });
-    completeExploring(db, message.id, 'first note');
-    completeExploring(db, message.id);
-    const updated = getMessageById(db, message.id)!;
+    completeExploring(db, room.id, message.id, 'first note');
+    completeExploring(db, room.id, message.id);
+    const updated = getMessageById(db, room.id, message.id)!;
     expect(updated.exploringStatus).toBe('completed');
     expect(updated.exploringNote).toBe('first note');
+  });
+});
+
+describe('room-scoped message id', () => {
+  it('restarts at 1 in each room (ids are not globally unique)', () => {
+    const db = createTestDb();
+    const roomA = createRoom(db, 'a', ['codex'], 'sequential');
+    const roomB = createRoom(db, 'b', ['codex'], 'sequential');
+    const a1 = insertMessage(db, { roomId: roomA.id, sessionSeq: null, authorId: 'human', content: 'a1' });
+    const b1 = insertMessage(db, { roomId: roomB.id, sessionSeq: null, authorId: 'human', content: 'b1' });
+    const a2 = insertMessage(db, { roomId: roomA.id, sessionSeq: null, authorId: 'human', content: 'a2' });
+
+    expect(a1.message.id).toBe(1);
+    expect(b1.message.id).toBe(1);
+    expect(a2.message.id).toBe(2);
+    expect(getMessageById(db, roomB.id, 1)!.content).toBe('b1');
+    expect(getMessageById(db, roomA.id, 1)!.content).toBe('a1');
+  });
+
+  it('allows the same numeric ids to be referenced independently in each room', () => {
+    const db = createTestDb();
+    const roomA = createRoom(db, 'a', ['codex'], 'sequential');
+    const roomB = createRoom(db, 'b', ['codex'], 'sequential');
+    const factA = insertMessage(db, { roomId: roomA.id, sessionSeq: null, authorId: 'human', content: 'fact A', type: 'fact' });
+    const factB = insertMessage(db, { roomId: roomB.id, sessionSeq: null, authorId: 'human', content: 'fact B', type: 'fact' });
+    expect(factA.message.id).toBe(1);
+    expect(factB.message.id).toBe(1);
+
+    const chainA = insertMessage(db, {
+      roomId: roomA.id, sessionSeq: null, authorId: 'human', content: 'plan A',
+      type: 'chain', referencedMessageIds: [factA.message.id],
+    });
+    const chainB = insertMessage(db, {
+      roomId: roomB.id, sessionSeq: null, authorId: 'human', content: 'plan B',
+      type: 'chain', referencedMessageIds: [factB.message.id],
+    });
+    expect(chainA.message.referencedMessageIds).toEqual([1]);
+    expect(chainB.message.referencedMessageIds).toEqual([1]);
+    expect(getMessagesByType(db, roomA.id, 'chain')[0].content).toBe('plan A');
+    expect(getMessagesByType(db, roomB.id, 'chain')[0].content).toBe('plan B');
   });
 });

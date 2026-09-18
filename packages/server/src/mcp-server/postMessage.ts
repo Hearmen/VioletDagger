@@ -35,8 +35,8 @@ export function createPostMessageHandler(deps: PostMessageDeps) {
       throw new McpToolError(`targetMessageId is required for type "${params.type}"`);
     }
     if (params.targetMessageId != null) {
-      const target = getMessageById(db, params.targetMessageId);
-      if (!target || target.roomId !== params.roomId) {
+      const target = getMessageById(db, params.roomId, params.targetMessageId);
+      if (!target) {
         throw new McpToolError(`targetMessageId ${params.targetMessageId} not found in room ${params.roomId}`);
       }
     }
@@ -45,8 +45,8 @@ export function createPostMessageHandler(deps: PostMessageDeps) {
         throw new McpToolError('referencedMessageIds is only allowed when type is "chain"');
       }
       for (const refId of params.referencedMessageIds) {
-        const ref = getMessageById(db, refId);
-        if (!ref || ref.roomId !== params.roomId) {
+        const ref = getMessageById(db, params.roomId, refId);
+        if (!ref) {
           throw new McpToolError(`referencedMessageIds contains ${refId} which is not found in room ${params.roomId}`);
         }
       }

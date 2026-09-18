@@ -4,10 +4,10 @@ import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createTestDb } from '../../src/storage/db';
-import { createRoom, setAgentState } from '../../src/storage/rooms';
+import { createRoom, setAgentState, getRoomAgents } from '../../src/storage/rooms';
 import { createSession, finishSession } from '../../src/storage/sessions';
 import { insertMessage } from '../../src/storage/messages';
-import { createStuckCounter } from '../../src/orchestrator-core';
+import { createStuckCounter, createFailureCounter } from '../../src/orchestrator-core';
 import { createRpcHandlers } from '../../src/orchestrator-api/rpc';
 
 function setup() {
@@ -15,10 +15,14 @@ function setup() {
   const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
   const roomEvents = new EventEmitter();
   const startSession = vi.fn();
-  const killSession = vi.fn().mockResolvedValue({ rawLogPath: null });
+  const stopSessionProcess = vi.fn().mockResolvedValue({
+    confirmed: true,
+    exit: { roomId: room.id, seq: 1, agentId: 'codex', exitCode: null, signal: 'SIGTERM', exitCause: 'managed-stop', rawLogPath: '' },
+  });
   const stuckCounter = createStuckCounter();
-  const handlers = createRpcHandlers({ db, roomId: room.id, roomEvents, startSession, killSession, stuckCounter });
-  return { db, room, roomEvents, startSession, killSession, stuckCounter, handlers };
+  const failureCounter = createFailureCounter();
+  const handlers = createRpcHandlers({ db, roomId: room.id, roomEvents, startSession, stopSessionProcess, stuckCounter, failureCounter });
+  return { db, room, roomEvents, startSession, stopSessionProcess, stuckCounter, failureCounter, handlers };
 }
 
 describe('createRpcHandlers', () => {
@@ -40,7 +44,7 @@ describe('createRpcHandlers', () => {
     expect(result.messageId).toBeGreaterThan(0);
     expect(messageEvents[0].message.authorId).toBe('human');
     expect(messageEvents[0].message.sessionSeq).toBeNull();
-    expect(startSession).toHaveBeenCalledWith({ roomId: room.id, seq: 1, agentId: 'codex' });
+    expect(startSession).toHaveBeenCalledWith({ roomId: room.id, seq: 1, agentId: 'codex', registryKey: 'codex' });
   });
 
   it('postHumanMessage emits memoryUpdate with the superseded exploring message id', () => {
@@ -54,6 +58,16 @@ describe('createRpcHandlers', () => {
     expect(memoryUpdateEvents).toHaveLength(1);
     expect(memoryUpdateEvents[0]).toEqual({ roomId: room.id, messageId: first.messageId });
     expect(second.messageId).toBeGreaterThan(first.messageId);
+  });
+
+  it('postHumanMessage rejects a targetMessageId that belongs to another room', () => {
+    const { db, handlers } = setup();
+    const other = createRoom(db, 'other', ['codex'], 'sequential');
+    const otherMessage = insertMessage(db, { roomId: other.id, sessionSeq: null, authorId: 'human', content: 'x', type: 'fact' });
+
+    expect(() =>
+      handlers.postHumanMessage({ content: 'endorse', type: 'endorse', targetMessageId: otherMessage.message.id }),
+    ).toThrow(/not found in room/);
   });
 
   it('getMemoryView returns full-text groups for the bound room', () => {
@@ -80,6 +94,19 @@ describe('createRpcHandlers', () => {
     expect(codexStatus.sessionId).toBe(s1.seq);
     expect(codexStatus.activeExploringSummary).toBe('exploring X');
     expect(codexStatus.stuck).toBe(true);
+    expect(codexStatus.enabled).toBe(true);
+    expect(codexStatus.failureCount).toBe(0);
+  });
+
+  it('setAgentEnabled disables an agent and returns ok', () => {
+    const { db, room, handlers } = setup();
+    expect(handlers.setAgentEnabled({ agentId: 'codex', enabled: false })).toEqual({ ok: true });
+    expect(getRoomAgents(db, room.id).find((a) => a.agentId === 'codex')!.dispatchEnabled).toBe(false);
+  });
+
+  it('setAgentEnabled rejects invalid params', () => {
+    const { handlers } = setup();
+    expect(() => (handlers.setAgentEnabled as any)({})).toThrow();
   });
 
   it('getEventTree groups messages by session in seq order', () => {
@@ -91,9 +118,10 @@ describe('createRpcHandlers', () => {
     expect(tree.sessions[0].messages).toHaveLength(1);
   });
 
-  it('getSessionDetail reads the raw log file and reports whether messages were written', () => {
+  it('getSessionDetail reads the raw log file, returns the session messages, and reports wroteMessages', () => {
     const { db, room, handlers } = setup();
     const s1 = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'a finding', type: 'fact' });
     const dir = mkdtempSync(path.join(tmpdir(), 'violetdagger-rawlog-'));
     const rawLogPath = path.join(dir, '1.log');
     writeFileSync(rawLogPath, 'raw output here');
@@ -101,16 +129,18 @@ describe('createRpcHandlers', () => {
 
     const detail: any = handlers.getSessionDetail({ sessionId: s1.seq });
     expect(detail.rawLog).toBe('raw output here');
-    expect(detail.wroteMessages).toBe(false);
+    expect(detail.messages).toHaveLength(1);
+    expect(detail.messages[0].content).toBe('a finding');
+    expect(detail.wroteMessages).toBe(true);
 
     rmSync(dir, { recursive: true, force: true });
   });
 
   it('terminateAgentSession delegates to orchestrator-core and returns ok', async () => {
-    const { db, room, killSession, handlers } = setup();
+    const { db, room, stopSessionProcess, handlers } = setup();
     const s1 = createSession(db, room.id, 'codex');
     const result = await (handlers.terminateAgentSession as any)({ sessionId: s1.seq });
-    expect(killSession).toHaveBeenCalledWith(room.id, s1.seq);
+    expect(stopSessionProcess).toHaveBeenCalledWith(room.id, s1.seq);
     expect(result).toEqual({ ok: true });
   });
 

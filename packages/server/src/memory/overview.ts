@@ -4,7 +4,7 @@ import {
 } from '../storage/messages';
 import type { OverviewPayload } from './types';
 
-const RECENT_RAW_MESSAGES_COUNT = 8;
+const RECENT_RAW_MESSAGES_COUNT = 4;
 const GUIDANCE_TEXT =
   '以上是聊天室的既有记忆，仅供参考，请形成你自己的判断——可以采纳、组合、推翻，也可以提出全新方案。';
 

@@ -30,7 +30,7 @@ describe('createCompleteExploringHandler', () => {
     const result = completeExploring({ roomId: room.id, authorId: 'codex', messageId: message.id });
 
     expect(result).toEqual({ ok: true });
-    expect(getMessageById(db, message.id)!.exploringStatus).toBe('completed');
+    expect(getMessageById(db, room.id, message.id)!.exploringStatus).toBe('completed');
     expect(memoryEvents).toEqual([{ roomId: room.id, messageId: message.id }]);
     expect(resetStuckCount).toHaveBeenCalledWith(room.id, 'codex');
   });

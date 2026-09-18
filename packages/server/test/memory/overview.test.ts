@@ -35,7 +35,7 @@ describe('buildOverview', () => {
     expect(overview.activeExploring).toEqual([{ agentId: 'codex', summary: 'exploring X' }]);
   });
 
-  it('caps recentRawMessages at 8 and includes the fixed guidance text', () => {
+  it('caps recentRawMessages at 4 and includes the fixed guidance text', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const s1 = createSession(db, room.id, 'codex');
@@ -43,8 +43,8 @@ describe('buildOverview', () => {
       insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: `m${i}` });
     }
     const overview = buildOverview(db, room.id);
-    expect(overview.recentRawMessages).toHaveLength(8);
-    expect(overview.recentRawMessages[7].content).toBe('m10');
+    expect(overview.recentRawMessages).toHaveLength(4);
+    expect(overview.recentRawMessages[3].content).toBe('m10');
     expect(overview.guidance).toBe(
       '以上是聊天室的既有记忆，仅供参考，请形成你自己的判断——可以采纳、组合、推翻，也可以提出全新方案。',
     );

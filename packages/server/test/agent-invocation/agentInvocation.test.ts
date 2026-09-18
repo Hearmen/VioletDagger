@@ -1,21 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { EventEmitter } from 'node:events';
-import { spawn } from 'node:child_process';
-import { createWriteStream, mkdirSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { createTestDb } from '../../src/storage/db';
 import { createRoom } from '../../src/storage/rooms';
 import { createSession, getSession } from '../../src/storage/sessions';
 import { insertMessage } from '../../src/storage/messages';
 import { createAgentInvocation } from '../../src/agent-invocation/agentInvocation';
-import type { AgentRegistry } from '../../src/agent-invocation/types';
+import type { AgentRegistry, SpawnProcess, SpawnedProcess } from '../../src/agent-invocation/types';
 
-vi.mock('node:child_process', () => ({
-  spawn: vi.fn(),
-}));
 vi.mock('node:fs', () => ({
   createWriteStream: vi.fn(() => {
-    const stream: any = { writableEnded: false, on: vi.fn() };
+    const stream: any = { writableEnded: false, on: vi.fn(), write: vi.fn() };
     stream.end = vi.fn(() => {
       stream.writableEnded = true;
     });
@@ -25,373 +19,483 @@ vi.mock('node:fs', () => ({
 }));
 vi.mock('node:fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
+  readFile: vi.fn().mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })),
+  rm: vi.fn().mockResolvedValue(undefined),
+  readdir: vi.fn().mockResolvedValue([]),
+  unlink: vi.fn().mockResolvedValue(undefined),
 }));
 
-function createFakeChild(pid = 4242): any {
-  const child = new EventEmitter();
-  Object.assign(child, {
+import { createWriteStream, mkdirSync } from 'node:fs';
+import { readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises';
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+function createFakeProcess(pid = 424242) {
+  const stdoutListeners: ((data: Buffer) => void)[] = [];
+  const stderrListeners: ((data: Buffer) => void)[] = [];
+  const errorListeners: ((err: Error) => void)[] = [];
+  const closeListeners: ((code: number | null, signal: NodeJS.Signals | null) => void)[] = [];
+  const process: SpawnedProcess = {
     pid,
-    exitCode: null,
-    stdout: { pipe: vi.fn() },
-    stderr: { pipe: vi.fn() },
-  });
-  return child;
+    stdout: { on: (_ev: string, cb: any) => stdoutListeners.push(cb) } as any,
+    stderr: { on: (_ev: string, cb: any) => stderrListeners.push(cb) } as any,
+    stdin: { on: vi.fn(), write: vi.fn(), end: vi.fn() } as any,
+    on: (event: string, cb: any) => {
+      if (event === 'error') errorListeners.push(cb);
+      else if (event === 'close') closeListeners.push(cb);
+    },
+    kill: vi.fn(() => true),
+  };
+  return {
+    proc: process,
+    emitStdout: (data: string) => stdoutListeners.forEach((cb) => cb(Buffer.from(data))),
+    emitStderr: (data: string) => stderrListeners.forEach((cb) => cb(Buffer.from(data))),
+    emitError: (err: Error) => errorListeners.forEach((cb) => cb(err)),
+    emitClose: (code: number | null, signal: NodeJS.Signals | null = null) => closeListeners.forEach((cb) => cb(code, signal)),
+    stdin: process.stdin as any,
+  };
 }
 
 const registry: AgentRegistry = {
-  agents: { codex: { command: 'codex exec --json {{promptFile}}' } },
+  agents: { codex: { command: ['codex', 'exec', '--json', '{{promptFile}}'], stopGraceMs: 20, stopConfirmMs: 30 } },
 };
 
 describe('createAgentInvocation - startSession', () => {
   beforeEach(() => {
-    vi.mocked(spawn).mockReset();
     vi.mocked(mkdirSync).mockReset();
     vi.mocked(writeFile).mockReset().mockResolvedValue(undefined);
+    vi.mocked(createWriteStream).mockClear();
   });
 
-  it('spawns the configured command with the prompt file substituted, and records the pgid', async () => {
+  function setup(reg: AgentRegistry = registry) {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const roomAgent = Object.keys(reg.agents)[0];
+    const room = createRoom(db, 'a', [roomAgent], 'sequential');
+    const session = createSession(db, room.id, roomAgent);
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
-
-    const fakeChild = createFakeChild();
-    vi.mocked(spawn).mockReturnValue(fakeChild as any);
+    const fake = createFakeProcess();
+    const spawnProcess = vi.fn(() => fake.proc) as unknown as SpawnProcess;
     const onSessionEnded = vi.fn();
-    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
+    const onSessionExitProgress = vi.fn();
+    const invocation = createAgentInvocation({
+      db, registry: reg, onSessionEnded, onSessionExitProgress,
+      logsDir: '/logs', mcpUrl: 'http://127.0.0.1:4201', spawnProcess,
+    });
+    return { db, room, session, fake, spawnProcess, onSessionEnded, onSessionExitProgress, invocation };
+  }
 
-    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
-    await new Promise((resolve) => setImmediate(resolve));
+  it('execs the configured argv non-interactively with placeholders substituted, and records pgid/rawLogPath', async () => {
+    const { room, session, spawnProcess, invocation, db } = setup();
 
-    expect(spawn).toHaveBeenCalledTimes(1);
-    const [command, opts] = vi.mocked(spawn).mock.calls[0];
-    expect(command).toContain('codex exec --json');
-    expect(command).toContain(`violetdagger-${room.id}-${session.seq}.prompt.txt`);
-    expect(opts).toMatchObject({ shell: true, detached: true });
-    expect(getSession(db, room.id, session.seq)!.pgid).toBe(4242);
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+
+    expect(spawnProcess).toHaveBeenCalledTimes(1);
+    const [bin, args, opts] = vi.mocked(spawnProcess).mock.calls[0];
+    expect(bin).toBe('codex');
+    expect(args).toContain('exec');
+    expect(args.join(' ')).toContain(`violetdagger-${room.id}-${session.seq}.prompt.txt`);
+    expect(opts.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+    const stored = getSession(db, room.id, session.seq)!;
+    expect(stored.pgid).toBe(424242);
+    expect(stored.rawLogPath).toContain(`${room.id}/${session.seq}.jsonl`);
   });
 
-  it('reports exited-zero via onSessionEnded when the child exits with code 0', async () => {
-    const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
+  it('substitutes {{prompt}} with the prompt text as a single argv element', async () => {
+    const promptRegistry: AgentRegistry = { agents: { codex: { command: ['codex', '{{prompt}}'] } } };
+    const { room, session, spawnProcess, invocation } = setup(promptRegistry);
 
-    const fakeChild = createFakeChild();
-    vi.mocked(spawn).mockReturnValue(fakeChild as any);
-    const onSessionEnded = vi.fn();
-    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
 
-    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
-    await new Promise((resolve) => setImmediate(resolve));
-    fakeChild.exitCode = 0;
-    fakeChild.emit('exit', 0);
+    const args = vi.mocked(spawnProcess).mock.calls[0][1];
+    expect(args).toHaveLength(1);
+    expect(args[0]).toContain('authorId: codex');
+    expect(args[0]).not.toContain('{{prompt}}');
+  });
 
-    expect(onSessionEnded).toHaveBeenCalledWith({
-      roomId: room.id, seq: session.seq, agentId: 'codex',
-      result: 'exited-zero', rawLogPath: expect.stringContaining(`${room.id}/${session.seq}.log`),
+  it('writes an independent per-session mcpFile and substitutes it into env values', async () => {
+    const envRegistry: AgentRegistry = {
+      agents: {
+        opencode: {
+          command: ['opencode', 'run', '{{prompt}}'],
+          env: { OPENCODE_CONFIG: '{{mcpFile}}' },
+          mcpFile: { template: '{"mcp":{"url":"{{mcpUrl}}"}}' },
+        },
+      },
+    };
+    const { room, session, spawnProcess, invocation } = setup(envRegistry);
+
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'opencode', registryKey: 'opencode' });
+    await flush();
+
+    const opts = vi.mocked(spawnProcess).mock.calls[0][2];
+    expect(opts.env?.OPENCODE_CONFIG).toBe(`/logs/mcp/${room.id}/${session.seq}.json`);
+    expect(opts.env?.PATH).toBe(process.env.PATH);
+    // mcp template 写入时替换了 {{mcpUrl}}。
+    const mcpWrite = vi.mocked(writeFile).mock.calls.find((call) => String(call[0]).includes('/mcp/'));
+    expect(String(mcpWrite?.[1])).toContain('http://127.0.0.1:4201');
+    expect(String(mcpWrite?.[1])).not.toContain('{{mcpUrl}}');
+  });
+
+  it('resolves a configured cwd-relative mcpFile path and substitutes {{mcpFile}} into the command', async () => {
+    const pathRegistry: AgentRegistry = {
+      agents: {
+        kimi: {
+          command: ['kimi', '--mcp-config', '{{mcpFile}}'],
+          mcpFile: { path: 'relative/mcp.json', template: '{"a":1}' },
+        },
+      },
+    };
+    const { room, session, spawnProcess, invocation } = setup(pathRegistry);
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'kimi', registryKey: 'kimi' });
+    await flush();
+
+    const args = vi.mocked(spawnProcess).mock.calls[0][1];
+    expect(args[1]).toBe(path.resolve(process.cwd(), 'relative/mcp.json'));
+    expect(args[1]).not.toContain('{{mcpFile}}');
+  });
+
+  it('merges into an existing shared mcpFile without dropping other servers', async () => {
+    vi.mocked(readFile).mockResolvedValueOnce(
+      JSON.stringify({ mcpServers: { other: { url: 'http://other' } } }) as any,
+    );
+    const mergeRegistry: AgentRegistry = {
+      agents: {
+        kimi: {
+          command: ['kimi', '--auto', '-p', '{{prompt}}'],
+          mcpFile: {
+            path: '.kimi-code/mcp.json',
+            merge: true,
+            template: '{"mcpServers":{"violetdagger":{"url":"{{mcpUrl}}"}}}',
+          },
+        },
+      },
+    };
+    const { room, session, invocation } = setup(mergeRegistry);
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'kimi', registryKey: 'kimi' });
+    await flush();
+
+    const mcpWrite = vi.mocked(writeFile).mock.calls.find((call) => String(call[0]).endsWith('mcp.json'));
+    const written = JSON.parse(String(mcpWrite?.[1]));
+    expect(written.mcpServers.other).toEqual({ url: 'http://other' });
+    expect(written.mcpServers.violetdagger).toEqual({ url: 'http://127.0.0.1:4201' });
+  });
+
+  it('expands ~/.kimi-code to $KIMI_CODE_HOME when set', async () => {
+    const previous = process.env.KIMI_CODE_HOME;
+    process.env.KIMI_CODE_HOME = '/tmp/kimi-home';
+    try {
+      const kimiRegistry: AgentRegistry = {
+        agents: {
+          kimi: { command: ['kimi', '-p', '{{prompt}}'], mcpFile: { path: '~/.kimi-code/mcp.json', template: '{}' } },
+        },
+      };
+      const { room, session, invocation } = setup(kimiRegistry);
+      invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'kimi', registryKey: 'kimi' });
+      await flush();
+      const mcpWrite = vi.mocked(writeFile).mock.calls.find((call) => String(call[0]).includes('mcp.json'));
+      expect(mcpWrite?.[0]).toBe('/tmp/kimi-home/mcp.json');
+    } finally {
+      if (previous === undefined) delete process.env.KIMI_CODE_HOME;
+      else process.env.KIMI_CODE_HOME = previous;
+    }
+  });
+
+  it('records stdout/stderr as offset chunk events and reports natural exit on code 0', async () => {
+    const { room, session, fake, invocation, onSessionEnded } = setup();
+
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    fake.emitStdout('hello ');
+    fake.emitStderr('oops');
+    fake.emitClose(0);
+
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    expect(onSessionEnded.mock.calls[0][0]).toMatchObject({
+      roomId: room.id, seq: session.seq, agentId: 'codex', exitCode: 0, exitCause: 'natural',
     });
   });
 
-  it('reports exited-nonzero without spawning when the agentId is not in the registry', () => {
+  it('reports unexpected exit on nonzero close', async () => {
+    const { room, session, fake, invocation, onSessionEnded } = setup();
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    fake.emitClose(3);
+    expect(onSessionEnded.mock.calls[0][0]).toMatchObject({ exitCode: 3, exitCause: 'unexpected' });
+  });
+
+  it('reports spawn-failed when spawnProcess throws synchronously', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
-
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
     const onSessionEnded = vi.fn();
-    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
+    const invocation = createAgentInvocation({
+      db, registry, onSessionEnded, logsDir: '/logs', mcpUrl: 'http://x',
+      spawnProcess: (() => { throw new Error('ENOENT'); }) as unknown as SpawnProcess,
+    });
 
-    startSession({ roomId: room.id, seq: session.seq, agentId: 'unknown-agent' });
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
 
-    expect(spawn).not.toHaveBeenCalled();
-    expect(onSessionEnded).toHaveBeenCalledWith({
-      roomId: room.id, seq: session.seq, agentId: 'unknown-agent',
-      result: 'exited-nonzero', rawLogPath: '',
+    expect(onSessionEnded).toHaveBeenCalledTimes(1);
+    expect(onSessionEnded.mock.calls[0][0].exitCause).toBe('spawn-failed');
+  });
+
+  it('reports spawn-failed on the process error event', async () => {
+    const { room, session, fake, invocation, onSessionEnded } = setup();
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    fake.emitError(new Error('boom'));
+    expect(onSessionEnded.mock.calls[0][0].exitCause).toBe('spawn-failed');
+  });
+
+  it('reports spawn-failed without spawning when the registryKey is unknown', async () => {
+    const { room, session, spawnProcess, invocation, onSessionEnded } = setup();
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'ghost', registryKey: 'ghost' });
+    await flush();
+    expect(spawnProcess).not.toHaveBeenCalled();
+    expect(onSessionEnded.mock.calls[0][0]).toMatchObject({ exitCause: 'spawn-failed' });
+  });
+
+  it('reports spawn-failed with the real rawLogPath when prompt writing rejects, without spawning', async () => {
+    vi.mocked(writeFile).mockRejectedValueOnce(Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }));
+    const { room, session, spawnProcess, invocation, onSessionEnded } = setup();
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    expect(spawnProcess).not.toHaveBeenCalled();
+    expect(onSessionEnded.mock.calls[0][0]).toMatchObject({
+      exitCause: 'spawn-failed',
+      rawLogPath: expect.stringContaining(`${room.id}/${session.seq}.jsonl`),
     });
   });
 
-  it('does not report a second time when the exit event fires twice (idempotency)', async () => {
-    const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
+  it('writes JSONL log events with offset/stream/text', async () => {
+    const { room, session, fake, invocation } = setup();
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    fake.emitStdout('a');
+    fake.emitStderr('b');
 
-    const fakeChild = createFakeChild();
-    vi.mocked(spawn).mockReturnValue(fakeChild as any);
-    const onSessionEnded = vi.fn();
-    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
+    const stream = vi.mocked(createWriteStream).mock.results[0].value as any;
+    const written = stream.write.mock.calls.map((call: any[]) => JSON.parse(call[0]));
+    expect(written).toEqual([
+      { offset: 0, stream: 'stdout', text: 'a' },
+      { offset: 1, stream: 'stderr', text: 'b' },
+    ]);
+  });
 
-    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
-    await new Promise((resolve) => setImmediate(resolve));
-    fakeChild.emit('exit', 0);
-    fakeChild.emit('exit', 0);
-
+  it('reports only once when close fires twice (idempotency)', async () => {
+    const { room, session, fake, invocation, onSessionEnded } = setup();
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    fake.emitClose(0);
+    fake.emitClose(0);
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
   });
 
-  it('reports exited-nonzero when spawn itself fails (child process emits "error")', async () => {
+  it('does not crash when the onSessionEnded handler throws', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
-
-    const fakeChild = createFakeChild();
-    vi.mocked(spawn).mockReturnValue(fakeChild as any);
-    const onSessionEnded = vi.fn();
-    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
-
-    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
-    await new Promise((resolve) => setImmediate(resolve));
-    fakeChild.emit('error', new Error('ENOENT'));
-
-    expect(onSessionEnded).toHaveBeenCalledWith({
-      roomId: room.id, seq: session.seq, agentId: 'codex',
-      result: 'exited-nonzero', rawLogPath: expect.stringContaining(`${room.id}/${session.seq}.log`),
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
+    const fake = createFakeProcess();
+    const onSessionEnded = vi.fn(() => { throw new Error('handler boom'); });
+    const invocation = createAgentInvocation({
+      db, registry, onSessionEnded, logsDir: '/logs', mcpUrl: 'http://x',
+      spawnProcess: (() => fake.proc) as unknown as SpawnProcess,
     });
-  });
-
-  it('does not report twice when both "error" and "exit" fire for the same spawn failure (idempotency)', async () => {
-    const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
-
-    const fakeChild = createFakeChild();
-    vi.mocked(spawn).mockReturnValue(fakeChild as any);
-    const onSessionEnded = vi.fn();
-    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
-
-    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
-    await new Promise((resolve) => setImmediate(resolve));
-    fakeChild.emit('error', new Error('ENOENT'));
-    fakeChild.emit('exit', 1);
-
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    expect(() => fake.emitClose(0)).not.toThrow();
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
   });
 
-  it('reports exited-nonzero via onSessionEnded (with the real rawLogPath) when writePromptFile rejects, without spawning', async () => {
-    const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
-
-    vi.mocked(writeFile).mockRejectedValueOnce(new Error('ENOSPC: no space left on device'));
-    const onSessionEnded = vi.fn();
-    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
-
-    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
-    await new Promise((resolve) => setImmediate(resolve));
-
-    expect(spawn).not.toHaveBeenCalled();
-    expect(onSessionEnded).toHaveBeenCalledTimes(1);
-    expect(onSessionEnded).toHaveBeenCalledWith({
-      roomId: room.id, seq: session.seq, agentId: 'codex',
-      result: 'exited-nonzero', rawLogPath: expect.stringContaining(`${room.id}/${session.seq}.log`),
-    });
-  });
-
-  it('ends the log stream on "close" (stdio fully drained), not on "exit", and never ends it twice', async () => {
-    const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
-
-    const fakeChild = createFakeChild();
-    vi.mocked(spawn).mockReturnValue(fakeChild as any);
-    const onSessionEnded = vi.fn();
-    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
-
-    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
-    await new Promise((resolve) => setImmediate(resolve));
-
-    const logStream = vi.mocked(createWriteStream).mock.results.at(-1)!.value as any;
-
-    fakeChild.emit('exit', 0);
-    expect(logStream.end).not.toHaveBeenCalled();
-
-    fakeChild.emit('close', 0);
-    expect(logStream.end).toHaveBeenCalledTimes(1);
-
-    // 'error' 兜底路径与 'close' 共存时也不能重复 end（writableEnded 守卫）
-    fakeChild.emit('error', new Error('late error'));
-    expect(logStream.end).toHaveBeenCalledTimes(1);
-  });
-
-  it('reports exited-nonzero, without recording a pgid, when spawn returns a child with no pid', async () => {
-    const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
-
-    // spawn 同步失败（EAGAIN/EMFILE 等）时 Node 返回的 child 没有 pid
-    const fakeChild = createFakeChild();
-    fakeChild.pid = undefined;
-    vi.mocked(spawn).mockReturnValue(fakeChild as any);
-    const onSessionEnded = vi.fn();
-    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
-
-    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
-    await new Promise((resolve) => setImmediate(resolve));
-
-    expect(getSession(db, room.id, session.seq)!.pgid).toBeNull();
-    expect(onSessionEnded).toHaveBeenCalledWith({
-      roomId: room.id, seq: session.seq, agentId: 'codex',
-      result: 'exited-nonzero', rawLogPath: expect.stringContaining(`${room.id}/${session.seq}.log`),
-    });
-
-    // 监听器已在 spawn 之后立刻挂好：随后的 'error' 有人接，且不会重复上报
-    fakeChild.emit('error', new Error('EAGAIN'));
-    expect(onSessionEnded).toHaveBeenCalledTimes(1);
-  });
-
-  it('creates the log directory before opening the log stream, and attaches an error listener on it', async () => {
-    const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
-
-    const fakeChild = createFakeChild();
-    vi.mocked(spawn).mockReturnValue(fakeChild as any);
-    const onSessionEnded = vi.fn();
-    const { startSession } = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
-
-    startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
-    await new Promise((resolve) => setImmediate(resolve));
-
-    expect(mkdirSync).toHaveBeenCalledWith(`/logs/${room.id}`, { recursive: true });
-    expect(spawn).toHaveBeenCalledTimes(1);
+  it('delivers the prompt via stdin and closes stdin when promptVia is stdin', async () => {
+    const stdinRegistry: AgentRegistry = { agents: { kimi: { command: ['kimi', '--auto'], promptVia: 'stdin' } } };
+    const { room, session, fake, spawnProcess, invocation } = setup(stdinRegistry);
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'kimi', registryKey: 'kimi' });
+    await flush();
+    expect(spawnProcess.mock.calls[0][2].stdio).toEqual(['pipe', 'pipe', 'pipe']);
+    expect(fake.stdin.write).toHaveBeenCalledTimes(1);
+    expect(fake.stdin.write.mock.calls[0][0]).toContain('authorId: kimi');
+    expect(fake.stdin.end).toHaveBeenCalled();
   });
 });
 
-describe('createAgentInvocation - killSession', () => {
+describe('createAgentInvocation - attachSessionLog', () => {
   beforeEach(() => {
-    vi.mocked(spawn).mockReset();
+    vi.mocked(createWriteStream).mockClear();
+    vi.mocked(writeFile).mockReset().mockResolvedValue(undefined);
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.restoreAllMocks();
-  });
-
-  async function startFakeSession(db: ReturnType<typeof createTestDb>, roomId: number, seq: number) {
-    const fakeChild = createFakeChild();
-    vi.mocked(spawn).mockReturnValue(fakeChild as any);
-    const onSessionEnded = vi.fn();
-    const invocation = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
-    invocation.startSession({ roomId, seq, agentId: 'codex' });
-    await new Promise((resolve) => setImmediate(resolve));
-    return { invocation, fakeChild, onSessionEnded };
+  function setup() {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
+    const fake = createFakeProcess();
+    const invocation = createAgentInvocation({
+      db, registry, onSessionEnded: vi.fn(), logsDir: '/logs', mcpUrl: 'http://x',
+      spawnProcess: (() => fake.proc) as unknown as SpawnProcess,
+    });
+    return { db, room, session, fake, invocation };
   }
 
-  it('returns killed:false with an empty rawLogPath for an unknown session', async () => {
-    const db = createTestDb();
-    const invocation = createAgentInvocation({ db, registry, onSessionEnded: vi.fn(), logsDir: '/logs' });
-    const result = await invocation.killSession(999, 1);
-    expect(result).toEqual({ killed: false, rawLogPath: '' });
+  it('returns null for an unknown session', () => {
+    const { invocation } = setup();
+    expect(invocation.attachSessionLog(1, 99)).toBeNull();
   });
 
-  it('sends SIGTERM and does not SIGKILL if the process already exited within the grace period', async () => {
+  it('exposes snapshot + incremental chunks + exit and has no write/resize', async () => {
+    const { room, session, fake, invocation } = setup();
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    fake.emitStdout('first');
+
+    const handle = invocation.attachSessionLog(room.id, session.seq)!;
+    expect(handle.snapshot()).toEqual({ chunks: [{ offset: 0, stream: 'stdout', text: 'first' }], truncated: false });
+    expect((handle as any).write).toBeUndefined();
+    expect((handle as any).resize).toBeUndefined();
+
+    const received: number[] = [];
+    const exits: number[] = [];
+    handle.onData((chunk) => received.push(chunk.offset));
+    handle.onExit((event) => exits.push(event.exitCode ?? -1));
+    fake.emitStdout('second');
+    fake.emitClose(0, null);
+
+    expect(received).toEqual([1]);
+    expect(exits).toEqual([0]);
+  });
+
+  it('returns null once the session has exited', async () => {
+    const { room, session, fake, invocation } = setup();
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    fake.emitClose(0);
+    expect(invocation.attachSessionLog(room.id, session.seq)).toBeNull();
+  });
+});
+
+describe('createAgentInvocation - stopSessionProcess', () => {
+  beforeEach(() => {
+    vi.mocked(createWriteStream).mockClear();
+    vi.mocked(writeFile).mockReset().mockResolvedValue(undefined);
+  });
+
+  function setup(stopGraceMs = 20, stopConfirmMs = 30) {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
-    const { invocation, fakeChild } = await startFakeSession(db, room.id, session.seq);
+    const fake = createFakeProcess();
+    const reg: AgentRegistry = { agents: { codex: { command: ['codex'], stopGraceMs, stopConfirmMs } } };
+    const invocation = createAgentInvocation({
+      db, registry: reg, onSessionEnded: vi.fn(), logsDir: '/logs', mcpUrl: 'http://x',
+      spawnProcess: (() => fake.proc) as unknown as SpawnProcess,
+    });
+    return { db, room, session, fake, invocation };
+  }
 
-    vi.useFakeTimers();
-    const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true as any);
-
-    const resultPromise = invocation.killSession(room.id, session.seq);
-    fakeChild.exitCode = 0;
-    await vi.advanceTimersByTimeAsync(2000);
-    const result = await resultPromise;
-
-    expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
-    expect(killSpy).not.toHaveBeenCalledWith(-4242, 'SIGKILL');
-    expect(result.killed).toBe(true);
+  it('returns unconfirmed for an unknown session', async () => {
+    const { invocation } = setup();
+    await expect(invocation.stopSessionProcess(1, 99)).resolves.toMatchObject({ confirmed: false });
   });
 
-  it('sends SIGKILL if the process is still alive after the grace period', async () => {
+  it('sends SIGTERM and returns managed-stop when the process exits within the grace period', async () => {
+    const { room, session, fake, invocation } = setup();
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+
+    const pending = invocation.stopSessionProcess(room.id, session.seq);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    fake.emitClose(null, 'SIGTERM');
+    const result = await pending;
+
+    expect(fake.proc.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(fake.proc.kill).not.toHaveBeenCalledWith('SIGKILL');
+    expect(result).toMatchObject({ confirmed: true, exit: { exitCause: 'managed-stop', signal: 'SIGTERM' } });
+  });
+
+  it('escalates to SIGKILL when still alive after the grace period', async () => {
+    const { room, session, fake, invocation } = setup(5, 200);
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+
+    const pending = invocation.stopSessionProcess(room.id, session.seq);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(fake.proc.kill).toHaveBeenCalledWith('SIGKILL');
+    fake.emitClose(null, 'SIGKILL');
+    await expect(pending).resolves.toMatchObject({ confirmed: true, exit: { exitCause: 'managed-stop' } });
+  });
+
+  it('reports cleanup_failed and returns unconfirmed when exit cannot be confirmed', async () => {
+    const { room, session, invocation } = setup(5, 5);
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    const result = await invocation.stopSessionProcess(room.id, session.seq);
+    expect(result).toMatchObject({ confirmed: false });
+  });
+
+  it('cancels startup (not-started) when terminated during the prompt-write window', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
-    const { invocation } = await startFakeSession(db, room.id, session.seq);
+    let releasePrepare: () => void = () => {};
+    vi.mocked(writeFile).mockImplementationOnce(() => new Promise<void>((resolve) => { releasePrepare = resolve; }));
+    const fake = createFakeProcess();
+    const spawnProcess = vi.fn(() => fake.proc) as unknown as SpawnProcess;
+    const invocation = createAgentInvocation({
+      db, registry, onSessionEnded: vi.fn(), logsDir: '/logs', mcpUrl: 'http://x', spawnProcess,
+    });
 
-    vi.useFakeTimers();
-    const killSpy = vi.spyOn(process, 'kill').mockReturnValue(true as any);
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    const result = await invocation.stopSessionProcess(room.id, session.seq);
+    releasePrepare();
+    await flush();
 
-    const resultPromise = invocation.killSession(room.id, session.seq);
-    await vi.advanceTimersByTimeAsync(2000);
-    const result = await resultPromise;
-
-    expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGTERM');
-    expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL');
-    expect(result.rawLogPath).toContain(`${room.id}/${session.seq}.log`);
+    expect(result).toMatchObject({ confirmed: true, exit: { exitCause: 'not-started' } });
+    expect(spawnProcess).not.toHaveBeenCalled();
   });
 
-  it('does not report via onSessionEnded when the child exits after killSession has already resolved it', async () => {
-    const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
-    const { invocation, fakeChild, onSessionEnded } = await startFakeSession(db, room.id, session.seq);
+  it('shares a single cleanup promise across concurrent stop requests', async () => {
+    const { room, session, fake, invocation } = setup(50, 50);
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
 
-    vi.useFakeTimers();
-    vi.spyOn(process, 'kill').mockReturnValue(true as any);
+    const first = invocation.stopSessionProcess(room.id, session.seq);
+    const second = invocation.stopSessionProcess(room.id, session.seq);
+    expect(first).toBe(second);
+    fake.emitClose(null, 'SIGTERM');
+    await first;
+  });
+});
 
-    const resultPromise = invocation.killSession(room.id, session.seq);
-    await vi.advanceTimersByTimeAsync(2000);
-    await resultPromise;
-
-    // 被杀掉的进程随后自然退出——resolved 已在发信号前置位，这次 'exit' 必须是 no-op
-    fakeChild.exitCode = 143;
-    fakeChild.emit('exit', 143);
-
-    expect(onSessionEnded).not.toHaveBeenCalled();
+describe('createAgentInvocation - deleteRoomArtifacts', () => {
+  afterEach(() => {
+    vi.mocked(rm).mockClear();
+    vi.mocked(readdir).mockClear();
+    vi.mocked(unlink).mockClear();
   });
 
-  it('does not spawn an orphan when killSession lands during the prompt-write window', async () => {
+  it('removes room logs, per-session mcp configs, and prompt files only', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
+    vi.mocked(readdir).mockResolvedValueOnce(['violetdagger-1-1.prompt.txt', 'other.txt'] as any);
+    const invocation = createAgentInvocation({
+      db, registry, onSessionEnded: vi.fn(), logsDir: '/logs', mcpUrl: 'http://x', promptDir: '/logs/prompts',
+    });
 
-    let releaseWrite: () => void = () => {};
-    vi.mocked(writeFile).mockImplementationOnce(
-      () => new Promise<void>((resolve) => { releaseWrite = () => resolve(); }) as any,
-    );
+    await invocation.deleteRoomArtifacts(1);
 
-    vi.mocked(spawn).mockReturnValue(createFakeChild() as any);
-    const onSessionEnded = vi.fn();
-    const invocation = createAgentInvocation({ db, registry, onSessionEnded, logsDir: '/logs' });
-
-    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex' });
-    const result = await invocation.killSession(room.id, session.seq);
-
-    expect(result.killed).toBe(false);
-    expect(result.rawLogPath).toContain(`${room.id}/${session.seq}.log`);
-
-    releaseWrite();
-    await new Promise((resolve) => setImmediate(resolve));
-
-    expect(spawn).not.toHaveBeenCalled();
-    expect(onSessionEnded).not.toHaveBeenCalled();
-  });
-
-  it('returns killed:false when SIGTERM itself throws, but still waits out the grace period', async () => {
-    const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
-    const { invocation } = await startFakeSession(db, room.id, session.seq);
-
-    vi.useFakeTimers();
-    vi.spyOn(process, 'kill').mockImplementation(() => { throw new Error('ESRCH'); });
-
-    const resultPromise = invocation.killSession(room.id, session.seq);
-    await vi.advanceTimersByTimeAsync(2000);
-    const result = await resultPromise;
-
-    expect(result.killed).toBe(false);
+    expect(vi.mocked(rm).mock.calls.map((call) => call[0])).toEqual([
+      '/logs/1',
+      path.join('/logs', 'mcp', '1'),
+    ]);
+    expect(vi.mocked(unlink)).toHaveBeenCalledWith('/logs/prompts/violetdagger-1-1.prompt.txt');
+    expect(vi.mocked(unlink)).not.toHaveBeenCalledWith('/logs/prompts/other.txt');
   });
 });

@@ -1,11 +1,12 @@
 export * from './types';
 export { createDb, createTestDb } from './db';
 export {
-  createRoom, getRoom, listRooms, setRoomStatus, increaseMaxSessions,
-  getRoomAgents, setAgentState,
+  createRoom, getRoom, listRooms, setRoomStatus, increaseMaxSessions, deleteRoom, assignInstanceIds,
+  getRoomAgents, setAgentState, setAgentEnabled,
 } from './rooms';
 export {
-  createSession, setSessionPgid, finishSession, getSession, listSessions, countSessions,
+  createSession, setSessionPgid, setSessionRawLogPath, finishSession, getSession, listSessions, countSessions,
+  markSessionTerminating, markSessionCleanupStarted, appendSessionEvent, listSessionEvents,
 } from './sessions';
 export {
   insertMessage, getMessageById, getFirstMessage, getMessagesBySession, listMessages,

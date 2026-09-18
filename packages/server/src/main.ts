@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import type { Server as HttpServer } from 'node:http';
 import { composeApp, startApp } from './orchestrator-api';
@@ -20,10 +21,14 @@ function addressPort(server: HttpServer | undefined): number | string | undefine
 const HTTP_PORT = readPort('VIOLETDAGGER_HTTP_PORT', 4200);
 const MCP_PORT = readPort('VIOLETDAGGER_MCP_PORT', 4201);
 
+// server 包根目录（src/ 或 dist/ 的上一级），不随启动时的 cwd 变化。
+const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
 const app = composeApp({
   dbPath: process.env.VIOLETDAGGER_DB_PATH ?? path.join(process.cwd(), 'violetdagger.db'),
   agentsConfigPath: process.env.VIOLETDAGGER_AGENTS_CONFIG ?? path.join(process.cwd(), 'agents.config.json'),
-  logsDir: process.env.VIOLETDAGGER_LOGS_DIR ?? path.join(process.cwd(), 'logs'),
+  logsDir: process.env.VIOLETDAGGER_LOGS_DIR ?? path.join(SERVER_ROOT, 'logs'),
+  mcpUrl: `http://127.0.0.1:${MCP_PORT}`,
 });
 
 startApp(app, { httpPort: HTTP_PORT, mcpPort: MCP_PORT })

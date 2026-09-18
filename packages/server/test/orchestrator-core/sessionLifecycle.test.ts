@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createTestDb } from '../../src/storage/db';
-import { createRoom, getRoomAgents, setAgentState } from '../../src/storage/rooms';
-import { createSession, getSession } from '../../src/storage/sessions';
+import { createRoom, getRoomAgents, setAgentState, setRoomStatus } from '../../src/storage/rooms';
+import { createSession, getSession, listSessionEvents } from '../../src/storage/sessions';
 import { insertMessage, getMessagesBySession, getActiveExploring } from '../../src/storage/messages';
 import { createStuckCounter } from '../../src/orchestrator-core/stuckCounter';
+import { createFailureCounter } from '../../src/orchestrator-core/failureCounter';
 import { onSessionEnded, terminateAgentSession } from '../../src/orchestrator-core/sessionLifecycle';
+import { setAgentEnabled } from '../../src/orchestrator-core/agentControl';
+import type { SessionExitEvent } from '../../src/agent-invocation';
 import { roomEvents } from '../../src/events';
 
 afterEach(() => {
@@ -13,40 +16,37 @@ afterEach(() => {
   roomEvents.removeAllListeners('memoryUpdate');
 });
 
+function exitEvent(roomId: number, seq: number, agentId: string, overrides: Partial<SessionExitEvent> = {}): SessionExitEvent {
+  return {
+    roomId, seq, agentId, exitCode: 0, signal: null,
+    exitCause: 'natural', rawLogPath: `/logs/${roomId}/${seq}.jsonl`, ...overrides,
+  };
+}
+
 describe('onSessionEnded', () => {
-  it('marks the session completed when it exited zero and posted a typed message', () => {
+  it('marks the session completed when it exited naturally and posted a typed message', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'a fact', type: 'fact' });
 
-    onSessionEnded(
-      db,
-      { roomId: room.id, seq: session.seq, agentId: 'codex', result: 'exited-zero', rawLogPath: '/logs/1.jsonl' },
-      vi.fn(),
-      createStuckCounter(),
-    );
+    onSessionEnded(db, exitEvent(room.id, session.seq, 'codex'), vi.fn(), createStuckCounter(), createFailureCounter());
 
     expect(getSession(db, room.id, session.seq)!.outcome).toBe('completed');
   });
 
-  it('marks the session passed when it exited zero without any typed message', () => {
+  it('marks the session passed when it exited naturally without any typed message', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'just chatting' });
 
-    onSessionEnded(
-      db,
-      { roomId: room.id, seq: session.seq, agentId: 'codex', result: 'exited-zero', rawLogPath: '/logs/1.jsonl' },
-      vi.fn(),
-      createStuckCounter(),
-    );
+    onSessionEnded(db, exitEvent(room.id, session.seq, 'codex'), vi.fn(), createStuckCounter(), createFailureCounter());
 
     expect(getSession(db, room.id, session.seq)!.outcome).toBe('passed');
   });
 
-  it('marks the session error and inserts a system message on nonzero exit', () => {
+  it('marks the session error, records process_exited, and inserts a system message on unexpected exit', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
@@ -58,39 +58,90 @@ describe('onSessionEnded', () => {
 
     onSessionEnded(
       db,
-      { roomId: room.id, seq: session.seq, agentId: 'codex', result: 'exited-nonzero', rawLogPath: '/logs/1.jsonl' },
+      exitEvent(room.id, session.seq, 'codex', { exitCode: 1, exitCause: 'unexpected' }),
       vi.fn(),
-      createStuckCounter(),
+      createStuckCounter(), createFailureCounter(),
     );
 
     expect(getSession(db, room.id, session.seq)!.outcome).toBe('error');
     const messages = getMessagesBySession(db, room.id, session.seq);
     expect(messages.some((m) => m.authorId === 'system')).toBe(true);
+    expect(listSessionEvents(db, room.id, session.seq).some((e) => e.kind === 'process_exited')).toBe(true);
 
     expect(messageListener).toHaveBeenCalledTimes(1);
-    expect(messageListener.mock.calls[0][0]).toMatchObject({ roomId: room.id });
     expect(messageListener.mock.calls[0][0].message.authorId).toBe('system');
     expect(roomStatusListener).toHaveBeenCalledWith({ roomId: room.id });
+  });
+
+  it('settles a stopping session with stopIntent=terminate as terminated', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    setAgentState(db, room.id, 'codex', 'stopping', session.seq);
+    db.prepare(`UPDATE sessions SET outcome = 'stopping', stop_intent = 'terminate' WHERE room_id = ? AND seq = ?`)
+      .run(room.id, session.seq);
+
+    onSessionEnded(
+      db,
+      exitEvent(room.id, session.seq, 'codex', { exitCode: null, signal: 'SIGTERM', exitCause: 'managed-stop' }),
+      vi.fn(),
+      createStuckCounter(), createFailureCounter(),
+    );
+
+    expect(getSession(db, room.id, session.seq)!.outcome).toBe('terminated');
+    const events = listSessionEvents(db, room.id, session.seq).map((e) => e.kind);
+    expect(events).toContain('process_exited');
+    expect(events).toContain('terminated');
+  });
+
+  it('auto-disables an agent after 3 consecutive errors', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    setRoomStatus(db, room.id, 'paused_manual'); // 避免结算后立刻再派发
+    const failureCounter = createFailureCounter();
+
+    for (let i = 0; i < 3; i += 1) {
+      const session = createSession(db, room.id, 'codex');
+      setAgentState(db, room.id, 'codex', 'running', session.seq);
+      onSessionEnded(
+        db, exitEvent(room.id, session.seq, 'codex', { exitCause: 'unexpected' }),
+        vi.fn(), createStuckCounter(), failureCounter,
+      );
+    }
+
+    expect(getRoomAgents(db, room.id).find((a) => a.agentId === 'codex')!.dispatchEnabled).toBe(false);
+    expect(failureCounter.get(room.id, 'codex')).toBe(0);
+  });
+
+  it('resets the failure count on a non-error outcome', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    setRoomStatus(db, room.id, 'paused_manual');
+    const failureCounter = createFailureCounter();
+
+    const failed = createSession(db, room.id, 'codex');
+    setAgentState(db, room.id, 'codex', 'running', failed.seq);
+    onSessionEnded(
+      db, exitEvent(room.id, failed.seq, 'codex', { exitCause: 'unexpected' }),
+      vi.fn(), createStuckCounter(), failureCounter,
+    );
+    expect(failureCounter.get(room.id, 'codex')).toBe(1);
+
+    const ok = createSession(db, room.id, 'codex');
+    setAgentState(db, room.id, 'codex', 'running', ok.seq);
+    onSessionEnded(db, exitEvent(room.id, ok.seq, 'codex'), vi.fn(), createStuckCounter(), failureCounter);
+
+    expect(failureCounter.get(room.id, 'codex')).toBe(0);
+    expect(getRoomAgents(db, room.id).find((a) => a.agentId === 'codex')!.dispatchEnabled).toBe(true);
   });
 
   it('is idempotent when the session has already finished', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
-    onSessionEnded(
-      db,
-      { roomId: room.id, seq: session.seq, agentId: 'codex', result: 'exited-zero', rawLogPath: '/logs/1.jsonl' },
-      vi.fn(),
-      createStuckCounter(),
-    );
-    const startSession = vi.fn();
+    onSessionEnded(db, exitEvent(room.id, session.seq, 'codex'), vi.fn(), createStuckCounter(), createFailureCounter());
 
-    onSessionEnded(
-      db,
-      { roomId: room.id, seq: session.seq, agentId: 'codex', result: 'exited-nonzero', rawLogPath: '/logs/2.jsonl' },
-      startSession,
-      createStuckCounter(),
-    );
+    onSessionEnded(db, exitEvent(room.id, session.seq, 'codex', { exitCause: 'unexpected' }), vi.fn(), createStuckCounter(), createFailureCounter());
 
     expect(getSession(db, room.id, session.seq)!.outcome).toBe('passed'); // unchanged from first call
   });
@@ -101,68 +152,68 @@ describe('onSessionEnded', () => {
     const session = createSession(db, room.id, 'codex');
     const startSession = vi.fn();
 
-    onSessionEnded(
-      db,
-      { roomId: room.id, seq: session.seq, agentId: 'codex', result: 'exited-zero', rawLogPath: '/logs/1.jsonl' },
-      startSession,
-      createStuckCounter(),
-    );
+    onSessionEnded(db, exitEvent(room.id, session.seq, 'codex'), startSession, createStuckCounter(), createFailureCounter());
 
     expect(startSession).toHaveBeenCalled();
   });
 });
 
 describe('terminateAgentSession', () => {
-  it('kills the process, marks the session terminated, completes active exploring, and frees the agent', async () => {
+  function stopConfirmed(roomId: number, seq: number, agentId: string) {
+    return vi.fn().mockResolvedValue({
+      confirmed: true,
+      exit: exitEvent(roomId, seq, agentId, { exitCode: null, signal: 'SIGTERM', exitCause: 'managed-stop' }),
+    });
+  }
+
+  it('marks the session terminated, completes active exploring, and frees the agent', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['claude', 'codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
+    setAgentState(db, room.id, 'codex', 'running', session.seq);
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'exploring X', type: 'exploring' });
-    const killSession = vi.fn().mockResolvedValue({ rawLogPath: '/logs/1.jsonl' });
+    const stopSessionProcess = stopConfirmed(room.id, session.seq, 'codex');
     const startSession = vi.fn();
 
     const memoryUpdateListener = vi.fn();
     roomEvents.once('memoryUpdate', memoryUpdateListener);
 
-    await terminateAgentSession(db, room.id, session.seq, killSession, startSession, createStuckCounter());
+    await terminateAgentSession(db, room.id, session.seq, stopSessionProcess, startSession, createStuckCounter(), createFailureCounter());
 
-    expect(killSession).toHaveBeenCalledWith(room.id, session.seq);
+    expect(stopSessionProcess).toHaveBeenCalledWith(room.id, session.seq);
     expect(getSession(db, room.id, session.seq)!.outcome).toBe('terminated');
-    const active = getActiveExploring(db, room.id);
-    expect(active).toEqual([]);
+    expect(getActiveExploring(db, room.id)).toEqual([]);
     expect(memoryUpdateListener).toHaveBeenCalledTimes(1);
-    expect(memoryUpdateListener.mock.calls[0][0]).toMatchObject({ roomId: room.id });
+    // claude (join order 0) is dispatched after codex is freed, so codex settles idle.
+    expect(getRoomAgents(db, room.id).find((a) => a.agentId === 'codex')).toMatchObject({ state: 'idle' });
   });
 
-  it('still terminates cleanly and dispatches when killSession rejects', async () => {
+  it('keeps stopping and throws when cleanup cannot be confirmed', async () => {
     const db = createTestDb();
-    // 'claude' has lower join order than 'codex', so once codex is freed and
-    // re-dispatch runs, claude (already idle) is picked first, letting us
-    // observe codex settle at 'idle' rather than immediately being re-dispatched.
-    const room = createRoom(db, 'a', ['claude', 'codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
-    const killSession = vi.fn().mockRejectedValue(new Error('ESRCH'));
-    const startSession = vi.fn();
+    const stopSessionProcess = vi.fn().mockResolvedValue({ confirmed: false, error: 'still running', rawLogPath: '/logs/x' });
 
-    await terminateAgentSession(db, room.id, session.seq, killSession, startSession, createStuckCounter());
+    await expect(
+      terminateAgentSession(db, room.id, session.seq, stopSessionProcess, vi.fn(), createStuckCounter(), createFailureCounter()),
+    ).rejects.toThrow(/still running/);
 
-    expect(getSession(db, room.id, session.seq)!.outcome).toBe('terminated');
-    expect(getRoomAgents(db, room.id).find((a) => a.agentId === 'codex')).toMatchObject({ state: 'idle' });
-    expect(startSession).toHaveBeenCalled();
+    expect(getSession(db, room.id, session.seq)!.outcome).toBe('stopping');
+    expect(getRoomAgents(db, room.id).find((a) => a.agentId === 'codex')).toMatchObject({ state: 'stopping' });
   });
 
   it('is idempotent when the session has already finished', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
-    const killSession = vi.fn().mockResolvedValue({ rawLogPath: null });
-    await terminateAgentSession(db, room.id, session.seq, killSession, vi.fn(), createStuckCounter());
+    const stopSessionProcess = stopConfirmed(room.id, session.seq, 'codex');
+    await terminateAgentSession(db, room.id, session.seq, stopSessionProcess, vi.fn(), createStuckCounter(), createFailureCounter());
 
-    killSession.mockClear();
-    await terminateAgentSession(db, room.id, session.seq, killSession, vi.fn(), createStuckCounter());
+    stopSessionProcess.mockClear();
+    await terminateAgentSession(db, room.id, session.seq, stopSessionProcess, vi.fn(), createStuckCounter(), createFailureCounter());
 
-    expect(killSession).not.toHaveBeenCalled();
+    expect(stopSessionProcess).not.toHaveBeenCalled();
   });
 
   it('triggers a dispatch check after cleanup', async () => {
@@ -172,12 +223,34 @@ describe('terminateAgentSession', () => {
     const startSession = vi.fn();
 
     await terminateAgentSession(
-      db, room.id, session.seq,
-      vi.fn().mockResolvedValue({ rawLogPath: null }),
-      startSession,
-      createStuckCounter(),
+      db, room.id, session.seq, stopConfirmed(room.id, session.seq, 'codex'), startSession, createStuckCounter(), createFailureCounter(),
     );
 
     expect(startSession).toHaveBeenCalled();
+  });
+});
+
+describe('setAgentEnabled', () => {
+  it('re-enables an agent, clears its failure count, and triggers dispatch', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    setAgentEnabled(db, room.id, 'codex', false, vi.fn(), createStuckCounter(), createFailureCounter());
+    const failureCounter = createFailureCounter();
+    failureCounter.increment(room.id, 'codex');
+    const startSession = vi.fn();
+
+    setAgentEnabled(db, room.id, 'codex', true, startSession, createStuckCounter(), failureCounter);
+
+    expect(getRoomAgents(db, room.id).find((a) => a.agentId === 'codex')!.dispatchEnabled).toBe(true);
+    expect(failureCounter.get(room.id, 'codex')).toBe(0);
+    expect(startSession).toHaveBeenCalledWith({ roomId: room.id, seq: 1, agentId: 'codex', registryKey: 'codex' });
+  });
+
+  it('throws for an unknown agent', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    expect(() =>
+      setAgentEnabled(db, room.id, 'ghost', true, vi.fn(), createStuckCounter(), createFailureCounter()),
+    ).toThrow(/not found/);
   });
 });

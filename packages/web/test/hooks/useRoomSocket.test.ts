@@ -147,6 +147,67 @@ describe('useRoomSocket', () => {
     vi.useRealTimers();
   });
 
+  it('increments reconnectCount after a reconnect', () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useRoomSocket(7));
+    act(() => {
+      FakeWebSocket.instances[0].open();
+    });
+    expect(result.current.reconnectCount).toBe(0);
+
+    act(() => {
+      FakeWebSocket.instances[0].onclose?.();
+    });
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    act(() => {
+      FakeWebSocket.instances[1].open();
+    });
+    expect(result.current.reconnectCount).toBe(1);
+    vi.useRealTimers();
+  });
+
+  it('resends calls issued while disconnected once the socket reconnects', async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useRoomSocket(7));
+    act(() => {
+      FakeWebSocket.instances[0].open();
+    });
+    act(() => {
+      FakeWebSocket.instances[0].onclose?.();
+    });
+
+    let resolved: any;
+    let promise: Promise<any>;
+    act(() => {
+      promise = result.current.call('pauseRoom');
+      promise.then((r) => (resolved = r));
+    });
+    expect(FakeWebSocket.instances[0].sent).toHaveLength(0);
+
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    const ws2 = FakeWebSocket.instances[1];
+    act(() => {
+      ws2.open();
+    });
+
+    expect(ws2.sent).toHaveLength(1);
+    const envelope = JSON.parse(ws2.sent[0]);
+    expect(envelope.method).toBe('pauseRoom');
+
+    act(() => {
+      ws2.emit({ id: envelope.id, result: { ok: true } });
+    });
+    await act(async () => {
+      await promise;
+    });
+    expect(resolved).toEqual({ ok: true });
+    vi.useRealTimers();
+  });
+
   it('queues call() while CONNECTING and flushes it in order once the socket opens', async () => {
     const { result } = renderHook(() => useRoomSocket(7));
     const ws = FakeWebSocket.instances[0];

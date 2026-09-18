@@ -5,8 +5,8 @@ const SUMMARY_MAX_LEN = 80;
 
 export function mapMessageRow(db: Database.Database, row: any): Message {
   const refs = db
-    .prepare(`SELECT referenced_message_id FROM message_references WHERE message_id = ?`)
-    .all(row.id) as { referenced_message_id: number }[];
+    .prepare(`SELECT referenced_message_id FROM message_references WHERE room_id = ? AND message_id = ?`)
+    .all(row.room_id, row.id) as { referenced_message_id: number }[];
   return {
     id: row.id,
     roomId: row.room_id,
@@ -23,8 +23,9 @@ export function mapMessageRow(db: Database.Database, row: any): Message {
   };
 }
 
-export function getMessageById(db: Database.Database, id: number): Message | null {
-  const row = db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id);
+// 消息 id 是 room 内自增（见 docs/design/01-storage.md §5.5），所以必须带 roomId。
+export function getMessageById(db: Database.Database, roomId: number, id: number): Message | null {
+  const row = db.prepare(`SELECT * FROM messages WHERE room_id = ? AND id = ?`).get(roomId, id);
   return row ? mapMessageRow(db, row) : null;
 }
 
@@ -36,7 +37,7 @@ export function insertMessage(
   const summary = params.summary ?? params.content.slice(0, SUMMARY_MAX_LEN);
   const exploringStatus = params.type === 'exploring' ? 'active' : null;
 
-  const messageId = db.transaction(() => {
+  const result = db.transaction(() => {
     let supersededExploringId: number | null = null;
 
     if (params.type === 'exploring') {
@@ -46,34 +47,37 @@ export function insertMessage(
         )
         .get(params.roomId, params.authorId) as { id: number } | undefined;
       if (prev) {
-        db.prepare(`UPDATE messages SET exploring_status = 'completed' WHERE id = ?`).run(prev.id);
+        db.prepare(`UPDATE messages SET exploring_status = 'completed' WHERE room_id = ? AND id = ?`)
+          .run(params.roomId, prev.id);
         supersededExploringId = prev.id;
       }
     }
 
-    const info = db
-      .prepare(
-        `INSERT INTO messages (room_id, session_seq, author_id, type, content, summary, target_message_id, exploring_status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        params.roomId, params.sessionSeq, params.authorId, params.type ?? null,
-        params.content, summary, params.targetMessageId ?? null, exploringStatus, createdAt,
-      );
-    const id = info.lastInsertRowid as number;
+    // room 内自增 id，在同一事务内生成，配合主键 (room_id, id) 保证并发也不会重复。
+    const next = db
+      .prepare(`SELECT COALESCE(MAX(id), 0) + 1 AS nextId FROM messages WHERE room_id = ?`)
+      .get(params.roomId) as { nextId: number };
+    const id = next.nextId;
+
+    db.prepare(
+      `INSERT INTO messages (room_id, id, session_seq, author_id, type, content, summary, target_message_id, exploring_status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      params.roomId, id, params.sessionSeq, params.authorId, params.type ?? null,
+      params.content, summary, params.targetMessageId ?? null, exploringStatus, createdAt,
+    );
 
     if (params.referencedMessageIds?.length) {
       const insertRef = db.prepare(
-        `INSERT INTO message_references (message_id, referenced_message_id) VALUES (?, ?)`,
+        `INSERT INTO message_references (room_id, message_id, referenced_message_id) VALUES (?, ?, ?)`,
       );
-      for (const refId of params.referencedMessageIds) insertRef.run(id, refId);
+      for (const refId of params.referencedMessageIds) insertRef.run(params.roomId, id, refId);
     }
 
     return { id, supersededExploringId };
   })();
 
-  const { id, supersededExploringId } = messageId;
-  return { message: getMessageById(db, id)!, supersededExploringId };
+  return { message: getMessageById(db, params.roomId, result.id)!, supersededExploringId: result.supersededExploringId };
 }
 
 export function getFirstMessage(db: Database.Database, roomId: number): Message | null {
@@ -133,15 +137,16 @@ export function getRecentRawMessages(db: Database.Database, roomId: number, n: n
   return rows.map((row) => mapMessageRow(db, row)).reverse();
 }
 
-export function getAnnotations(db: Database.Database, messageId: number): Message[] {
+export function getAnnotations(db: Database.Database, roomId: number, messageId: number): Message[] {
   const rows = db
-    .prepare(`SELECT * FROM messages WHERE target_message_id = ? ORDER BY id ASC`)
-    .all(messageId) as any[];
+    .prepare(`SELECT * FROM messages WHERE room_id = ? AND target_message_id = ? ORDER BY id ASC`)
+    .all(roomId, messageId) as any[];
   return rows.map((row) => mapMessageRow(db, row));
 }
 
-export function completeExploring(db: Database.Database, messageId: number, note?: string): void {
+export function completeExploring(db: Database.Database, roomId: number, messageId: number, note?: string): void {
   db.prepare(
-    `UPDATE messages SET exploring_status = 'completed', exploring_note = COALESCE(?, exploring_note) WHERE id = ? AND type = 'exploring'`,
-  ).run(note ?? null, messageId);
+    `UPDATE messages SET exploring_status = 'completed', exploring_note = COALESCE(?, exploring_note)
+     WHERE room_id = ? AND id = ? AND type = 'exploring'`,
+  ).run(note ?? null, roomId, messageId);
 }

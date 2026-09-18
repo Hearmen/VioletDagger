@@ -4,6 +4,7 @@ export interface Room {
   schedulingMode: 'sequential';
   status: 'active' | 'paused_limit' | 'paused_manual' | 'completed';
   maxSessions: number;
+  workdir: string;   // 绝对路径；空串表示按服务端默认目录解析（历史数据）
   createdAt: string;
 }
 
@@ -16,21 +17,45 @@ export interface RoomSummary {
 
 export interface RoomAgentState {
   roomId: number;
-  agentId: string;
+  agentId: string;          // agent 实例标识
+  registryKey: string;      // 对应 agents.config.json 的 key
   joinOrder: number;
-  state: 'idle' | 'running';
+  state: 'idle' | 'running' | 'stopping';
   currentSessionSeq: number | null;
+  dispatchEnabled: boolean;
 }
+
+export type SessionExitCause =
+  | 'natural' | 'managed-stop' | 'unexpected' | 'spawn-failed' | 'not-started';
 
 export interface Session {
   roomId: number;
   seq: number;
   agentId: string;
-  outcome: 'running' | 'completed' | 'passed' | 'error' | 'terminated';
+  outcome: 'running' | 'stopping' | 'completed' | 'passed' | 'error' | 'terminated';
   startedAt: string;
   endedAt: string | null;
   pgid: number | null;
   rawLogPath: string | null;
+  exitCode: number | null;
+  exitSignal: string | null;
+  stopIntent: 'terminate' | null;
+  cleanupStartedAt: string | null;
+  exitCause: SessionExitCause | null;
+}
+
+export type SessionEventKind =
+  | 'cleanup_started' | 'sigterm_sent' | 'sigkill_sent' | 'cleanup_failed'
+  | 'terminate_requested' | 'process_exited' | 'terminated';
+
+export interface SessionEvent {
+  id: number;
+  roomId: number;
+  sessionSeq: number;
+  kind: SessionEventKind;
+  attemptId: string;
+  detail: string | null;
+  createdAt: string;
 }
 
 export type RoomStatus = Room['status'];

@@ -9,15 +9,16 @@ export function buildDetail(
   params: { messageId: number } | { type: MessageType },
 ): MessageWithAnnotations | MessageWithAnnotations[] {
   if ('messageId' in params) {
-    const message = getMessageById(db, params.messageId);
-    if (!message || message.roomId !== roomId) {
+    // 消息 id 是 room 内编号，按 (roomId, messageId) 查即天然保证属于本 room。
+    const message = getMessageById(db, roomId, params.messageId);
+    if (!message) {
       throw new Error(`Message ${params.messageId} not found in room ${roomId}`);
     }
-    return { ...message, annotations: getAnnotations(db, message.id) };
+    return { ...message, annotations: getAnnotations(db, roomId, message.id) };
   }
 
   return getMessagesByType(db, roomId, params.type).map((message) => ({
     ...message,
-    annotations: getAnnotations(db, message.id),
+    annotations: getAnnotations(db, roomId, message.id),
   }));
 }

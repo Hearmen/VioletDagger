@@ -115,7 +115,7 @@ export function startMcpServer(server: McpServer, port: number): Promise<HttpSer
   // previous one so they are always fully serialized.
   let chain: Promise<void> = Promise.resolve();
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const httpServer = createServer((req, res) => {
       // This module is stateless per spec (§1) and never pushes
       // server-initiated messages over a GET SSE stream — MCP tool calls are
@@ -130,9 +130,20 @@ export function startMcpServer(server: McpServer, port: number): Promise<HttpSer
       }
       chain = chain.then(() => handleMcpRequest(server, req, res)).catch(() => {});
     });
+    // 端口被占用等监听失败会以 'error' 事件发出，不接住会变成未捕获异常打挂进程。
+    const onError = (err: Error) => {
+      httpServer.removeListener('listening', onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      httpServer.removeListener('error', onError);
+      resolve(httpServer);
+    };
+    httpServer.once('error', onError);
+    httpServer.once('listening', onListening);
     // Bind loopback only: authorId is self-asserted per spec, with no auth
     // layer, so this must not be reachable from the network.
-    httpServer.listen(port, '127.0.0.1', () => resolve(httpServer));
+    httpServer.listen(port, '127.0.0.1');
   });
 }
 

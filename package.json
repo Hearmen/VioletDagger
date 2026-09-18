@@ -1,5 +1,11 @@
 {
   "name": "violetdagger",
   "private": true,
-  "workspaces": ["packages/*"]
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,green \"npm:start -w @violetdagger/server\" \"npm:dev -w @violetdagger/web\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1"
+  }
 }

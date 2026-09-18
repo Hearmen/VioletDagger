@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3';
 import {
   listMessages as storageListMessages,
   insertMessage,
+  getMessageById,
   countSessions,
   listSessions,
   getMessagesBySession,
@@ -11,6 +12,7 @@ import {
   getRoom,
   getRoomAgents,
   getActiveExploring,
+  listSessionEvents,
 } from '../storage';
 import type { MessageType } from '../storage';
 import { buildMemoryView } from '../memory';
@@ -20,10 +22,12 @@ import {
   resumeRoom as orchestratorResumeRoom,
   confirmCompletion as orchestratorConfirmCompletion,
   terminateAgentSession as orchestratorTerminateAgentSession,
+  setAgentEnabled as orchestratorSetAgentEnabled,
   getStuckAgents,
+  type StopSessionProcess,
+  type FailureCounter,
 } from '../orchestrator-core';
 import type { StartSession, StuckCounter } from '../orchestrator-core';
-import type { KillSession } from '../agent-invocation';
 import { ApiError } from './rest';
 
 export interface RpcDeps {
@@ -31,12 +35,13 @@ export interface RpcDeps {
   roomId: number;
   roomEvents: EventEmitter;
   startSession: StartSession;
-  killSession: KillSession;
+  stopSessionProcess: StopSessionProcess;
   stuckCounter: StuckCounter;
+  failureCounter: FailureCounter;
 }
 
 export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) => unknown> {
-  const { db, roomId, roomEvents, startSession, killSession, stuckCounter } = deps;
+  const { db, roomId, roomEvents, startSession, stopSessionProcess, stuckCounter, failureCounter } = deps;
 
   return {
     listMessages(params?: { cursor?: number; limit?: number }) {
@@ -49,6 +54,21 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
       targetMessageId?: number;
       referencedMessageIds?: number[];
     }) {
+      // 消息 id 是 room 内编号，跨 room 引用会在 room 内查找不到（见 01-storage.md 第 2 节）。
+      if (params.targetMessageId != null && !getMessageById(db, roomId, params.targetMessageId)) {
+        throw new ApiError(`targetMessageId ${params.targetMessageId} not found in room ${roomId}`, 400);
+      }
+      if (params.referencedMessageIds?.length) {
+        if (params.type !== 'chain') {
+          throw new ApiError('referencedMessageIds is only allowed when type is "chain"', 400);
+        }
+        for (const refId of params.referencedMessageIds) {
+          if (!getMessageById(db, roomId, refId)) {
+            throw new ApiError(`referencedMessageIds contains ${refId} which is not found in room ${roomId}`, 400);
+          }
+        }
+      }
+
       const { message, supersededExploringId } = insertMessage(db, {
         roomId,
         sessionSeq: null,
@@ -80,16 +100,26 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
         currentSessionCount: countSessions(db, roomId),
         status: room.status,
         agents: getRoomAgents(db, roomId).map((agent) => {
+          const active = agent.state === 'running' || agent.state === 'stopping';
           const session =
-            agent.state === 'running' && agent.currentSessionSeq != null
+            active && agent.currentSessionSeq != null
               ? getSession(db, roomId, agent.currentSessionSeq)
               : null;
           const exploring = activeExploring.find((m) => m.authorId === agent.agentId);
+          const exitWarning = session
+            ? listSessionEvents(db, roomId, session.seq).some((event) => event.kind === 'cleanup_failed')
+              ? '清理未确认，可重试终止'
+              : undefined
+            : undefined;
           return {
             agentId: agent.agentId,
             state: agent.state,
-            sessionId: agent.state === 'running' ? agent.currentSessionSeq ?? undefined : undefined,
+            sessionId: active ? agent.currentSessionSeq ?? undefined : undefined,
             sessionStartedAt: session?.startedAt,
+            stopIntent: session?.stopIntent ?? undefined,
+            exitWarning,
+            enabled: agent.dispatchEnabled,
+            failureCount: failureCounter.get(roomId, agent.agentId),
             activeExploringSummary: exploring?.summary,
             stuck: stuckAgentIds.has(agent.agentId),
           };
@@ -105,6 +135,7 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
           outcome: session.outcome,
           startedAt: session.startedAt,
           endedAt: session.endedAt,
+          lifecycleEvents: listSessionEvents(db, roomId, session.seq),
           messages: getMessagesBySession(db, roomId, session.seq),
         })),
       };
@@ -114,18 +145,39 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
       const session = getSession(db, roomId, params.sessionId);
       if (!session) throw new ApiError(`session not found: ${params.sessionId}`, 404);
       const rawLog = session.rawLogPath ? readFileSync(session.rawLogPath, 'utf-8') : '';
+      const messages = getMessagesBySession(db, roomId, params.sessionId);
       return {
+        sessionId: session.seq,
         agentId: session.agentId,
         startedAt: session.startedAt,
         endedAt: session.endedAt,
         outcome: session.outcome,
+        messages,
+        lifecycleEvents: listSessionEvents(db, roomId, params.sessionId),
+        exitCode: session.exitCode,
+        exitSignal: session.exitSignal,
+        stopIntent: session.stopIntent,
+        cleanupStartedAt: session.cleanupStartedAt,
+        exitCause: session.exitCause,
         rawLog,
-        wroteMessages: getMessagesBySession(db, roomId, params.sessionId).length > 0,
+        wroteMessages: messages.length > 0,
       };
     },
 
     async terminateAgentSession(params: { sessionId: number }) {
-      await orchestratorTerminateAgentSession(db, roomId, params.sessionId, killSession, startSession, stuckCounter);
+      await orchestratorTerminateAgentSession(
+        db, roomId, params.sessionId, stopSessionProcess, startSession, stuckCounter, failureCounter,
+      );
+      return { ok: true };
+    },
+
+    setAgentEnabled(params: { agentId: string; enabled: boolean }) {
+      if (typeof params?.agentId !== 'string' || typeof params?.enabled !== 'boolean') {
+        throw new ApiError('setAgentEnabled requires { agentId: string, enabled: boolean }', 400);
+      }
+      orchestratorSetAgentEnabled(
+        db, roomId, params.agentId, params.enabled, startSession, stuckCounter, failureCounter,
+      );
       return { ok: true };
     },
 

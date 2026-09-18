@@ -4,3 +4,7 @@ dist/
 *.db-wal
 *.db-shm
 .worktrees/
+packages/server/logs/
+
+.DS_Store
+.claude/

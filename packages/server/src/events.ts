@@ -5,6 +5,7 @@ export interface RoomEventMap {
   message: [{ roomId: number; message: Message }];
   memoryUpdate: [{ roomId: number; messageId: number }];
   roomStatus: [{ roomId: number }];
+  roomDeleted: [{ roomId: number }];
 }
 
 export const roomEvents = new EventEmitter<RoomEventMap>();

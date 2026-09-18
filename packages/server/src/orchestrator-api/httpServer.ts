@@ -8,6 +8,7 @@ import type { AgentRegistry } from '../agent-invocation';
 export interface HttpServerDeps {
   db: Database.Database;
   registry: AgentRegistry;
+  deleteRoom: (roomId: number) => Promise<void>;
 }
 
 function sendJson(res: import('node:http').ServerResponse, status: number, body: unknown): void {
@@ -28,7 +29,7 @@ async function readJsonBody(req: import('node:http').IncomingMessage): Promise<a
 }
 
 export function createHttpServer(deps: HttpServerDeps): Server {
-  const { db, registry } = deps;
+  const { db, registry, deleteRoom } = deps;
 
   return createServer(async (req, res) => {
     try {
@@ -47,6 +48,14 @@ export function createHttpServer(deps: HttpServerDeps): Server {
       if (req.method === 'POST' && url.pathname === '/api/rooms') {
         const body = await readJsonBody(req);
         return sendJson(res, 201, createRoomHandler(db, registry, body));
+      }
+      if (req.method === 'DELETE' && roomIdMatch) {
+        try {
+          await deleteRoom(Number(roomIdMatch[1]));
+        } catch (err) {
+          throw new ApiError(err instanceof Error ? err.message : 'failed to delete room', 409);
+        }
+        return sendJson(res, 200, { ok: true });
       }
 
       return sendJson(res, 404, { error: { message: 'not found' } });

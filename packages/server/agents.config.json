@@ -1,8 +1,48 @@
 {
   "agents": {
-    "codex": { "command": "codex exec --json < {{promptFile}}" },
-    "claude": { "command": "claude -p \"$(cat {{promptFile}})\"" },
-    "opencode": { "command": "opencode run --prompt-file {{promptFile}}" },
-    "kimi": { "command": "kimi chat --file {{promptFile}}" }
+    "codex": {
+      "command": [
+        "codex",
+        "exec",
+        "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-c",
+        "mcp_servers.violetdagger.url=\"{{mcpUrl}}\"",
+        "{{prompt}}"
+      ]
+    },
+    "claude": {
+      "command": [
+        "claude",
+        "--mcp-config",
+        "{{mcpFile}}",
+        "--settings",
+        "{\"skipDangerousModePermissionPrompt\":true}",
+        "--dangerously-skip-permissions",
+        "-p",
+        "{{prompt}}",
+        "--output-format",
+        "stream-json",
+        "--verbose"
+      ],
+      "mcpFile": {
+        "template": "{\"mcpServers\":{\"violetdagger\":{\"type\":\"http\",\"url\":\"{{mcpUrl}}\"}}}"
+      }
+    },
+    "opencode": {
+      "command": ["opencode", "run", "--auto", "--format", "json", "{{prompt}}"],
+      "env": { "OPENCODE_CONFIG": "{{mcpFile}}" },
+      "mcpFile": {
+        "template": "{\"$schema\":\"https://opencode.ai/config.json\",\"mcp\":{\"violetdagger\":{\"type\":\"remote\",\"url\":\"{{mcpUrl}}\",\"enabled\":true}}}"
+      }
+    },
+    "kimi": {
+      "command": ["kimi", "--output-format", "stream-json", "-p", "{{prompt}}"],
+      "mcpFile": {
+        "path": "~/.kimi-code/mcp.json",
+        "merge": true,
+        "template": "{\"mcpServers\":{\"violetdagger\":{\"url\":\"{{mcpUrl}}\"}}}"
+      }
+    }
   }
 }

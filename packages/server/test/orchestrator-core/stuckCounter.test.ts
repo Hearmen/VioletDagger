@@ -43,7 +43,7 @@ describe('getStuckAgents', () => {
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
     const { message } = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'exploring X', type: 'exploring' });
-    completeExploring(db, message.id);
+    completeExploring(db, room.id, message.id);
 
     const stuckCounter = createStuckCounter();
     stuckCounter.increment(room.id, 'codex');

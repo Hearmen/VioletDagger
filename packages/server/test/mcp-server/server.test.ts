@@ -6,14 +6,45 @@ import { createTestDb } from '../../src/storage/db';
 import { createMcpServer, startMcpServer, handleMcpRequest } from '../../src/mcp-server/server';
 
 const httpMocks = vi.hoisted(() => ({
-  listen: vi.fn((_port: number, _host: string, cb: () => void) => cb()),
+  listen: vi.fn(),
+  error: undefined as Error | undefined,
   requestListener: undefined as undefined | ((req: unknown, res: unknown) => void),
 }));
 
+// Fake HTTP server with just enough EventEmitter behavior for startMcpServer's
+// `once('error')` / `once('listening')` wiring: listen() fires 'listening' on a
+// microtask (like a real server), and tests can grab the created instance.
 vi.mock('node:http', () => ({
   createServer: vi.fn((listener: (req: unknown, res: unknown) => void) => {
+    const listeners: Record<string, ((...args: unknown[]) => void)[]> = {};
+    const server: any = {
+      listen: vi.fn((port: number, host: string, cb?: () => void) => {
+        httpMocks.listen(port, host, cb);
+        queueMicrotask(() => {
+          if (httpMocks.error) {
+            const pendingErrors = listeners.error ?? [];
+            listeners.error = [];
+            pendingErrors.forEach((fn) => fn(httpMocks.error));
+            return;
+          }
+          const pending = listeners.listening ?? [];
+          listeners.listening = [];
+          pending.forEach((fn) => fn());
+        });
+        return server;
+      }),
+      once: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+        (listeners[event] ??= []).push(cb);
+        return server;
+      }),
+      removeListener: vi.fn((event: string, cb: (...args: unknown[]) => void) => {
+        listeners[event] = (listeners[event] ?? []).filter((fn) => fn !== cb);
+        return server;
+      }),
+      close: vi.fn(),
+    };
     httpMocks.requestListener = listener;
-    return { listen: httpMocks.listen };
+    return server;
   }),
 }));
 
@@ -49,7 +80,16 @@ describe('startMcpServer', () => {
   it('starts an HTTP server listening on loopback only, on the given port', async () => {
     const server = createMcpServer(buildDeps());
     const httpServer: any = await startMcpServer(server, 4319);
-    expect(httpServer.listen).toHaveBeenCalledWith(4319, '127.0.0.1', expect.any(Function));
+    expect(httpServer.listen).toHaveBeenCalledWith(4319, '127.0.0.1');
+  });
+
+  it('rejects (instead of crashing) when the port cannot be listened on', async () => {
+    httpMocks.error = new Error('listen EADDRINUSE: address already in use 127.0.0.1:4321');
+    try {
+      await expect(startMcpServer(createMcpServer(buildDeps()), 4321)).rejects.toThrow(/EADDRINUSE/);
+    } finally {
+      httpMocks.error = undefined;
+    }
   });
 
   it('rejects a non-POST request with 405 before it ever reaches the request chain', async () => {
