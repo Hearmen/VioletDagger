@@ -127,6 +127,9 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
       };
     },
 
+    // 不再是节点树，只是一张 session 结果/时间的查表——供前端给每条消息的 session 标签
+    // 追加 outcome（见 07-frontend.md §9）。消息本身由前端已持有的 listMessages/newMessage
+    // 状态提供，不由本接口下发。
     getEventTree() {
       return {
         sessions: listSessions(db, roomId).map((session) => ({
@@ -135,8 +138,6 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
           outcome: session.outcome,
           startedAt: session.startedAt,
           endedAt: session.endedAt,
-          lifecycleEvents: listSessionEvents(db, roomId, session.seq),
-          messages: getMessagesBySession(db, roomId, session.seq),
         })),
       };
     },

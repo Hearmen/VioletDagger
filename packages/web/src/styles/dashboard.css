@@ -793,8 +793,16 @@ body.is-resizing-y {
 /* ---- event tree ---- */
 .event-tree {
   position: relative;
-  padding: var(--gap) var(--pad);
+  /* 左侧留出一条独立的连接线走线带（rail），避免贝塞尔曲线和行内容挤在一起（见 07-frontend.md §9）。 */
+  padding: var(--gap) var(--pad) var(--gap) 44px;
   min-height: 100%;
+}
+
+/* 复用于 SessionDetailModal / LiveSessionModal 的元数据行（非事件树自身）。 */
+.tree-node__meta {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-family: var(--mono);
 }
 
 .tree-connectors {
@@ -806,92 +814,87 @@ body.is-resizing-y {
   overflow: visible;
 }
 
-.tree-node {
+.tree-row {
   --tree-color: var(--border-strong);
-  position: relative;
-  border-left: 2px solid var(--border);
-  padding: 0 0 14px 14px;
-  margin-left: 6px;
-}
-
-.tree-node:last-child {
-  border-left-color: transparent;
-}
-
-.tree-node::before {
-  content: '';
-  position: absolute;
-  left: -5px;
-  top: 4px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--tree-color);
-}
-
-.tree-node__head {
   display: flex;
-  align-items: center;
   gap: 8px;
+  align-items: flex-start;
+  padding: 6px 8px;
+  border-left: 2px solid var(--tree-color);
+  border-radius: var(--radius);
+}
+
+.tree-row--human {
+  --tree-color: var(--accent);
+}
+
+.tree-row__time {
+  flex: 0 0 auto;
   background: none;
   border: none;
-  padding: 0;
-  color: var(--text);
-  cursor: pointer;
-  text-align: left;
-}
-
-.tree-node__head:hover {
-  background: none;
-  border: none;
-}
-
-.tree-node__title {
-  font-family: var(--mono);
-  font-weight: 600;
-}
-
-.tree-node__meta {
+  padding: 2px 0;
   color: var(--text-faint);
   font-size: 11px;
   font-family: var(--mono);
+  cursor: pointer;
 }
 
-.tree-node__messages {
-  margin-top: 6px;
+.tree-row__time:hover {
+  color: var(--text);
+}
+
+.tree-row__body {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.tree-msg {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 4px 8px;
+.tree-row__top {
   display: flex;
-  gap: 8px;
-  align-items: baseline;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
-.tree-msg__content {
-  color: var(--text-muted);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.tree-tag {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--tree-color);
+  color: var(--tree-color);
+  background: none;
+  cursor: pointer;
 }
 
-.tree-node--human {
-  --tree-color: var(--accent);
+.tree-tag:hover {
+  background: var(--accent-soft);
 }
 
-.tree-node--human .tree-node__head {
+.tree-tag--human {
   cursor: default;
 }
 
-.tree-node--human .tree-node__title {
+.tree-tag--passed {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.tree-tag--error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.tree-tag--terminated {
+  border-color: var(--accent);
   color: var(--accent);
+}
+
+.tree-row__content {
+  color: var(--text-muted);
+  cursor: pointer;
 }
 
 /* ---- modal ---- */

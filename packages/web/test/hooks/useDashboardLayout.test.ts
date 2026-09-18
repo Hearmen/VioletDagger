@@ -25,6 +25,16 @@ describe('useDashboardLayout', () => {
     expect(result.current.layout.eventsW).toBe(before - 50);
   });
 
+  it('clamps the events column width to its (widened) limits', () => {
+    const { result } = renderHook(() => useDashboardLayout());
+
+    act(() => result.current.adjustEventsW(9999)); // 正 delta 是向右拖、缩小右栏
+    expect(result.current.layout.eventsW).toBe(260);
+
+    act(() => result.current.adjustEventsW(-99999)); // 负 delta 是向左拖、放宽右栏
+    expect(result.current.layout.eventsW).toBe(960);
+  });
+
   it('persists the layout to localStorage', () => {
     const { result } = renderHook(() => useDashboardLayout());
 

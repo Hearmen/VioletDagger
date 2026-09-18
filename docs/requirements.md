@@ -108,7 +108,7 @@ v1 内置以上四个 agent 的默认配置模板。
 
 ### 3.4 错误处理（默认策略）
 
-- 某个 agent 的调用失败（进程报错退出）：记为一次系统消息（说明该 agent 这次 session 出错），该 agent 变回空闲，触发一次新的派发检查（见 3.3），不中断整个房间。
+- 某个 agent 的调用失败（进程报错退出）：记为一次系统消息（说明该 agent 这次 session 出错），该 agent 变回空闲，触发一次新的派发检查（见 3.3），不中断整个房间；这条占位消息在事件树里的呈现见 3.5。
 
 ### 3.5 编排器内部接口（服务自己的前端，不是 MCP）
 
@@ -134,7 +134,13 @@ MCP 协议只暴露给外部 agent CLI。编排器后端和它的网页前端之
 - 每个 agent 的实时状态：`{ agentId, state: "idle" | "running" | "stopping", sessionId?, sessionStartedAt?, activeExploringSummary? }`。`sessionId` 在 `running`/`stopping` 状态下必须给出——人类要查看详情或终止，都是对着一个具体的 session 操作，不是对着 agent 本身，这个字段是两者之间的唯一定位手段。`running`/`stopping` 状态下前端据此显示"已运行 X 秒"——这也是人类判断"是不是跑太久了"的唯一依据（系统不做自动超时判定，见 3.3）。
 - 是否有 agent 疑似卡住（active `exploring` 连续 N 次被派发到它自己都无新消息，N 见第 9 节），判定逻辑在后端算好，前端只展示。
 
-**事件树**：以 session 为主干组织——每个节点对应**一个 agent 的一次 session**，按 `sessionId` 顺序排列成时间线："session #N → 是哪个 agent、这次 session 期间发生了什么"（一次 session 可能包含多条消息，都归在同一个节点下）。`passed`（session 期间没发任何实质消息）、报错，都各自留一个节点，不是无痕迹地跳过。agent 在 session 里发的消息都带着这次 session 的 `sessionId`（见 4.2），归在对应的节点下；**人类消息没有 `sessionId`**，不属于任何 session 节点，在时间线上作为节点之间的独立事件展示（哪条人类消息触发了哪次 session，靠时间顺序看，不靠 `sessionId` 关联）；反应类消息（`endorse`/`challenge`/`verify`，以及带 `targetMessageId` 的"追问"式 `open_question`）在树上对目标消息画一条关联线；`chain` 若带 `referencedMessageIds`，同样对每个引用的消息画一条关联线。这些关联线不改变按 session 组织的主结构。
+**事件树**：不再有独立的 session 节点——每一行都是一条消息，严格按消息的真实发生时间排成一条竖直时间线，agent 之间允许并发（见 3.3）产生的交织顺序如实保留，不会因为"同属一个 session"被打包挪到一起。
+
+agent 在 session 里发的每条消息都带着这次 session 的 `sessionId`（见 4.2），在树上显示为一个"归属标签"（哪个 agent 的第几次 session），点这个标签直接打开这次 session 的详情（3.1 的"单 session 详情查看"）；**人类消息没有 `sessionId`**，没有这个标签，按真实时间独立成节点，跟 agent 消息混排（哪条人类消息触发了哪次 session，仍然靠时间顺序看，不靠 `sessionId` 关联）。
+
+`passed`（自然结束但没发过任何带 type 的实质消息）、报错、以及被人工终止，都会由编排器核心补写一条无 type 的系统占位消息（见 3.3、3.3.1、3.4），带上这次 session 的 `sessionId`——这样它们也能用同一套"消息即节点"的机制留痕，不是无痕迹地跳过，也不需要为它们单独设计一种"session 节点"。
+
+反应类消息（`endorse`/`challenge`/`verify`，以及带 `targetMessageId` 的"追问"式 `open_question`）在树上对目标消息画一条关联线；`chain` 若带 `referencedMessageIds`，同样对每个引用的消息画一条关联线。主轴就是真实时间，这些关联线两端在时间线上通常本就相邻或接近，先后与因果关系一望而知。
 
 **`exploring` 完成后的展示**：保留可见，标灰/打"已完成"标签，不从视图中消失——与"只追加不覆盖、一切可追溯"的原则一致。
 

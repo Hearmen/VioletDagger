@@ -37,6 +37,25 @@ function releaseAgentIfCurrent(db: Database.Database, roomId: number, agentId: s
   if (agent && agent.currentSessionSeq === seq) setAgentState(db, roomId, agentId, 'idle');
 }
 
+// outcome 结算为 completed 之外的任何结果时补写一条无 type 的系统占位消息，供事件树
+// （07-frontend.md §9）作为普通消息节点留痕——不需要单独的 session 节点（见需求 3.5）。
+function writeOutcomePlaceholder(
+  db: Database.Database,
+  roomId: number,
+  seq: number,
+  agentId: string,
+  outcome: 'passed' | 'error' | 'terminated',
+): void {
+  const content =
+    outcome === 'passed'
+      ? `Agent ${agentId} 的 session #${seq} 未发出任何实质消息`
+      : outcome === 'error'
+        ? `Agent ${agentId} 的 session #${seq} 异常退出`
+        : `Agent ${agentId} 的 session #${seq} 被人工终止`;
+  const { message } = insertMessage(db, { roomId, sessionSeq: seq, authorId: agentId, content });
+  roomEvents.emit('message', { roomId, message });
+}
+
 // 一次 session 进程结果确定后的唯一结算入口（03 §2）：只处理 running/stopping，幂等。
 export function onSessionEnded(
   db: Database.Database,
@@ -70,15 +89,11 @@ export function onSessionEnded(
   }
   releaseAgentIfCurrent(db, event.roomId, event.agentId, event.seq);
 
-  if (outcome === 'error') {
-    const { message } = insertMessage(db, {
-      roomId: event.roomId,
-      sessionSeq: event.seq,
-      authorId: 'system',
-      content: `Agent ${event.agentId} 的 session #${event.seq} 异常退出`,
-    });
-    roomEvents.emit('message', { roomId: event.roomId, message });
+  if (outcome !== 'completed') {
+    writeOutcomePlaceholder(db, event.roomId, event.seq, event.agentId, outcome);
+  }
 
+  if (outcome === 'error') {
     // 连续失败达到阈值 -> 自动停用该 agent 的派发（见 03 §6）。
     const failures = failureCounter.increment(event.roomId, event.agentId);
     if (failures >= FAILURE_THRESHOLD) {
@@ -136,6 +151,7 @@ export async function terminateAgentSession(
     appendSessionEvent(db, roomId, seq, 'process_exited', undefined, result.exit.cleanupAttemptId);
     appendSessionEvent(db, roomId, seq, 'terminated', undefined, result.exit.cleanupAttemptId);
     releaseAgentIfCurrent(db, roomId, session.agentId, seq);
+    writeOutcomePlaceholder(db, roomId, seq, session.agentId, 'terminated');
     roomEvents.emit('roomStatus', { roomId });
     checkAndDispatch(db, roomId, startSession, stuckCounter);
   }

@@ -109,13 +109,21 @@ describe('createRpcHandlers', () => {
     expect(() => (handlers.setAgentEnabled as any)({})).toThrow();
   });
 
-  it('getEventTree groups messages by session in seq order', () => {
+  it('getEventTree returns a lean per-session outcome/time lookup, not a node tree', () => {
     const { db, room, handlers } = setup();
     const s1 = createSession(db, room.id, 'codex');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'hi', type: 'fact' });
     const tree: any = handlers.getEventTree();
     expect(tree.sessions).toHaveLength(1);
-    expect(tree.sessions[0].messages).toHaveLength(1);
+    expect(tree.sessions[0]).toEqual({
+      seq: s1.seq,
+      agentId: 'codex',
+      outcome: 'running',
+      startedAt: s1.startedAt,
+      endedAt: null,
+    });
+    expect(tree.sessions[0].messages).toBeUndefined();
+    expect(tree.sessions[0].lifecycleEvents).toBeUndefined();
   });
 
   it('getSessionDetail reads the raw log file, returns the session messages, and reports wroteMessages', () => {

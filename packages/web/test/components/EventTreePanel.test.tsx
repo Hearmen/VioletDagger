@@ -30,46 +30,80 @@ function makeMessage(overrides: Partial<Message> = {}): Message {
 }
 
 function makeSession(overrides: Partial<EventTreePayload['sessions'][number]> = {}): EventTreePayload['sessions'][number] {
-  return {
-    seq: 1, agentId: 'codex', outcome: 'completed', startedAt: 't1', endedAt: 't2',
-    lifecycleEvents: [], messages: [makeMessage()], ...overrides,
-  };
+  return { seq: 1, agentId: 'codex', outcome: 'completed', startedAt: 't1', endedAt: 't2', ...overrides };
 }
 
 describe('EventTreePanel', () => {
-  it('renders sessions in order with their outcome and messages', () => {
-    render(<EventTreePanel sessions={[makeSession()]} humanMessages={[]} onOpenSession={vi.fn()} />);
-    expect(screen.getByRole('button', { name: /#1/ })).toBeInTheDocument();
-    expect(screen.getByText('codex')).toBeInTheDocument();
-    expect(screen.getByText('a fact')).toBeInTheDocument();
-  });
-
-  it('calls onOpenSession with the seq when a session node is clicked', () => {
-    const onOpenSession = vi.fn();
+  it('renders every message as its own row, tagged with its session outcome, sorted by real time', () => {
+    const messages: Message[] = [
+      makeMessage({ id: 1, sessionSeq: 1, authorId: 'codex', content: 'a fact', createdAt: 't2' }),
+      makeMessage({ id: 2, sessionSeq: null, authorId: 'human', type: null, content: 'the goal', createdAt: 't1' }),
+    ];
     render(
       <EventTreePanel
-        sessions={[makeSession({ seq: 2, agentId: 'claude', outcome: 'error', messages: [] })]}
-        humanMessages={[]}
+        sessions={[makeSession({ seq: 1, agentId: 'codex', outcome: 'completed' })]}
+        messages={messages}
+        onOpenSession={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('codex #1 · completed')).toBeInTheDocument();
+    expect(screen.getByText('a fact')).toBeInTheDocument();
+    expect(screen.getByText('人类')).toBeInTheDocument();
+    expect(screen.getByText('the goal')).toBeInTheDocument();
+    // 真实时间排序：人类消息（t1）在前，agent 消息（t2）在后。
+    const rows = screen.getAllByText(/the goal|a fact/);
+    expect(rows[0]).toHaveTextContent('the goal');
+    expect(rows[1]).toHaveTextContent('a fact');
+  });
+
+  it('does not render a separate session node — there is no #seq node to find', () => {
+    const messages = [makeMessage({ id: 1, sessionSeq: 1, authorId: 'codex' })];
+    render(<EventTreePanel sessions={[makeSession()]} messages={messages} onOpenSession={vi.fn()} />);
+    expect(screen.queryByText('#1')).not.toBeInTheDocument();
+  });
+
+  it('calls onOpenSession with the seq when a message session tag is clicked', () => {
+    const onOpenSession = vi.fn();
+    const messages = [makeMessage({ id: 1, sessionSeq: 2, authorId: 'claude', content: 'boom' })];
+    render(
+      <EventTreePanel
+        sessions={[makeSession({ seq: 2, agentId: 'claude', outcome: 'error' })]}
+        messages={messages}
         onOpenSession={onOpenSession}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /#2/ }));
+    fireEvent.click(screen.getByText('claude #2 · error'));
     expect(onOpenSession).toHaveBeenCalledWith(2);
   });
 
-  it('interleaves human messages as their own nodes', () => {
-    const sessions = [makeSession({ seq: 1, outcome: 'passed', startedAt: 't2', endedAt: 't3', messages: [] })];
-    const humanMessages: Message[] = [
-      makeMessage({ id: 9, sessionSeq: null, authorId: 'human', type: null, content: 'the goal', createdAt: 't1' }),
-    ];
-    render(<EventTreePanel sessions={sessions} humanMessages={humanMessages} onOpenSession={vi.fn()} />);
-    expect(screen.getByText('人类')).toBeInTheDocument();
-    expect(screen.getByText('the goal')).toBeInTheDocument();
+  it('calls onJumpToMessage when a message row is clicked, agent or human', () => {
+    const onJumpToMessage = vi.fn();
+    const messages = [makeMessage({ id: 5, sessionSeq: null, authorId: 'human', type: null, content: 'ping' })];
+    render(
+      <EventTreePanel sessions={[]} messages={messages} onOpenSession={vi.fn()} onJumpToMessage={onJumpToMessage} />,
+    );
+    fireEvent.click(screen.getByText('ping'));
+    expect(onJumpToMessage).toHaveBeenCalledWith(5);
   });
 
-  it('shows an empty state when there are no sessions', () => {
-    render(<EventTreePanel sessions={[]} humanMessages={[]} onOpenSession={vi.fn()} />);
-    expect(screen.getByText('还没有任何 session')).toBeInTheDocument();
+  it('shows a passed placeholder message with its outcome tag, without a dedicated session node', () => {
+    const messages = [
+      makeMessage({ id: 1, sessionSeq: 3, authorId: 'kimi', type: null, content: 'Agent kimi 的 session #3 未发出任何实质消息' }),
+    ];
+    render(
+      <EventTreePanel
+        sessions={[makeSession({ seq: 3, agentId: 'kimi', outcome: 'passed' })]}
+        messages={messages}
+        onOpenSession={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('kimi #3 · passed')).toBeInTheDocument();
+    expect(screen.getByText(/未发出任何实质消息/)).toBeInTheDocument();
+  });
+
+  it('shows an empty state when there are no messages', () => {
+    render(<EventTreePanel sessions={[]} messages={[]} onOpenSession={vi.fn()} />);
+    expect(screen.getByText('还没有任何事件')).toBeInTheDocument();
   });
 });
 

@@ -143,8 +143,6 @@ export function RoomDashboardPage() {
     return null;
   }, [messages]);
 
-  const humanMessages = useMemo(() => messages.filter((message) => message.sessionSeq === null), [messages]);
-
   const liveSnapshot: LiveSessionSnapshot | null = useMemo(() => {
     if (!liveSession) return null;
     if (liveDetail && liveDetail.sessionId === liveSession.sessionId) {
@@ -277,10 +275,11 @@ export function RoomDashboardPage() {
         {eventTree ? (
           <EventTreePanel
             sessions={eventTree.sessions}
-            humanMessages={humanMessages}
+            messages={messages}
             onOpenSession={(sessionId) =>
               socket.call<SessionDetailPayload>('getSessionDetail', { sessionId }).then(setSessionDetail).catch(reportActionError)
             }
+            onJumpToMessage={setJumpToMessageId}
           />
         ) : (
           <div className="panel event-tree-panel">

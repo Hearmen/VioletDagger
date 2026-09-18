@@ -41,16 +41,16 @@
 
 非交互 CLI 完成一次工作后自行退出，不调用完成工具，也不等待 TUI 输入。`onSessionEnded(event: SessionExitEvent)` 接收 04 定义的进程事实；所有结算经过同一幂等入口。
 
-| 情况 | session.outcome |
-|---|---|
-| 自然零退出，存在本 session.agentId 发出的 type 非空消息 | completed |
-| 自然零退出，无上述实质消息 | passed |
-| 异常退出、信号退出或启动失败，未进入人工终止流程 | error |
-| stopIntent=terminate，已确认主进程退出或从未启动 | terminated |
+| 情况 | session.outcome | 补写系统占位消息？ |
+|---|---|---|
+| 自然零退出，存在本 session.agentId 发出的 type 非空消息 | completed | 否——已有实质消息自然留痕 |
+| 自然零退出，无上述实质消息 | passed | 是 |
+| 异常退出、信号退出或启动失败，未进入人工终止流程 | error | 是 |
+| stopIntent=terminate，已确认主进程退出或从未启动 | terminated | 是 |
 
 没有自动运行时长/无输出超时；卡住时人类可暂停房间、查看日志并终止。MCP 消息可在调用期间持续产生，CLI stdout/stderr 不参与结果判定、不转为 fact。正常结束不自动完成 active exploring，不结束 room。
 
-只处理 running/stopping。事务内写 outcome、endedAt、退出元数据及 process_exited，且仅在 currentSessionSeq 等于本 seq 时释放 agent。撤销凭据，emit roomStatus 并执行一次 `checkAndDispatch`。error 额外写无 type 的系统报错消息（并 emit `message`）。
+只处理 running/stopping。事务内写 outcome、endedAt、退出元数据及 process_exited，且仅在 currentSessionSeq 等于本 seq 时释放 agent。撤销凭据，emit roomStatus 并执行一次 `checkAndDispatch`。**outcome 结算为 completed 之外的任何结果时**（passed/error/terminated），额外写一条无 type 的系统占位消息（`authorId` 为该 session 的 agentId、`sessionId` 为本次 seq），并 emit `message`——内容按结果分别说明"未发出任何实质消息"（passed）、报错原因（error）、"人工终止"（terminated）。事件树（`07-frontend.md` §9）靠这条消息本身留痕，不需要单独的 session 节点。
 
 ## 3. `terminateAgentSession(roomId, seq)`
 

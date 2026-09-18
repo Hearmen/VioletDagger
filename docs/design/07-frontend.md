@@ -169,13 +169,14 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 
 ## 9. EventTreePanel
 
-右栏，独占一列全高（`grid-area: events`）。`getEventTree().sessions`（按 `startedAt` 排序）与从消息流里筛出的人类消息（`sessionSeq === null`，按 `createdAt`）合并成一条**竖直时间线**（新在下），默认贴底。人类消息与消息流共用同一份已加载的 `messages` 状态，所以 `newMessage` 推送追加后事件树自动同步；`listMessages` 是分页的，时间线只覆盖已加载窗口内的历史。
+右栏，独占一列全高（`grid-area: events`）。时间线上不存在独立的 session 节点——每一行对应一条消息（agent 在 session 里发的，或人类发的），直接复用 MessageStreamPanel 已持有的那份 `messages` 状态，按 `createdAt` 升序排成一条**竖直时间线**（新在下），默认贴底；`newMessage` 推送追加后自动同步。`listMessages` 是分页的，时间线只覆盖已加载窗口内的历史。
 
-- session 节点：`#seq · agentId（身份色）· outcome 徽标 · 起止时间`，展开显示该 session 的 `messages`（类型徽标 + 内容摘要），仅包含正式房间消息；点击节点标题 → `getSessionDetail({ sessionId })` 打开 `SessionDetailModal`（**复盘视图**，元数据 + 消息列表 + 只读日志回放；running session 也走这里，只是日志为当前快照，见 §10.2）。注意与 AgentRail 的 `LiveSessionModal`（§10.1，实时只读日志）是**两个不同的入口、两种不同的内容**。
+- **消息节点**：类型徽标 + 作者（身份色）+ `HH:mm:ss` + 内容摘要，仅包含 `messages` 表里的正式房间消息（不含原始日志行）。
+- **session 标签**：agent 消息额外带一个 `agentId #seq` 标签（`sessionId` 见需求 4.2）；running/stopping 时只显示 `agentId #seq`，到达终态后从 `getEventTree().sessions` 按 `(agentId, seq)` 查到 outcome 追加显示，如 `codex #1 · completed`、`kimi #2 · passed`、`kimi #3 · error`。点击这个标签 → `getSessionDetail({ sessionId })` 打开 `SessionDetailModal`（**复盘视图**，元数据 + 消息列表 + 只读日志回放；running session 也走这里，只是日志为当前快照，见 §10.2）。注意与 AgentRail 的 `LiveSessionModal`（§10.1，实时只读日志）是**两个不同的入口、两种不同的内容**。**人类消息没有这个标签**（没有 `sessionId`），用 human 色 + "人类"标签代替，与 agent 消息在样式上明显区分（需求 3.5）。
 - outcome 配色：`completed`→`--ok`、`passed`→`--warn`、`error`→`--danger`、`terminated`→`--accent`、`running`→身份色呼吸、`stopping`→等待色。
-- 人类消息节点：无 outcome 徽标，用 human 色 + "人类"标签，与 session 节点在样式上明显区分（需求 3.5）。
-- **关联线**：每个节点带 `data-message-id`；反应类消息（`endorse`/`challenge`/`verify`，以及带 `targetMessageId` 的 `open_question`）和带 `referencedMessageIds` 的 `chain`，在节点旁用一层绝对定位的 SVG（贝塞尔曲线）连到目标节点；目标不在当前树内（未加载）时跳过。连线颜色取源消息类型徽标色，选中目标时高亮。这些关联线不改变按 session 组织的主结构。
-- 空态：没有任何 session 时显示"还没有任何 session"。
+- `passed`/报错/人工终止且此前没有实质消息的情况，由编排器核心补写的系统占位消息（见需求 3.5、`03-orchestrator-core.md` §2）会作为一条普通消息节点出现在时间线上，旁边的 session 标签同样按上面规则显示 `· passed`/`· error`/`· terminated`——不需要额外的展示逻辑。
+- **关联线**：每个消息节点带 `data-message-id`；反应类消息（`endorse`/`challenge`/`verify`，以及带 `targetMessageId` 的 `open_question`）和带 `referencedMessageIds` 的 `chain`，在节点旁用一层绝对定位的 SVG（贝塞尔曲线）连到目标节点；目标不在当前时间线内（未加载）时跳过。连线颜色取源消息类型徽标色，选中目标时高亮。主轴就是真实时间，源节点和目标节点通常本就相邻，连线不再需要跨越远距离的容器。
+- 空态：没有任何消息时显示"还没有任何事件"。
 
 ## 10. Session 视图
 
@@ -187,7 +188,7 @@ RoomDashboardPage 分别持有 liveSession 与 sessionDetail，目标固定为 (
 
 ### 10.2 SessionDetailModal
 
-事件树点击任意 session 打开 getSessionDetail，展示元数据/outcome、正式消息列表、生命周期记录和只读日志快照。running/stopping 同样使用快照，标签"尚未结束 · 日志快照"。
+事件树点击任意消息的 session 标签打开 getSessionDetail，展示元数据/outcome、正式消息列表、生命周期记录和只读日志快照。running/stopping 同样使用快照，标签"尚未结束 · 日志快照"。
 
 日志使用 SessionLogView 与 useSessionLog(mode=replay)。快照 end 帧不代表业务结束；结果依据 RPC。生命周期中展示人工终止、清理尝试、信号与失败/退出事实。roomStatus 更新时重拉打开目标的详情；rawLog 不重复写入日志 WS 视图。
 

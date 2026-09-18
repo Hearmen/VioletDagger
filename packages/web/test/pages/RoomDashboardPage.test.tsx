@@ -183,12 +183,23 @@ describe('RoomDashboardPage', () => {
     await waitFor(() => expect(call).toHaveBeenCalledWith('getSessionDetail', { sessionId: 7 }));
   });
 
-  it('opens the read-only session detail from an event tree node', async () => {
+  it('opens the read-only session detail from a message row\'s session tag', async () => {
     const now = new Date().toISOString();
     call.mockImplementation((method: string) => {
       if (method === 'getEventTree') {
         return Promise.resolve({
-          sessions: [{ seq: 4, agentId: 'codex', outcome: 'passed', startedAt: now, endedAt: now, lifecycleEvents: [], messages: [] }],
+          sessions: [{ seq: 4, agentId: 'codex', outcome: 'passed', startedAt: now, endedAt: now }],
+        });
+      }
+      if (method === 'listMessages') {
+        return Promise.resolve({
+          messages: [
+            makeMessage({
+              id: 1, sessionSeq: 4, authorId: 'codex', type: null,
+              content: 'Agent codex 的 session #4 未发出任何实质消息', createdAt: now,
+            }),
+          ],
+          nextCursor: null,
         });
       }
       if (method === 'getSessionDetail') {
@@ -203,7 +214,7 @@ describe('RoomDashboardPage', () => {
     renderPage();
     await screen.findByText('room a');
 
-    fireEvent.click(await screen.findByRole('button', { name: /#4/ }));
+    fireEvent.click(await screen.findByText('codex #4 · passed'));
 
     await waitFor(() => expect(call).toHaveBeenCalledWith('getSessionDetail', { sessionId: 4 }));
     expect(await screen.findByRole('dialog', { name: 'session detail' })).toBeInTheDocument();

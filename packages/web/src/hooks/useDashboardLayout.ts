@@ -8,7 +8,7 @@ export interface DashboardLayout {
 
 const STORAGE_KEY = 'vd.dashboard.layout';
 const AGENTS_LIMITS = { min: 160, max: 420 };
-const EVENTS_LIMITS = { min: 260, max: 720 };
+const EVENTS_LIMITS = { min: 260, max: 960 };
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);

@@ -102,7 +102,7 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 
 - 主键 `messages(room_id, id)` 自带——`listMessages` 游标分页（游标即 room 内 `id`，房间内按 `id` 排序等价于按时间顺序）
 - `messages(room_id, type)`——`get_overview`/`get_detail` 按类型查
-- `messages(room_id, session_seq)`——事件树按 session 归档
+- `messages(room_id, session_seq)`——`getMessagesBySession` 取某个 session 的消息（SessionDetailModal 详情视图与编排器核心判断该 session 是否产出过实质消息用）
 - `messages(room_id, target_message_id)`——查某条消息挂载的所有 reaction/追问
 
 ## 2. 不变量（在存储层函数内部强制，不暴露裸的 UPDATE 接口）
@@ -243,7 +243,7 @@ function markSessionCleanupStarted(roomId: number, seq: number, attemptId: strin
 function appendSessionEvent(roomId: number, seq: number, kind: SessionEvent['kind'], detail?: string, attemptId?: string): void;
 function listSessionEvents(roomId: number, seq: number): SessionEvent[];
 function getSession(roomId: number, seq: number): Session | null;
-function listSessions(roomId: number): Session[]; // 按 seq 升序，供事件树渲染完整时间线
+function listSessions(roomId: number): Session[]; // 按 seq 升序，供事件树给每条消息的 session 标签查出 outcome/起止时间（见 07-frontend.md §9）
 function countSessions(roomId: number): number; // 计入 maxSessions 上限的 session 数 = 本 room 中 outcome != 'error' 的数量（error 不占配额；session 的 seq 仍由 createSession 内部 MAX(seq)+1 生成）
 
 // Message
@@ -251,7 +251,7 @@ function insertMessage(params: InsertMessageParams): { message: Message; superse
 // 含 exploring 自动顶替（若这次插入顶替了该 author 之前 active 的 exploring 消息，返回被顶替消息的 id，供调用方 emit memoryUpdate 推送；否则为 null）、summary 自动截断
 function getMessageById(roomId: number, id: number): Message | null;
 function getFirstMessage(roomId: number): Message | null; // room 内 id 最小的一条消息，供记忆管理层 buildOverview.goal 使用
-function getMessagesBySession(roomId: number, seq: number): Message[]; // 按 session 取消息，供事件树渲染 session 节点，也用于编排器核心判断该 session 是否产出过实质消息
+function getMessagesBySession(roomId: number, seq: number): Message[]; // 按 session 取消息，供 SessionDetailModal（getSessionDetail）渲染该 session 的消息列表，也用于编排器核心判断该 session 是否产出过实质消息
 function listMessages(roomId: number, cursor?: number, limit?: number): { messages: Message[]; nextCursor: number | null };
 function getMessagesByType(roomId: number, type: MessageType): Message[];
 function getActiveExploring(roomId: number): Message[];

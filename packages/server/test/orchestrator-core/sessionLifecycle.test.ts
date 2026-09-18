@@ -35,18 +35,27 @@ describe('onSessionEnded', () => {
     expect(getSession(db, room.id, session.seq)!.outcome).toBe('completed');
   });
 
-  it('marks the session passed when it exited naturally without any typed message', () => {
+  it('marks the session passed when it exited naturally without any typed message, and writes a placeholder message', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'just chatting' });
 
+    const messageListener = vi.fn();
+    roomEvents.once('message', messageListener);
+
     onSessionEnded(db, exitEvent(room.id, session.seq, 'codex'), vi.fn(), createStuckCounter(), createFailureCounter());
 
     expect(getSession(db, room.id, session.seq)!.outcome).toBe('passed');
+    const messages = getMessagesBySession(db, room.id, session.seq);
+    expect(messages).toHaveLength(2); // 原来的闲聊 + 补写的占位消息
+    const placeholder = messages.find((m) => m.content.includes('未发出任何实质消息'))!;
+    expect(placeholder.authorId).toBe('codex'); // 占位消息归属产生这次 session 的 agent，而非 'system'
+    expect(placeholder.type).toBeNull();
+    expect(messageListener).toHaveBeenCalledTimes(1);
   });
 
-  it('marks the session error, records process_exited, and inserts a system message on unexpected exit', () => {
+  it('marks the session error, records process_exited, and inserts a placeholder message attributed to the agent', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
@@ -65,11 +74,11 @@ describe('onSessionEnded', () => {
 
     expect(getSession(db, room.id, session.seq)!.outcome).toBe('error');
     const messages = getMessagesBySession(db, room.id, session.seq);
-    expect(messages.some((m) => m.authorId === 'system')).toBe(true);
+    expect(messages.some((m) => m.authorId === 'codex' && m.content.includes('异常退出'))).toBe(true);
     expect(listSessionEvents(db, room.id, session.seq).some((e) => e.kind === 'process_exited')).toBe(true);
 
     expect(messageListener).toHaveBeenCalledTimes(1);
-    expect(messageListener.mock.calls[0][0].message.authorId).toBe('system');
+    expect(messageListener.mock.calls[0][0].message.authorId).toBe('codex');
     expect(roomStatusListener).toHaveBeenCalledWith({ roomId: room.id });
   });
 
@@ -92,6 +101,8 @@ describe('onSessionEnded', () => {
     const events = listSessionEvents(db, room.id, session.seq).map((e) => e.kind);
     expect(events).toContain('process_exited');
     expect(events).toContain('terminated');
+    const placeholder = getMessagesBySession(db, room.id, session.seq).find((m) => m.content.includes('人工终止'));
+    expect(placeholder?.authorId).toBe('codex');
   });
 
   it('auto-disables an agent after 3 consecutive errors', () => {
@@ -186,6 +197,9 @@ describe('terminateAgentSession', () => {
     expect(memoryUpdateListener).toHaveBeenCalledTimes(1);
     // claude (join order 0) is dispatched after codex is freed, so codex settles idle.
     expect(getRoomAgents(db, room.id).find((a) => a.agentId === 'codex')).toMatchObject({ state: 'idle' });
+    // outcome != completed 补写占位消息，即使这次 session 已经有过实质消息（见需求 3.5）。
+    const placeholder = getMessagesBySession(db, room.id, session.seq).find((m) => m.content.includes('人工终止'));
+    expect(placeholder?.authorId).toBe('codex');
   });
 
   it('keeps stopping and throws when cleanup cannot be confirmed', async () => {
