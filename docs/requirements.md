@@ -53,7 +53,7 @@
 - 新建 room：填写一个简短的房间名称（`name`，仅用于 room 列表展示），勾选要拉入的 agent，选择调度模式（`schedulingMode`，见 3.3；v1 只实现 `"sequential"`，选项里预留其他模式的位置），并**可选**设置 `maxSessions`（session 总数上限，见 3.3；不填则用服务端默认值）与 `workdir`（工作目录，见第 1 节；不填则用服务端默认目录）。创建完成后，人类在房间里发的**第一条消息**就是实际的任务描述，这条消息本身触发第一次派发（见 3.3），也是 `get_overview.goal` 的来源（见 4.4）——不在创建时单独填"任务目标"。
 - room 内视图：原始消息流 + 分层记忆面板（全文，见 3.5），实时更新。
 - 随时可以在网页里以人类身份发消息插入 room。
-- **卡住提醒**：如果某个 agent 有一条 active 状态的 `exploring`，且连续 N 次被派发到它自己都没有任何新消息（见 4.6），UI 上给出提醒（不自动处理，只是提示"这个 agent 可能卡住了，要不要看看"）。
+- **卡住提醒**：如果某个 agent 有一条 active 状态的 `exploring`，且它处于 `running`/`stopping`、连续 N 次派发扫描经过它都没带来新消息（它一直占着这条 exploring；计数规则见 4.6），UI 上给出提醒（不自动处理，只是提示"这个 agent 可能卡住了，要不要看看"）。
 - **单 session 详情查看**：查看某次调用的实时只读 stdout/stderr 日志、消息和生命周期记录，用于排障；已结束的 session 保留日志快照。无需 PTY、原生 TUI 或终端输入。
 
 ### 3.2 agent 注册表（可扩展）
@@ -84,15 +84,17 @@ v1 内置以上四个 agent 的默认配置模板。
 
 **事件驱动派发**（替代旧的"编排器一直往前转"模型）：
 
-- **触发源**：以下两种情况都会触发一次派发检查——(1) 任意一条**实质消息**被发出：人类发的消息**一律算实质消息**（不管带不带 type）；agent 发的消息只有**带 type**（4.3 的记忆类型或 reaction）才算实质消息——不带 type 的纯聊天/过渡性发言（4.2）跟 `pass`、系统占位事件一样，**不触发**派发检查。(2) 某个 agent 的 session **结束、它变回空闲**（无论是正常结束、还是被 `terminateAgentSession` 处理完）。这样设计是为了不漏掉"消息到达时所有 agent 都在忙"的情况——这条消息已经被记录，等下一次触发（不管是新消息还是有人变空闲）自然会被看到。
-- **派发规则**：每次触发都检查当前有没有空闲的 agent。有——按固定顺序（agent 加入房间的顺序）选排在最前面的那个空闲 agent，为它启动一个新 session；不排除触发消息的作者本人，它若空闲、排到它就是它。没有空闲 agent——什么都不做，等下一次触发。
+- **触发型消息**：人类消息一律是触发型（不论带不带 type）；agent 消息里只有 `fact` / `hypothesis` / `boundary` / `open_question` / `chain` / `challenge` 六种是触发型。`exploring`（状态广播）、`propose_completion`（信号）、`endorse` / `verify`（纯注解），以及不带 type 的纯聊天/过渡发言、`pass`/系统占位，都**不是**触发型——它们照常进入记忆与事件树，但不会把任何 agent 拉起（否则 reaction/exploring 会互相刷出永不停息的调度）。
+- **触发源**：以下两种情况都会触发一次派发检查——(1) 一条触发型消息被发出；(2) 某个 agent 的 session **结束、变回空闲**（正常结束，或被 `terminateAgentSession` 处理完）。触发源只决定"要不要检查"，真正派发还要满足下一段的"待派发"条件；这样既不会漏掉"消息到达时所有 agent 都在忙"的情况，也不会在没人产出新信息时空转。
+- **派发条件（待派发）**：某个空闲 agent 只有在"存在一条**不是它自己发出**的触发型消息，其时间**晚于它自己上次 session 的开始时间**（从没跑过也算）"时才会被派发。一条触发型消息因此会给除作者外的每个 agent 各一次机会；一圈内没人再产出触发型消息（大家都 `pass`，或只发反应/注解）时，房间里没有待派发的 agent，派发自然停止。时间并列（同一毫秒）视为已消费，不再重复派发。
+- **派发规则**：每次触发都按固定顺序（agent 加入房间的顺序）找出**最靠前的、空闲且待派发**的 agent，为它启动一个新 session；空闲但不待派发的 agent 直接跳过（不阻塞后面待派发的 agent），忙碌的 agent 也跳过。找不到待派发的空闲 agent——什么都不做，等下一次触发。
 - **被派发的 agent 拿到什么**：两部分。(1) **房间协议说明**——固定的、不随每次派发变化的规则性内容（消息类型含义、`exploring` 生命周期、人类消息权重更高、可用工具有哪些等），因为每次 session 都是从零开始、不存在"已经学过规则"这回事，这份说明必须每次都完整给到，不能假设 agent 记得上次的规则。(2) **当前房间状态**（`get_overview`），不是只有触发它的那一条消息。两者一起构成这次 session 的完整输入。
 - **忙碌中的 agent 不受打扰**：一个 session 还在跑的时候，不会被通知、不会被打断，直到它自己结束（正常完成、报错退出，或被人类通过 `terminateAgentSession` 强制终止）。
-- **`pass`**：一个 agent 被派发之后，如果看完当前房间状态觉得没什么可说的，可以不发任何实质消息，只留一个系统占位事件（"pass"），会在事件树里留痕（见 3.5），但不会成为新的触发源。
+- **`pass`**：一个 agent 被派发之后，如果看完当前房间状态觉得没什么可说的，可以不发任何触发型消息，只留一个系统占位事件（"pass"），会在事件树里留痕（见 3.5），但不会成为新的触发源；`passed` 的 session 结束也不会因此产生新的派发。
 - **Agent 讨论方式**：可以基于当前房间的任务目标，以及房间中的信息赞同（`endorse`）、反对/质疑（统一映射为 `challenge`，两者功能上没有区别）、验证（`verify`）、追问（带 `targetMessageId` 的 `open_question`），也可以另起方向。
 - **总 session 数上限**：就是 agent 累计启动的 session 总数（`sessionId` 的最大值），不区分是被什么触发的，没有例外。**这个上限在创建 room 时可选指定（`maxSessions`，正整数；不填用服务端默认值）**，创建后不能直接改，只能靠 `resumeRoom(additionalSessions)` 追加。达到上限后自动暂停，把"是否继续"的决定权交还给人类——通过 `resumeRoom`（见 3.5）继续，或直接 `confirmCompletion` 结束。人类也可以在任何时候主动 `pauseRoom`，不需要等到达上限。
 - **没有自动超时机制**：编排器不会主动判断"这次 session 跑太久了"，不会自动把某次 session 标记为超时/出错——session 会一直运行，直到它自己正常退出或报错退出为止，系统不设执行时长上限。如果人类观察到某个 agent 的运行时长（`getRoomStatus` 里的"已运行 X 秒"）长到不合理，可以随时主动通过 `terminateAgentSession`（见 3.5）强制终止——"多久算太久"完全由人类自己判断，系统不做自动终止。
-- **人类消息的认知权重优先级**：人类发的消息带 `source: human` 标记，agent 被明确告知应更重视人类的判断；但系统依然不做任何强制覆盖/自动改写——遵循"只追加不覆盖"的原则。人类消息在**派发规则**上没有特权，跟其他实质消息一样只是一种触发源，不抢排队顺序。
+- **人类消息的认知权重优先级**：人类发的消息带 `source: human` 标记，agent 被明确告知应更重视人类的判断；但系统依然不做任何强制覆盖/自动改写——遵循"只追加不覆盖"的原则。人类消息在**派发规则**上没有特权，跟其他触发型消息一样只是一种触发源，不抢排队顺序。
 
 ### 3.3.1 非交互式 Session 生命周期
 
@@ -132,7 +134,7 @@ MCP 协议只暴露给外部 agent CLI。编排器后端和它的网页前端之
 **房间状态（`getRoomStatus`，随实时通道推送）**：
 - 累计 session 数（当前最新的 `sessionId`）、room 状态（进行中 / 已暂停（因 session 数上限或人类主动 `pauseRoom`）/ 已结束）；`propose_completion` 只触发前端提醒，不是独立的房间状态。
 - 每个 agent 的实时状态：`{ agentId, state: "idle" | "running" | "stopping", sessionId?, sessionStartedAt?, activeExploringSummary? }`。`sessionId` 在 `running`/`stopping` 状态下必须给出——人类要查看详情或终止，都是对着一个具体的 session 操作，不是对着 agent 本身，这个字段是两者之间的唯一定位手段。`running`/`stopping` 状态下前端据此显示"已运行 X 秒"——这也是人类判断"是不是跑太久了"的唯一依据（系统不做自动超时判定，见 3.3）。
-- 是否有 agent 疑似卡住（active `exploring` 连续 N 次被派发到它自己都无新消息，N 见第 9 节），判定逻辑在后端算好，前端只展示。
+- 是否有 agent 疑似卡住（agent 带 active `exploring` 且连续派发扫描计数达到 N，N 见第 9 节），判定逻辑在后端算好，前端只展示。
 
 **事件树**：不再有独立的 session 节点——每一行都是一条消息，严格按消息的真实发生时间排成一条竖直时间线，agent 之间允许并发（见 3.3）产生的交织顺序如实保留，不会因为"同属一个 session"被打包挪到一起。
 
@@ -148,7 +150,7 @@ agent 在 session 里发的每条消息都带着这次 session 的 `sessionId`�
 
 **强制终止**：`terminateAgentSession(roomId, sessionId)`——操作对象是**一次具体的 session**，不是 agent 本身（`sessionId` 从 `getRoomStatus` 的对应 agent 状态里拿，见上）。人类随时可主动调用，不需要先等"卡住提醒"触发。做三件事：(1) 如果这次 session 的底层进程还在跑，尽力终止它（按进程组终止，部分 CLI 无法保证清理干净其内部再拉起的子进程）；(2) 把这次 session 所属 agent 当前 active 的 `exploring`（如果有）标记为 `completed`，附带系统备注"人类强制终止"（不引入新的 `status` 值，仍是 `active`/`completed` 二态，见 4.6）；(3) 把这次 session 所属的 agent 状态设回空闲（从 `running`/`stopping` 回 `idle`），可以正常被派发。
 
-**人类发消息**：`postHumanMessage(roomId, content, type?, targetMessageId?)`，直接写入底层存储（不经过 MCP），`authorId` 固定为保留值 `"human"`。支持跟 agent 的 `post_message` 同样丰富的 `type`/`targetMessageId`——人类可以直接对某条结论做 fact/hypothesis/challenge/verify/追问等结构化发言，而不只是纯聊天，这样才能正确进入事件树和对应的记忆层。
+**人类发消息**：`postHumanMessage(roomId, content, type?, targetMessageId?, referencedMessageIds?)`，直接写入底层存储（不经过 MCP），`authorId` 固定为保留值 `"human"`。支持跟 agent 的 `post_message` 同样丰富的 `type`/`targetMessageId`/`referencedMessageIds`——人类可以直接对某条结论做 fact/hypothesis/challenge/verify/追问等结构化发言，而不只是纯聊天，这样才能正确进入事件树和对应的记忆层。
 
 **房间生命周期控制**：人类可以随时主动调用，不需要等任何 agent 先发信号——`propose_completion` 只是触发前端提醒，不是这些操作的前提：
 - `confirmCompletion(roomId)` —— 结束房间，之后转为只读（见 7）。
@@ -174,32 +176,32 @@ post_message({
   type?: "fact" | "hypothesis" | "boundary" | "open_question"
         | "chain" | "exploring" | "propose_completion"
         | "endorse" | "challenge" | "verify",
-  targetMessageId?: string,   // reaction 类型（endorse/challenge/verify）必填；
-                              // open_question 可选填，表示"追问"某条具体消息
-  referencedMessageIds?: string[],  // 仅 chain 可选填，标注这条方案依赖的 fact/hypothesis 等消息 id
+  targetMessageId?: number,   // reaction 必填；hypothesis 必填且目标为问题；
+                              // fact 可选回答问题；open_question 可选追问
+  referencedMessageIds?: number[],  // 所有有类型消息可选填，标注这条方案依赖的 fact/hypothesis 等消息 id
   summary?: string,           // 可选；不提供时系统自动截断 content 作为摘要
 })
 ```
 
 - `type` **可选**：不传 type 的消息就是纯聊天/过渡性发言，只出现在原始消息流里，不进入任何记忆层（避免强制归类导致的噪音和污染）。
-- 消息一旦发出，`type` 和 `content` **永不改写**（只追加，不覆盖）。唯一的例外是 `exploring` 类型自带的 `status` 字段，见 4.6。
+- 消息一旦发出，type 和 content 永不改写。exploring 允许一次状态结束转换，同时写入结束原因和结果，见 4.6。
 - `sessionId` 是 **session 的属性，不是消息的必备字段**：一个 agent 在它的一次 session 里发的每条消息，都会被打上这次 session 的 `sessionId`（agent 不可自行指定，系统在写入时自动填充，作为这次 session 的产出记录，供事件树按 session 组织使用，见 3.5）。人类通过 3.5 的 `postHumanMessage` 发的消息**没有 `sessionId`**——它不是任何 session 的产出，这个字段对它不适用，不是留空/置 null 的特殊情况，而是概念上就不存在。两者共享同一份底层存储，只是 `sessionId` 这个字段只在"由某次 session 产出"的消息上才有意义。
-- 另有一个专用工具 `complete_exploring(roomId, authorId, messageId)`，只用于把一条 `exploring` 记录标记为完成，不通过 `post_message`。
+- 另有一个专用工具 `complete_exploring(roomId, authorId, messageId, resultSummary, resultMessageIds?)`，只用于把一条 `exploring` 记录标记为完成，不通过 `post_message`。
 
 ### 4.3 记忆类型定义
 
 | type | 含义 |
 |---|---|
 | `fact` | 已确认的事实 |
-| `hypothesis` | 针对某个 `open_question` 提出的候选答案，尚无定论 |
+| `hypothesis` | 针对某个 open_question 提出的候选答案，尚无定论；新写入必须通过 targetMessageId 关联该问题 |
 | `boundary` | 已确认走不通的路径/死胡同 |
-| `open_question` | 尚无人给出候选答案的空白问题；可选带 `targetMessageId`，表示"追问"某条具体消息，而非全新问题 |
+| `open_question` | 提出的开放问题（已有回答通过关联展示）；可选带 `targetMessageId`，表示"追问"某条具体消息，而非全新问题 |
 | `chain` | 一条从输入到输出的候选端到端方案；可多条并存，**没有系统自动裁定的"当前最优"**——所有 chain 一律平等地列出摘要，由 agent/人类自己判断取舍；可选带 `referencedMessageIds`，标注依赖了哪些 fact/hypothesis（非强制，不填就只在 `content` 里用文字描述） |
 | `exploring` | 某个 agent 正在探索某方向的状态广播（用于防止重复劳动）。**是唯一一个有状态、非纯追加的类型**，详见 4.6 |
 | `propose_completion` | agent 认为任务可以结束了，发出的一次性信号。触发前端提醒，但不自动结束房间——只有人类调用 `confirmCompletion` 才真正结束，见 3.5 |
 | `endorse` / `challenge` / `verify` | 对某条已有消息（`targetMessageId`）的赞同/质疑/验证，纯注解，不改变原消息的 type，不触发任何自动的状态流转 |
 
-**开放问题 vs 假设**：`open_question` 是问题本身（还没人回答），`hypothesis` 是对某个问题给出的候选回答（还没被认定为定论）。二者概念不重复。
+**开放问题 vs 假设**：`open_question` 是问题本身（可能已有候选回答），`hypothesis` 是对某个问题给出的候选回答（还没被认定为定论）。二者概念不重复。
 
 ### 4.4 记忆读取：概览 + 按需深挖
 
@@ -210,22 +212,27 @@ post_message({
 ```
 {
   goal: "任务目标文本",  // 不是单独存储的字段，取房间里第一条消息（人类发的）的 content
-  facts: [{ id, summary }],
-  boundaries: [{ id, summary }],
-  openQuestions: [{ id, summary }],
-  chains: [{ id, summary }],           // 全部候选方案，一视同仁，不挑"最优"
-  activeExploring: [{ agentId, summary }],  // exploring 类型消息里 status=active 的那些，按 agent 分组的实时快照
-  hypotheses: [{ id, summary }],       // 索引/摘要，同样不给全文
+  facts: [MemorySummary],
+  boundaries: [MemorySummary],
+  openQuestions: [MemorySummary],
+  chains: [MemorySummary],           // 全部候选方案，一视同仁，不挑"最优"
+  activeExploring: [MemorySummary & { agentId }],  // exploring 类型消息里 status=active 的那些（扁平数组，每项带 agentId 表示占用者）
+  hypotheses: [MemorySummary],
+  completedExploring: [MemorySummary],
+  completionProposals: [MemorySummary],
+  reactions: [MemorySummary],
+  contextMessages: [MemorySummary],
+  relations: { /* 按 ID 索引注解、回答、反向引用 */ },       // 索引/摘要，同样不给全文
   recentRawMessages: [...]             // 最近 4 条不分类型的原始消息（默认，可配置）
 }
 ```
 
-**`get_detail(roomId, messageId | { type })`** —— agent 按需调用，拿某条或某类记忆的完整内容（包括它挂载的所有 endorse/challenge/verify 注解）。按 `type: "exploring"` 查询时返回**该类型下的全部记录，不分 active/completed**——这是深挖历史的工具，跟 `get_overview` 里只给 active 快照的 `activeExploring` 是两回事。
+**`get_detail(roomId, messageId | { type } | { list: true, type?, targetMessageId?, beforeId?, limit? })`** —— agent 按需调用，拿某条或某类记忆的完整内容（包括它挂载的所有 endorse/challenge/verify 注解）。`list: true` 时分页浏览全部历史（含无类型聊天），默认 30、最大 100，按 ID 倒序取页、页内升序，返回 `{ messages, nextCursor }`。按 `type: "exploring"` 查询时返回**该类型下的全部记录，不分 active/completed**——这是深挖历史的工具，跟 `get_overview` 里只给 active 快照的 `activeExploring` 是两回事。
 
 ### 4.5 只追加、不覆盖（`exploring` 除外，见 4.6）
 
 - 除 `exploring` 外，所有类型（facts / boundaries / hypotheses / chains 等）都是追加式的，没有"当前唯一状态"字段会被覆盖，也没有系统自动挑出的"当前最优"。
-- 一个 `hypothesis` 被 `verify` 后，**不会**自动升级为 `fact`；一个 `fact` 被 `challenge` 后，**不会**自动降级。系统只如实累积展示原始事件（谁验证/质疑了什么），最终"信不信"的判断权留给读取记忆的 agent 和人类。
+- 一个 hypothesis 被 verify 后不会自动升级为 fact；fact 被 challenge 后不会自动降级。默认记忆展示验证/质疑内容及关系，作者保留于原始消息供追溯；判断权留给 agent 和人类。
 - 多条 `chain`（候选方案）、多条 `boundary`（死胡同）可以同时并存，互不覆盖。
 
 ### 4.6 `exploring` 的状态机（唯一的例外）
@@ -234,15 +241,15 @@ post_message({
 
 - 每条 `exploring` 记录带一个 `status: "active" | "completed"` 字段。
 - **自动顶替**：agent 发一条新的 `exploring` 消息时，系统自动把它自己名下之前那条 active 的 `exploring`（如果有）标记为 `completed`。agent 换方向不需要额外操心。
-- **显式完成**：agent 探索完一个方向、但还没想好下一个方向时，调用 `complete_exploring(roomId, authorId, messageId)`，把当前 active 的记录标记为 `completed`。
+- **显式完成**：agent 探索完一个方向、但还没想好下一个方向时，调用 `complete_exploring(roomId, authorId, messageId, resultSummary, resultMessageIds?)`，把当前 active 的记录标记为 `completed`。
 - **人类强制完成**：人类也可以通过 3.5 的 `terminateAgentSession` 把它标记为 `completed`（带"人类强制终止"的系统备注），不需要 agent 自己配合。
-- 不做超时自动完成（讨论过，明确不要）。如果一个 agent 的 active `exploring` **连续 N 次被派发到它自己**都没有任何新消息（注意：是这个 agent 自己被派发的连续次数，不是全局连续 N 次 session——房间里其他 agent 被派发的次数不计入这个计数），只在 UI 上给人类一个提醒，具体怎么处理由人类自己决定（见 3.1、3.5）。
+- 不做超时自动完成（讨论过，明确不要）。一个 agent 的 active `exploring` 只在**派发扫描经过它自己**时计数：每次 `checkAndDispatch` 顺序扫描遇到处于 `running`/`stopping` 且带 active `exploring` 的 agent 就给它 `stuckCount` +1（不需要它自己被重新派发），exploring 状态发生变化时清零；达到 N 只在 UI 上给人类一个提醒，具体怎么处理由人类自己决定（见 3.1、3.5）。房间只有一个 agent 时扫描不会反复经过它、计数难以累积，该机制基本不起作用，人类靠"已运行 X 秒"自行判断（见 03）。
 - `status` 的变更**只发生在 `exploring` 这一种类型上**，其他所有类型永远不会有字段被事后修改。
 
 ## 5. agent 身份与"接手"
 
 - 不引入正式的"席位/交接"概念。所谓"接手"就是被 3.3 的派发规则选中的下一个空闲 agent（不管是不是同一类型的第一次参与）。
-- 任何 agent 读取 `get_overview` 时，都会被明确告知："以上是聊天室的既有记忆，仅供参考，请形成你自己的判断——可以采纳、组合、推翻，也可以提出全新方案。"
+- 任何 agent 读取 `get_overview` 时，都会被明确告知："以上是当前任务的进展情况，仅供参考，请形成你自己的判断——可以采纳、组合、推翻，也可以提出全新方案。"
 
 ## 6. 去中心化协调
 
@@ -272,6 +279,16 @@ post_message({
 
 - `get_overview` 中各字段的摘要截断长度、`recentRawMessages` 的具体条数（已定为默认 4 条，可通过服务端配置调整）。
 - MCP server 与编排器之间的具体协议/端口，本地存储格式（如 SQLite）。
-- 触发"卡住提醒"的具体阈值 N（单位是该 agent 自己的连续操作次数，见 4.6）。
+- 触发"卡住提醒"的具体阈值 N（单位是该 agent 的连续派发扫描经过次数，见 4.6 与 03 §5）。
 - Agent 注册表配置文件的具体 schema 细节。
 - `schedulingMode` 除 `"sequential"` 外的其他模式（如 `"parallel"`）的具体调度逻辑——v1 不实现，只预留参数位置（3.3）。
+
+## 记忆连续性修订（2026-09-19）
+
+记忆完整性：所有有类型事件进入默认摘要（不含作者），保留目标与依据引用；reaction 挂到目标，回答关联问题但不设置解决状态；已结束探索、结果和完成提议持续可见。原始消息保留作者。新 hypothesis 必须关联问题，fact 可关联问题。四个工具不变，get_detail 新增 list 分页模式；完整接口以 02-memory-management.md 为准。
+
+所有 agent 占用时取消此次派发，不排队；下次派发读取最新全量记忆。消息不增加或重置 session 上限。新 chain 须说明实质变化，无增量可以结束。
+
+## 调度收敛修订（2026-09-19）
+
+引入"触发型消息"：人类消息一律触发，agent 消息只有 fact/hypothesis/boundary/open_question/chain/challenge 触发；exploring/propose_completion/endorse/verify 及无类型消息、`pass` 占位不触发。派发不再只看"有没有空闲 agent"，而是看该 agent 是否"待派发"（存在非本人发出、且晚于其上次 session 开始时间的触发型消息；同毫秒视为已消费）。因此一条触发型消息给每个其他 agent 各一次机会，一轮内无人再产出触发型消息即自然停止，不再空转；session 结束（含 `passed`）只是重新检查，不再必然派生新 session。

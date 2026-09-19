@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { EventEmitter } from 'node:events';
-import { getMessageById, insertMessage } from '../storage';
+import { validateMessageRelations, insertMessage } from '../storage/messages';
 import type { MessageType } from '../storage';
 import { assertRoomExists, assertNotReservedAuthor, resolveSessionBinding, McpToolError } from './validation';
 
@@ -21,8 +21,6 @@ export interface PostMessageDeps {
   resetStuckCount: (roomId: number, agentId: string) => void;
 }
 
-const REACTION_TYPES: MessageType[] = ['endorse', 'challenge', 'verify'];
-
 export function createPostMessageHandler(deps: PostMessageDeps) {
   const { db, roomEvents, onSubstantiveMessagePosted, resetStuckCount } = deps;
 
@@ -31,26 +29,8 @@ export function createPostMessageHandler(deps: PostMessageDeps) {
     assertNotReservedAuthor(params.authorId);
     const sessionSeq = resolveSessionBinding(db, params.roomId, params.authorId);
 
-    if (params.type && REACTION_TYPES.includes(params.type) && params.targetMessageId == null) {
-      throw new McpToolError(`targetMessageId is required for type "${params.type}"`);
-    }
-    if (params.targetMessageId != null) {
-      const target = getMessageById(db, params.roomId, params.targetMessageId);
-      if (!target) {
-        throw new McpToolError(`targetMessageId ${params.targetMessageId} not found in room ${params.roomId}`);
-      }
-    }
-    if (params.referencedMessageIds?.length) {
-      if (params.type !== 'chain') {
-        throw new McpToolError('referencedMessageIds is only allowed when type is "chain"');
-      }
-      for (const refId of params.referencedMessageIds) {
-        const ref = getMessageById(db, params.roomId, refId);
-        if (!ref) {
-          throw new McpToolError(`referencedMessageIds contains ${refId} which is not found in room ${params.roomId}`);
-        }
-      }
-    }
+    try { validateMessageRelations(db, params.roomId, params); }
+    catch (err) { throw new McpToolError((err as Error).message); }
 
     const { message, supersededExploringId } = insertMessage(db, {
       roomId: params.roomId,

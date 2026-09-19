@@ -12,9 +12,10 @@ afterEach(() => {
 });
 
 describe('checkAndDispatch', () => {
-  it('dispatches to the first idle agent in join order', () => {
+  it('dispatches to the first idle agent in join order when a triggering message exists', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
     const startSession = vi.fn();
     const stuckCounter = createStuckCounter();
 
@@ -40,6 +41,7 @@ describe('checkAndDispatch', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
     setAgentEnabled(db, room.id, 'codex', false);
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
     const startSession = vi.fn();
 
     checkAndDispatch(db, room.id, startSession, createStuckCounter());
@@ -108,6 +110,7 @@ describe('checkAndDispatch', () => {
   it('does not propagate a synchronous throw from startSession (keeps the server alive)', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
     const startSession = vi.fn(() => {
       throw new Error('boom');
     });
@@ -119,10 +122,11 @@ describe('checkAndDispatch', () => {
     errorSpy.mockRestore();
   });
 
-  it('does not scan agents after the chosen idle target', () => {
+  it('stops scanning at the first dispatchable idle agent', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude', 'kimi'], 'sequential');
-    // codex is idle -> dispatch target, scan stops before claude/kimi
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
+    // codex is idle and owed -> dispatch target, scan stops before claude/kimi
     const s2 = createSession(db, room.id, 'claude');
     setAgentState(db, room.id, 'claude', 'running', s2.seq);
     insertMessage(db, { roomId: room.id, sessionSeq: s2.seq, authorId: 'claude', content: 'exploring Y', type: 'exploring' });
@@ -132,12 +136,71 @@ describe('checkAndDispatch', () => {
 
     expect(stuckCounter.get(room.id, 'claude')).toBe(0);
   });
+
+  it('does nothing when no dispatch-triggering message exists', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const startSession = vi.fn();
+
+    checkAndDispatch(db, room.id, startSession, createStuckCounter());
+
+    expect(startSession).not.toHaveBeenCalled();
+  });
+
+  it('does not re-dispatch an agent that has already run since the latest trigger', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
+    createSession(db, room.id, 'codex'); // started after the trigger -> already consumed it
+    const startSession = vi.fn();
+
+    checkAndDispatch(db, room.id, startSession, createStuckCounter());
+
+    expect(startSession).not.toHaveBeenCalled();
+  });
+
+  it('does not let non-triggering typed messages wake an idle agent', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: 1, authorId: 'codex', content: 'exploring X', type: 'exploring' });
+    insertMessage(db, { roomId: room.id, sessionSeq: 1, authorId: 'codex', content: 'done?', type: 'propose_completion' });
+    const startSession = vi.fn();
+
+    checkAndDispatch(db, room.id, startSession, createStuckCounter());
+
+    expect(startSession).not.toHaveBeenCalled();
+  });
+
+  it('does not re-dispatch an agent because of its own triggering message', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'a fact', type: 'fact' });
+    const startSession = vi.fn();
+
+    checkAndDispatch(db, room.id, startSession, createStuckCounter());
+
+    expect(startSession).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a different agent woken by a challenge', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const fact = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'a fact', type: 'fact' }).message;
+    createSession(db, room.id, 'codex'); // codex already ran after the fact
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'disagree', type: 'challenge', targetMessageId: fact.id });
+    const startSession = vi.fn();
+
+    checkAndDispatch(db, room.id, startSession, createStuckCounter());
+
+    expect(startSession).toHaveBeenCalledWith({ roomId: room.id, seq: 2, agentId: 'claude', registryKey: 'claude' });
+  });
 });
 
 describe('onSubstantiveMessagePosted', () => {
   it('triggers a dispatch check', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
     const startSession = vi.fn();
 
     onSubstantiveMessagePosted(db, room.id, startSession, createStuckCounter());

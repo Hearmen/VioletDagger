@@ -37,6 +37,7 @@
 - [ ] G1. `propose_completion` 纳入记忆：`buildOverview`（02 §4）新增分组/字段、`MemoryViewPayload`（02 §6）新增 `proposeCompletion: Message[]` 分组、`07` 记忆总线加对应 chip（§159 计数、§163 顺序）、`04` 派发 prompt 协作协议注明"仅提议，结束由人类决定"。性质保持只追加、不可变、无状态；该改动同时消解 F2（02 §1 本就把它列为记忆类型）。
   - 待定：overview 给全量 `completionProposals: {id, agentId, summary}[]`，还是 `completionProposed: boolean` + 最近一条摘要（倾向后者，省 token）。
 - [ ] G2. 提议完成的 agent 进入 disable 状态，由人类通过前端命令再次启动，防止被无限拉起：agent 一旦发出 `propose_completion`，将其 `room_agents.dispatch_enabled` 置 0（复用现有 `setAgentEnabled`，01 §4 / 06 §4）。
+  - 注（2026-09-19）：调度收敛修订后 `propose_completion` 已不再是触发型消息，不会再拉起任何 agent（见 `03-orchestrator-core.md` §1.1），本条"防止无限拉起"的动机基本被消解，是否仍需要此显式停用待定。
   - 动机：`propose_completion` 是实质消息、会触发派发检查，可能把同一 agent 反复拉起、反复提议，形成循环；停用即切断循环。
   - 触发点：`05-mcp-server.md` §4 `post_message` 在 `type === 'propose_completion'` 时调用核心停用该 agent，并 emit `roomStatus`（dispatch_enabled 变化）。
   - 不变：仍需人类 `confirmCompletion` 才真正结束房间。
@@ -49,6 +50,10 @@
   - 存储：`sessions` 表加字段（input/output/total tokens）或新增 `session_usage` 表；room 级聚合读取。
   - 展示：`getRoomStatus` 或 `06` 的房间接口加汇总，前端房间头部显示；无法获取 usage 的 agent 明确标注"不可用"，不伪造。
   - 待确认：是否把 token 开销纳入 `deleteRoom` 的级联清理范围。
+
+## MCP 凭据级 session 绑定（待办）
+
+- [ ] I1. `05-mcp-server.md` §1/§3 定义的凭据级固定绑定尚未实现：当前 `packages/server/src/mcp-server/validation.ts` 的 `resolveSessionBinding` 仅按调用方自报的 `authorId` 查 `room_agents.state === 'running'` 与 `current_session_seq`，没有随机高熵凭据的签发/校验，也没有校验 session 的 `outcome`；"旧凭据不能写到下一次 session" 的防迟到写入未落地。本地单用户场景风险有限，但属文档与实现落差，待实现或明确降级文档。
 
 ## 待定的修复方向（未决，需 review）
 

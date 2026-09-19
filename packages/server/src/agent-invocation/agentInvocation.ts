@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import type Database from 'better-sqlite3';
-import { getRoom, setSessionPgid, setSessionRawLogPath } from '../storage';
+import { getRoom, setRoomStatus, setSessionPgid, setSessionRawLogPath, insertMessage } from '../storage';
+import { roomEvents } from '../events';
 import { buildOverview } from '../memory';
 import { buildPromptText, writePromptFile } from './prompt';
 import type {
@@ -212,6 +213,17 @@ export function createAgentInvocation(deps: {
 
     const overview = buildOverview(db, roomId);
     const promptText = buildPromptText({ roomId, agentId, overview });
+    const promptLimit = Number(process.env.VIOLETDAGGER_MAX_PROMPT_BYTES ?? 128 * 1024);
+    if (!Number.isInteger(promptLimit) || promptLimit <= 0 || Buffer.byteLength(promptText, 'utf8') > promptLimit) {
+      setRoomStatus(db, roomId, 'paused_manual');
+      const content = `完整记忆输入超过预算（${promptLimit} bytes）或预算配置无效，房间已暂停；历史未截断。请调整 VIOLETDAGGER_MAX_PROMPT_BYTES 后再恢复。`;
+      console.error(`Room ${roomId}: ${content}`);
+      const { message } = insertMessage(db, { roomId, sessionSeq: seq, authorId: 'system', content });
+      roomEvents.emit('message', { roomId, message });
+      roomEvents.emit('roomStatus', { roomId });
+      onSessionEnded({ roomId, seq, agentId, exitCode: null, signal: null, exitCause: 'spawn-failed', rawLogPath });
+      return;
+    }
     const promptFile = path.join(promptDir, `violetdagger-${roomId}-${seq}.prompt.txt`);
     // 默认每次 session 一份独立 MCP 配置（04 §2）；kimi 只支持 user 级 mcp.json，故允许 path 覆盖。
     const mcpFilePath = config.mcpFile?.path

@@ -1,3 +1,4 @@
+import { validateMessageRelations } from '../storage/messages';
 import { readFileSync } from 'node:fs';
 import type { EventEmitter } from 'node:events';
 import type Database from 'better-sqlite3';
@@ -54,20 +55,8 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
       targetMessageId?: number;
       referencedMessageIds?: number[];
     }) {
-      // 消息 id 是 room 内编号，跨 room 引用会在 room 内查找不到（见 01-storage.md 第 2 节）。
-      if (params.targetMessageId != null && !getMessageById(db, roomId, params.targetMessageId)) {
-        throw new ApiError(`targetMessageId ${params.targetMessageId} not found in room ${roomId}`, 400);
-      }
-      if (params.referencedMessageIds?.length) {
-        if (params.type !== 'chain') {
-          throw new ApiError('referencedMessageIds is only allowed when type is "chain"', 400);
-        }
-        for (const refId of params.referencedMessageIds) {
-          if (!getMessageById(db, roomId, refId)) {
-            throw new ApiError(`referencedMessageIds contains ${refId} which is not found in room ${roomId}`, 400);
-          }
-        }
-      }
+      try { validateMessageRelations(db, roomId, params); }
+      catch (err) { throw new ApiError((err as Error).message, 400); }
 
       const { message, supersededExploringId } = insertMessage(db, {
         roomId,

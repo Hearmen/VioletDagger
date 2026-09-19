@@ -79,20 +79,23 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 | type | TEXT | 可空；`fact`/`hypothesis`/`boundary`/`open_question`/`chain`/`exploring`/`propose_completion`/`endorse`/`challenge`/`verify`；为空即纯聊天，不进任何记忆层 |
 | content | TEXT NOT NULL | 写入后永不修改 |
 | summary | TEXT NOT NULL | 写入时计算好落盘（未显式提供则自动截断 `content`），供 `get_overview` 快速读取，不在读时现算 |
-| target_message_id | INTEGER | 可空；引用**本 room 内**的消息 id（同 room 由调用方保证，见第 2 节）；reaction 类型必填，`open_question` 可选填 |
-| exploring_status | TEXT | 仅 `type='exploring'` 时有意义，`active`/`completed`；**是全表唯一允许事后修改的字段** |
+| target_message_id | INTEGER | 可空；同 room 消息 ID；reaction 必填，hypothesis 必填且目标为问题，fact 可选且目标为问题，open_question 可选追问 |
+| exploring_status | TEXT | 仅 exploring 使用；允许一次 active → completed，并同时写入结束信息 |
 | exploring_note | TEXT | 配合 `exploring_status` 变更时的系统备注（如"人类强制终止"） |
+| exploring_end_reason | TEXT | explicit / superseded / human_terminated；历史未知为 NULL |
+| exploring_result_summary | TEXT | 主动完成时的结果摘要，允许描述无结论；历史未记录为 NULL |
+| exploring_result_message_ids | TEXT NOT NULL DEFAULT '[]' | 结果消息 ID 的 JSON 数组，同 room |
 | created_at | TEXT NOT NULL | |
 
 主键：`(room_id, id)`。
 
 ### message_references
 
-服务 `chain` 的 `referencedMessageIds`：
+服务所有有类型消息的 `referencedMessageIds`：
 
 | 列 | 类型 |
 |---|---|
-| room_id | INTEGER NOT NULL | 所属 room（`chain` 的引用必须同 room，由调用方保证） |
+| room_id | INTEGER NOT NULL | 所属 room（所有引用必须同 room，由调用方保证） |
 | message_id | INTEGER NOT NULL | 发起引用的消息（room 内 id） |
 | referenced_message_id | INTEGER NOT NULL | 被引用的消息（同 room 内 id） |
 
@@ -184,9 +187,12 @@ interface Message {
   content: string;
   summary: string;
   targetMessageId: number | null;
-  referencedMessageIds: number[];  // 仅 chain 类型有意义，读取时从 message_references 联表得到，其余类型固定为空数组
+  referencedMessageIds: number[];  // 有类型消息的依据引用，从 message_references 联表得到
   exploringStatus: 'active' | 'completed' | null;  // 仅 type='exploring' 有意义
   exploringNote: string | null;
+  exploringEndReason: 'explicit' | 'superseded' | 'human_terminated' | null;
+  exploringResultSummary: string | null;
+  exploringResultMessageIds: number[];
   createdAt: string;
 }
 
@@ -244,6 +250,7 @@ function appendSessionEvent(roomId: number, seq: number, kind: SessionEvent['kin
 function listSessionEvents(roomId: number, seq: number): SessionEvent[];
 function getSession(roomId: number, seq: number): Session | null;
 function listSessions(roomId: number): Session[]; // 按 seq 升序，供事件树给每条消息的 session 标签查出 outcome/起止时间（见 07-frontend.md §9）
+function getLatestSessionStartedAt(roomId: number, agentId: string): string | null; // 该 agent 最近一次 session 的 started_at，供核心判定"待派发"（03 §1.2）；从没跑过为 null
 function countSessions(roomId: number): number; // 计入 maxSessions 上限的 session 数 = 本 room 中 outcome != 'error' 的数量（error 不占配额；session 的 seq 仍由 createSession 内部 MAX(seq)+1 生成）
 
 // Message
@@ -256,8 +263,11 @@ function listMessages(roomId: number, cursor?: number, limit?: number): { messag
 function getMessagesByType(roomId: number, type: MessageType): Message[];
 function getActiveExploring(roomId: number): Message[];
 function getRecentRawMessages(roomId: number, n: number): Message[];
-function completeExploring(roomId: number, messageId: number, note?: string): void;
+function completeExploring(roomId: number, messageId: number, note?: string, result?: { resultSummary: string; resultMessageIds?: number[] }): void;
 function getAnnotations(roomId: number, messageId: number): Message[]; // 挂在它上面的 endorse/challenge/verify/追问（room 内 id）
+function getRoomMessages(roomId: number): Message[]; // 批量读取 room 全部消息（含 referencedMessageIds 联表），供记忆投影一次性建表，避免逐条查询
+function getLatestDispatchTriggerAt(roomId: number, excludeAuthorId: string, triggerTypes: MessageType[]): string | null; // 触发型消息（author_id='human' 或 type ∈ triggerTypes，且非 excludeAuthorId 发出）的最新 created_at，供核心判定"待派发"（03 §1.2）
+function validateMessageRelations(roomId: number, params: Pick<InsertMessageParams, 'type' | 'targetMessageId' | 'referencedMessageIds'>): void; // hypothesis 目标须为 open_question、fact 目标若给须为 open_question、reaction 目标必填；拒绝未知 type；引用 ID 去重并校验同 room 存在；无类型消息不接受 referencedMessageIds。MCP 与人类 RPC 共用
 ```
 
 ## 5. 开放决策
@@ -268,7 +278,7 @@ function getAnnotations(roomId: number, messageId: number): Message[]; // 挂在
 
 ### 5.2 消息 id 类型与需求文档字面不一致
 
-`docs/requirements.md` 4.2 节 `post_message` 的 schema 示例把 `targetMessageId`/`referencedMessageIds` 写成 `string`/`string[]`，本设计里 `messages.id` 是 SQLite 自增 INTEGER，相应字段是 `number`/`number[]`（见上方类型定义、`05-mcp-server.md`）。已与你确认：这是需求文档 JSON 示例里的随手类型标注，不是对 id 形式的硬性要求，保留整数实现选择，不回改 `requirements.md`。后续所有设计文档里的消息 id 相关字段一律按 `number`（room 内自增，见 §5.5）处理。
+需求与设计的消息 ID 均使用 number（room 内自增）；targetMessageId 和 referencedMessageIds 使用同一 room 内 ID。
 
 ### 5.3 状态与迁移
 
@@ -289,3 +299,7 @@ markSessionTerminating 在事务内将 stopIntent 设为 terminate、状态置 s
 **不兼容旧库、不做数据迁移（已确认）**：升级时若检测到旧 schema（`messages.id` 为单列主键，即没有 `(room_id, id)` 复合主键），**直接重建整个数据库**——清空 `rooms`/`room_agents`/`sessions`/`session_events`/`messages`/`message_references` 全部数据，按 §1 的 schema 重新建表；旧数据不迁移、不保留。本地单机工具，接受这一取舍。
 
 `id` **不使用 `AUTOINCREMENT`**：在 `insertMessage` 的事务内用 `MAX(id)+1` 生成，保证 room 内连续编号。
+
+## 记忆连续性修订（2026-09-19）
+
+messages 增加 exploring_end_reason TEXT、exploring_result_summary TEXT、exploring_result_message_ids TEXT NOT NULL DEFAULT '[]'（JSON 数组）。Message 对应 exploringEndReason、exploringResultSummary、exploringResultMessageIds。旧库只补列，不推测回填、不删除历史。completeExploring(roomId, messageId, note?, result?) 的 result 为 { resultSummary, resultMessageIds? }；仅 active 可转 completed，结果与状态事务写入一次，explicit/human_terminated 分别由结果/系统 note 决定；自动顶替记录 superseded。引用数组机械去重。批量读取消息和 message_references，供共享记忆投影建立反向关系。新写入的 hypothesis 目标必须是问题；fact 目标若提供也必须是问题；reaction 必须有目标。MCP 和人类 RPC 共用校验，历史读取不套用新写入约束。

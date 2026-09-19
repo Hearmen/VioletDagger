@@ -1,29 +1,35 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { buildPromptText, writePromptFile } from '../../src/agent-invocation/prompt';
-import type { OverviewPayload } from '../../src/memory';
+import type { OverviewPayload, MemorySummary } from '../../src/memory';
 
 vi.mock('node:fs/promises', () => ({
   writeFile: vi.fn().mockResolvedValue(undefined),
 }));
 
+const summary = (id: number, type: MemorySummary['type'], text: string): MemorySummary => ({
+  id, type, summary: text, targetMessageId: null, referencedMessageIds: [], exploringStatus: null,
+  exploringNote: null, exploringEndReason: null, exploringResultSummary: null, exploringResultMessageIds: [],
+});
 const baseOverview: OverviewPayload = {
   goal: 'build the thing',
-  facts: [{ id: 1, summary: 'db uses sqlite' }],
+  facts: [summary(1, 'fact', 'db uses sqlite')],
   boundaries: [],
   openQuestions: [],
   chains: [],
   hypotheses: [],
-  activeExploring: [{ agentId: 'claude', summary: 'looking at schema' }],
+  activeExploring: [{ ...summary(2, 'exploring', 'looking at schema'), agentId: 'claude', exploringStatus: 'active' }],
+  completedExploring: [], completionProposals: [], reactions: [], contextMessages: [], relations: {},
   recentRawMessages: [
     {
       id: 1, roomId: 1, sessionSeq: null, authorId: 'human', type: null,
       content: 'build the thing', summary: 'build the thing', targetMessageId: null,
       referencedMessageIds: [], exploringStatus: null, exploringNote: null,
+      exploringEndReason: null, exploringResultSummary: null, exploringResultMessageIds: [],
       createdAt: '2026-01-01T00:00:00.000Z',
     },
   ],
-  guidance: '以上是聊天室的既有记忆，仅供参考，请形成你自己的判断——可以采纳、组合、推翻，也可以提出全新方案。',
+  guidance: '以上是当前任务的进展情况，仅供参考，请形成你自己的判断——可以采纳、组合、推翻，也可以提出全新方案。',
 };
 
 describe('buildPromptText', () => {
@@ -32,17 +38,17 @@ describe('buildPromptText', () => {
     expect(text).toContain('roomId: 7');
     expect(text).toContain('authorId: codex');
     expect(text).toContain('任务目标：build the thing');
-    expect(text).toContain('以上是聊天室的既有记忆');
+    expect(text).toContain('以上是当前任务的进展情况');
   });
 
   it('renders fact summaries with their message id', () => {
     const text = buildPromptText({ roomId: 7, agentId: 'codex', overview: baseOverview });
-    expect(text).toContain('[#1] db uses sqlite');
+    expect(text).toContain('[#1] fact：db uses sqlite');
   });
 
   it('renders active exploring entries grouped by agentId', () => {
     const text = buildPromptText({ roomId: 7, agentId: 'codex', overview: baseOverview });
-    expect(text).toContain('claude: looking at schema');
+    expect(text).toContain('占用：claude：looking at schema');
   });
 
   it('renders "（无）" for empty sections', () => {

@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS messages (
   target_message_id INTEGER,
   exploring_status TEXT,
   exploring_note TEXT,
+  exploring_end_reason TEXT,
+  exploring_result_summary TEXT,
+  exploring_result_message_ids TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
   PRIMARY KEY (room_id, id)
 );
@@ -120,6 +123,17 @@ function migrate(db: Database.Database): void {
     db.exec(SCHEMA_SQL);
     db.pragma('foreign_keys = ON');
     return;
+  }
+
+  const messageColumns = db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
+  for (const [name, definition] of [
+    ['exploring_end_reason', 'TEXT'],
+    ['exploring_result_summary', 'TEXT'],
+    ['exploring_result_message_ids', "TEXT NOT NULL DEFAULT '[]'"],
+  ]) {
+    if (!messageColumns.some((column) => column.name === name)) {
+      db.exec(`ALTER TABLE messages ADD COLUMN ${name} ${definition}`);
+    }
   }
 
   const agentColumns = db.prepare(`PRAGMA table_info(room_agents)`).all() as { name: string }[];

@@ -161,6 +161,7 @@ describe('onSessionEnded', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
     const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
     const startSession = vi.fn();
 
     onSessionEnded(db, exitEvent(room.id, session.seq, 'codex'), startSession, createStuckCounter(), createFailureCounter());
@@ -195,7 +196,7 @@ describe('terminateAgentSession', () => {
     expect(getSession(db, room.id, session.seq)!.outcome).toBe('terminated');
     expect(getActiveExploring(db, room.id)).toEqual([]);
     expect(memoryUpdateListener).toHaveBeenCalledTimes(1);
-    // claude (join order 0) is dispatched after codex is freed, so codex settles idle.
+    // codex settles idle; no triggering message exists, so nobody is dispatched.
     expect(getRoomAgents(db, room.id).find((a) => a.agentId === 'codex')).toMatchObject({ state: 'idle' });
     // outcome != completed 补写占位消息，即使这次 session 已经有过实质消息（见需求 3.5）。
     const placeholder = getMessagesBySession(db, room.id, session.seq).find((m) => m.content.includes('人工终止'));
@@ -234,6 +235,7 @@ describe('terminateAgentSession', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
     const session = createSession(db, room.id, 'codex');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
     const startSession = vi.fn();
 
     await terminateAgentSession(
@@ -248,6 +250,7 @@ describe('setAgentEnabled', () => {
   it('re-enables an agent, clears its failure count, and triggers dispatch', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
     setAgentEnabled(db, room.id, 'codex', false, vi.fn(), createStuckCounter(), createFailureCounter());
     const failureCounter = createFailureCounter();
     failureCounter.increment(room.id, 'codex');

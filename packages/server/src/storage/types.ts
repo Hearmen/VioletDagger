@@ -77,6 +77,9 @@ export interface Message {
   referencedMessageIds: number[];
   exploringStatus: 'active' | 'completed' | null;
   exploringNote: string | null;
+  exploringEndReason: 'explicit' | 'superseded' | 'human_terminated' | null;
+  exploringResultSummary: string | null;
+  exploringResultMessageIds: number[];
   createdAt: string;
 }
 

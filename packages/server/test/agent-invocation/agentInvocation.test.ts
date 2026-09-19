@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import { createTestDb } from '../../src/storage/db';
-import { createRoom } from '../../src/storage/rooms';
+import { createRoom, getRoom } from '../../src/storage/rooms';
 import { createSession, getSession } from '../../src/storage/sessions';
 import { insertMessage } from '../../src/storage/messages';
 import { createAgentInvocation } from '../../src/agent-invocation/agentInvocation';
@@ -83,6 +83,17 @@ describe('createAgentInvocation - startSession', () => {
     });
     return { db, room, session, fake, spawnProcess, onSessionEnded, onSessionExitProgress, invocation };
   }
+
+  it('pauses rather than truncates or spawns when the memory prompt exceeds its budget', () => {
+    const { room, session, spawnProcess, invocation, db, onSessionEnded } = setup();
+    vi.stubEnv('VIOLETDAGGER_MAX_PROMPT_BYTES', '20');
+    try {
+      invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+      expect(spawnProcess).not.toHaveBeenCalled();
+      expect(getRoom(db, room.id)?.status).toBe('paused_manual');
+      expect(onSessionEnded).toHaveBeenCalledWith(expect.objectContaining({ exitCause: 'spawn-failed', seq: session.seq }));
+    } finally { vi.unstubAllEnvs(); }
+  });
 
   it('execs the configured argv non-interactively with placeholders substituted, and records pgid/rawLogPath', async () => {
     const { room, session, spawnProcess, invocation, db } = setup();

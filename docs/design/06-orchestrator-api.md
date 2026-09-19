@@ -67,11 +67,11 @@ listMessages(params: { cursor?: number; limit?: number }): { messages: Message[]
 postHumanMessage(params: { content: string; type?: MessageType; targetMessageId?: number; referencedMessageIds?: number[] }): { messageId: number };
 // authorId 固定为 "human"，不从客户端传入；storage.insertMessage(...) 返回 { message, supersededExploringId }，
 // emit('message', { roomId, message })，若 supersededExploringId != null 额外 emit('memoryUpdate', { roomId, messageId: supersededExploringId })（同 05-mcp-server.md post_message 的处理，见 00-overview.md），
-// 并无条件调用 orchestratorCore.onSubstantiveMessagePosted(roomId)（人类消息一律算实质消息，见需求 3.3）
+// 并无条件调用 orchestratorCore.onSubstantiveMessagePosted(roomId)（人类消息一律是触发型，见需求 3.3）
 
 // 记忆视图（全文，不是摘要）
 getMemoryView(): MemoryViewPayload;
-// 直接 return memoryManagement.buildMemoryView(roomId)（见 02-memory-management.md 第 6 节）；
+// 直接 return memoryManagement.buildMemoryView(roomId)（见 02-memory-management.md 第 5 节）；
 // exploring 分组是 getMessagesByType(roomId, 'exploring') 全量，不筛 active/completed，前端按 exploringStatus 自己分组/标灰
 
 // 房间状态
@@ -132,7 +132,8 @@ confirmCompletion(): { ok: true };                                    // orchest
 ```typescript
 // 存储层
 listMessages, insertMessage, countSessions, listSessions,
-getMessagesBySession, listSessionEvents, getSession, getRoom, getRoomAgents
+getMessagesBySession, listSessionEvents, getSession, getRoom, getRoomAgents,
+getActiveExploring, validateMessageRelations
 
 // 记忆管理层（见 02-memory-management.md）
 buildMemoryView(roomId: number): MemoryViewPayload
@@ -154,3 +155,7 @@ roomEvents.on('message' | 'memoryUpdate' | 'roomStatus' | 'roomDeleted', handler
 session_events 与消息分开返回，事件树详情展示人工终止请求、清理意图、SIGTERM/SIGKILL 发送、退出归因与清理失败与最终结果。生命周期变化沿用 roomStatus 通知，客户端重拉状态、事件树与当前打开的 session 详情；不发 newMessage 或 memoryUpdate。stopping 不代表进程退出；两种非终态均允许人工终止，日志始终只读。room 已 completed 但仍有非终态 session 时也保留其查看和终止入口。
 
 人工终止请求期间也显示 stopping，不能把 RPC 已发出当作 terminated。RPC 清理失败须展示错误并保留终止重试入口；成功需刷新服务端 outcome。stopIntent=terminate 表示人工终止中；自然完成不设置 stopIntent。
+
+## 记忆连续性修订（2026-09-19）
+
+postHumanMessage 使用与 MCP 同一关系校验；新 hypothesis 必须选择问题作为目标，fact 的目标若提供必须为问题。有类型消息均允许 referencedMessageIds。getMemoryView 新增 completionProposals/reactions/contextMessages/relations，前端据 ID 映射显示完整注解和回答，具体契约见 02 §5。message 推送会刷新关系视图，memoryUpdate 会刷新探索结束信息。

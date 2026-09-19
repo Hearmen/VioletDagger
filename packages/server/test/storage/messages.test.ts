@@ -6,6 +6,7 @@ import {
   insertMessage,
   getFirstMessage, getMessagesBySession, listMessages, getMessagesByType,
   getActiveExploring, getRecentRawMessages, getAnnotations, getMessageById, completeExploring,
+  validateMessageRelations,
 } from '../../src/storage/messages';
 
 describe('insertMessage', () => {
@@ -192,6 +193,20 @@ describe('message read queries', () => {
   });
 });
 
+describe('validateMessageRelations', () => {
+  it('rejects an unknown message type', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    expect(() => validateMessageRelations(db, room.id, { type: 'bogus' as never })).toThrow('unknown message type');
+  });
+
+  it('accepts a known message type', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    expect(() => validateMessageRelations(db, room.id, { type: 'fact' })).not.toThrow();
+  });
+});
+
 describe('completeExploring', () => {
   it('marks the message completed with an optional note', () => {
     const db = createTestDb();
@@ -221,7 +236,7 @@ describe('completeExploring', () => {
       roomId: room.id, sessionSeq: s1.seq, authorId: 'codex',
       content: 'a fact', type: 'fact',
     });
-    completeExploring(db, room.id, message.id, 'should not apply');
+    expect(() => completeExploring(db, room.id, message.id, 'should not apply')).toThrow('not active');
     const updated = getMessageById(db, room.id, message.id)!;
     expect(updated.exploringStatus).toBeNull();
     expect(updated.exploringNote).toBeNull();
@@ -238,7 +253,7 @@ describe('completeExploring', () => {
       content: 'exploring X', type: 'exploring',
     });
     completeExploring(db, room.id, message.id, 'first note');
-    completeExploring(db, room.id, message.id);
+    expect(() => completeExploring(db, room.id, message.id)).toThrow('not active');
     const updated = getMessageById(db, room.id, message.id)!;
     expect(updated.exploringStatus).toBe('completed');
     expect(updated.exploringNote).toBe('first note');

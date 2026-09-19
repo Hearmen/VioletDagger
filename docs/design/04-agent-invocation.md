@@ -96,3 +96,7 @@ function deleteRoomArtifacts(roomId: number): Promise<void>;
 退出监听和清理 Promise 共用同一退出事实，由核心幂等结算。正常零退出为 natural，独立异常为 unexpected，启动失败为 spawn-failed；人工清理的结果由 terminate 意图判定，不把它误算成自然完成。运行记录不含答案提取缓冲。
 
 deleteRoomArtifacts 清理房间日志、prompt 和独立 MCP 配置，不触碰共享用户配置。历史 PTY 文本日志可由只读回放按旧格式显示，不追溯生成消息。
+
+## 记忆连续性修订（2026-09-19）
+
+按 02 §3 完整渲染摘要、关系、反应、历史探索与完成提议，不展示摘要作者（active 占用 agentId 例外）。默认 128 KiB UTF-8 prompt 上限，VIOLETDAGGER_MAX_PROMPT_BYTES 配置；超限明确报错、暂停房间并结算未启动 session，不 spawn、不截断。协作协议要求先查看已有回答与注解，再次验证/质疑说明新增条件或证据；chain 引用旧方案并说明实质变化，局部发现用对应类型，不要求每轮综合；没有增量可结束。人类原始消息仍按既有协议加权。

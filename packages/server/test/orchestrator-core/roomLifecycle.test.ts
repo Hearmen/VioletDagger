@@ -45,6 +45,7 @@ describe('room lifecycle', () => {
   it('resumeRoom from paused_manual reactivates and dispatches without requiring additionalSessions', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
     pauseRoom(db, room.id);
     const startSession = vi.fn();
 

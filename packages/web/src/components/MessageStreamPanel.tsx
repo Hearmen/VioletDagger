@@ -198,6 +198,7 @@ export function MessageStreamPanel(props: {
         type={type}
         onTypeChange={setType}
         targetMessageId={targetMessageId}
+        targetMessageType={props.messages.find(message => message.id === targetMessageId)?.type}
         onClearTarget={() => {
           setTargetMessageId(undefined);
           clearReactionType();

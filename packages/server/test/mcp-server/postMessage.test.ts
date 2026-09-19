@@ -65,7 +65,7 @@ describe('createPostMessageHandler', () => {
     expect(() => postMessage({ roomId: room.id, authorId: 'codex', content: 'x', type: 'endorse' })).toThrow(McpToolError);
   });
 
-  it('rejects referencedMessageIds unless type is chain', () => {
+  it('accepts referencedMessageIds for any typed message', () => {
     const { db, room, session, postMessage } = setup();
     const fact = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'a fact', type: 'fact' });
     expect(() =>
@@ -73,7 +73,16 @@ describe('createPostMessageHandler', () => {
         roomId: room.id, authorId: 'codex', content: 'x', type: 'fact',
         referencedMessageIds: [fact.message.id],
       }),
-    ).toThrow(McpToolError);
+    ).not.toThrow();
+  });
+
+  it('requires a question target for a new hypothesis through the write handler', () => {
+    const { db, room, session, postMessage } = setup();
+    const question = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'question', type: 'open_question' }).message;
+    const base = { roomId: room.id, authorId: 'codex', content: 'candidate', type: 'hypothesis' as const };
+    expect(() => postMessage(base)).toThrow('targetMessageId');
+    expect(postMessage({ ...base, targetMessageId: question.id }).messageId).toBeGreaterThan(question.id);
+    expect(() => postMessage({ ...base, targetMessageId: question.id + 1 })).toThrow('open_question');
   });
 
   it('accepts a chain message with valid referencedMessageIds', () => {

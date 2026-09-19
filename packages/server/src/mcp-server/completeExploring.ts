@@ -7,6 +7,8 @@ export interface CompleteExploringParams {
   roomId: number;
   authorId: string;
   messageId: number;
+  resultSummary: string;
+  resultMessageIds?: number[];
 }
 
 export interface CompleteExploringDeps {
@@ -35,7 +37,11 @@ export function createCompleteExploringHandler(deps: CompleteExploringDeps) {
       );
     }
 
-    markExploringCompleted(db, params.roomId, params.messageId);
+    if (!params.resultSummary?.trim()) throw new McpToolError('resultSummary is required');
+    for (const id of params.resultMessageIds ?? []) {
+      if (!Number.isInteger(id) || id <= 0 || !getMessageById(db, params.roomId, id)) throw new McpToolError(`result message ${id} not found`);
+    }
+    markExploringCompleted(db, params.roomId, params.messageId, undefined, params);
     roomEvents.emit('memoryUpdate', { roomId: params.roomId, messageId: params.messageId });
     resetStuckCount(params.roomId, params.authorId);
 

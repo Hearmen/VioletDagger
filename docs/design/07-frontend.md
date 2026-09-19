@@ -149,22 +149,22 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - **选中目标消息后追加反应类选项**：点选一条消息（§6"目标选择"）后，选择器自动展开并追加 `endorse` / `challenge` / `verify`；取消目标（再点该消息或点 ✕）时移除这三项，已选中的反应类型一并清空。
 - `06-orchestrator-api.md` 的 `postHumanMessage` 签名不变（仍接受全部 `type`），仅前端不给其余类型的入口。
 - `content` 用自适应高度 `textarea`（最多 8 行后内部滚动）；`Ctrl/Cmd + Enter` 发送。
-- 调用 `postHumanMessage({ content, type?, targetMessageId? })`（`referencedMessageIds` 仅 `chain` 使用，人类 UI 不产生，接口仍接受）；成功后由 `newMessage` 推送自然带回，**本地不做乐观插入**。发送成功后清空输入与选择状态。
+- 调用 `postHumanMessage({ content, type?, targetMessageId? })`（`referencedMessageIds` 供所有有类型消息使用，人类 UI 不产生，接口仍接受）；成功后由 `newMessage` 推送自然带回，**本地不做乐观插入**。发送成功后清空输入与选择状态。
 - `completed` 房间：Composer 整块替换为"房间已结束，只读"提示条，不渲染输入控件（满足需求 7）。
 
 ## 8. MemoryPanel
 
-中列上方一行。数据仍只来自 `getMemoryView()`（全文，`06-orchestrator-api.md` 不变），但展示改为**总线 + 逐级下钻**的渐进式结构（需求 3.5）——语义是"先给索引，用户点了才展开内容"。三个层级：
+中列上方一行。数据只来自 `getMemoryView()`（全文与关系，见 `06-orchestrator-api.md`），展示为**总线 + 逐级下钻**的渐进式结构（需求 3.5）。三个层级：
 
 1. **记忆总线**（常驻顶部，不可折叠）：各类别的索引 chips 横排，每个 chip 显示类别名 + 计数；计数直接由当前 `getMemoryView()` 返回的各分组数组长度派生（`exploring` 显示 `active`/`completed` 两个计数）。默认**不展开任何类别**。
-2. **类别层**（点击某个 chip 后，在该类别下方内联展开）：展示该类别的条目列表——每条一行，含类型徽标、作者（身份色）、`HH:mm:ss`、`summary`；再点该 chip（或收起按钮）折叠回总线。
+2. **类别层**（点击某个 chip 后，在该类别下方内联展开）：每条一行，含类型徽标、消息 ID、summary，不展示作者；再次点击 chip 折叠。
 3. **条目层**（点击类别层里的某条）：展开这条的全文（不截断，`white-space: pre-wrap`）、`targetMessageId` 的 `↳ #id` 跳转，以及挂在它上面的注解信息。
 
-- 分组展示顺序仍固定：`facts` → `hypotheses` → `chains` → `boundaries` → `openQuestions` → `exploring`（前端 chip 的渲染顺序，与 `MemoryViewPayload` 的字段声明顺序无关，见 `02-memory-management.md`）。
+- 分组展示顺序固定：facts → hypotheses → chains → boundaries → openQuestions → exploring → completionProposals → contextMessages。reaction 在目标下显示；无有效目标的历史 reaction 仍显示，不能丢弃。
 - 允许同时展开多个类别（各自独立折叠），但初始态是全部折叠——"渐进式"指按需展开，不做懒请求。
 - 带 `targetMessageId` 的 `↳ #id` 点击后在消息流里滚动定位并短暂高亮该消息。
 - 面板 body 始终显示细滚动条（见 §3），内容过长时可滚动查看，不截断。**实现坑**：`.memory-view` 既是滚动容器又是 flex 列容器，而 `.memory-group` 带 `overflow:hidden`——按 flex 规范后者的"自动最小尺寸"失效，会被 `flex-shrink` 压扁、内容被裁掉。必须禁止子项收缩：`.memory-view > * { flex: 0 0 auto; }`。
-- `exploring` 类别（需求 4.6/3.5）：条目层按 `authorId` 分组、组内按 `createdAt` 倒序。`exploringStatus === 'active'` 正常展示（青色徽标 + 作者身份色）；`'completed'` 整条降为 `--text-muted` + "已完成"标签，若带 `exploringNote` 一并展示。**保留可见、不从视图消失**。
+- `exploring` 类别（需求 4.6/3.5）：条目层按消息 ID 展示，不按作者分组。`exploringStatus === 'active'` 正常展示（青色徽标）；`'completed'` 整条降为 `--text-muted` + "已完成"标签，若带 `exploringNote` 一并展示。**保留可见、不从视图消失**。
 - 实时更新（见第 13 节）：收到 `newMessage`/`memoryUpdate`/`roomStatus` 后重拉 `getMemoryView()`——总线计数随之刷新；已展开的类别与条目保持展开状态、内容就地更新。
 
 ## 9. EventTreePanel
@@ -306,3 +306,7 @@ src/
 - 生命周期事件与执行日志不进入消息/记忆面板；SessionDetailModal 单独展示生命周期记录。
 - AgentRail 展示 `enabled`/`failureCount`：连续失败被自动停用的 agent 需人类点"启用"才重新入队（`03-orchestrator-core.md` §6）；停用不终止正在运行的 session。
 - 删除房间清理失败时展示错误并留在原页面，保留日志、记录及打开的弹窗。
+
+## 记忆连续性修订（2026-09-19）
+
+记忆面板保留既有分组，新增完成提议；reaction 在目标下展开，不平铺重复列表；以 getMemoryView 的 reactions/contextMessages 与各分组构造 ID 表，使用 relations 展示注解、回答与被引用 ID。反应的目标为反应或普通消息也能定位，不依赖聊天窗口加载。移除记忆条目的作者展示及按作者分组（原始消息流作者保持）。探索显示结束原因、结果及结果引用；历史缺失明确显示未记录。Composer 发送 hypothesis 必须选择问题，fact 若指定目标必须为问题。

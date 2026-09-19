@@ -19,6 +19,18 @@ function setup() {
 }
 
 describe('createCompleteExploringHandler', () => {
+  it('rejects missing results and invalid result references without ending exploration', () => {
+    const { db, room, session, completeExploring } = setup();
+    const { message } = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'investigation', type: 'exploring' });
+    const params = { roomId: room.id, authorId: 'codex', messageId: message.id };
+    expect(() => completeExploring({ ...params, resultSummary: ' ' })).toThrow('resultSummary');
+    expect(() => completeExploring({ ...params, resultSummary: 'done', resultMessageIds: [999] })).toThrow('not found');
+    expect(getMessageById(db, room.id, message.id)?.exploringStatus).toBe('active');
+    completeExploring({ ...params, resultSummary: 'no conclusion', resultMessageIds: [message.id, message.id] });
+    expect(getMessageById(db, room.id, message.id)?.exploringResultMessageIds).toEqual([message.id]);
+    expect(() => completeExploring({ ...params, resultSummary: 'overwrite' })).toThrow();
+    expect(getMessageById(db, room.id, message.id)?.exploringResultSummary).toBe('no conclusion');
+  });
   it('marks the active exploring message completed, emits memoryUpdate, and resets stuck count', () => {
     const { db, room, session, roomEvents, resetStuckCount, completeExploring } = setup();
     const { message } = insertMessage(db, {
@@ -27,10 +39,11 @@ describe('createCompleteExploringHandler', () => {
     const memoryEvents: any[] = [];
     roomEvents.on('memoryUpdate', (e) => memoryEvents.push(e));
 
-    const result = completeExploring({ roomId: room.id, authorId: 'codex', messageId: message.id });
+    const result = completeExploring({ roomId: room.id, authorId: 'codex', messageId: message.id, resultSummary: '检查 X，证据不足' });
 
     expect(result).toEqual({ ok: true });
     expect(getMessageById(db, room.id, message.id)!.exploringStatus).toBe('completed');
+    expect(getMessageById(db, room.id, message.id)!.exploringResultSummary).toBe('检查 X，证据不足');
     expect(memoryEvents).toEqual([{ roomId: room.id, messageId: message.id }]);
     expect(resetStuckCount).toHaveBeenCalledWith(room.id, 'codex');
   });

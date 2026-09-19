@@ -10,6 +10,7 @@ export function Composer(props: {
   type: MessageType | '';
   onTypeChange: (type: MessageType | '') => void;
   targetMessageId?: number;
+  targetMessageType?: MessageType | null;
   onClearTarget: () => void;
   onSend: (params: {
     content: string;
@@ -32,9 +33,10 @@ export function Composer(props: {
 
   const availableTypes =
     props.targetMessageId != null ? [...BASE_TYPES, ...REACTION_TYPES] : BASE_TYPES;
-  const needsTarget = REACTION_TYPES.includes(type as MessageType);
+  const needsTarget = type === 'hypothesis' || REACTION_TYPES.includes(type as MessageType);
   const missingTarget = needsTarget && props.targetMessageId == null;
-  const canSend = content.trim().length > 0 && !missingTarget;
+  const invalidAnswerTarget = (type === 'hypothesis' || type === 'fact') && props.targetMessageId != null && props.targetMessageType !== 'open_question';
+  const canSend = content.trim().length > 0 && !missingTarget && !invalidAnswerTarget;
 
   function autoResize() {
     const el = textareaRef.current;
@@ -57,6 +59,7 @@ export function Composer(props: {
 
   return (
     <div className="composer">
+      {(type === 'hypothesis' && missingTarget || invalidAnswerTarget) && <p role="status">请选择一条 open_question 作为回答目标</p>}
       {props.targetMessageId != null && (
         <div className="composer__row">
           <span className="composer__target">

@@ -65,7 +65,8 @@ export function createMcpServer(deps: McpServerDeps): McpServer {
 
   server.tool(
     'complete_exploring',
-    { roomId: z.number(), authorId: z.string(), messageId: z.number() },
+    { roomId: z.number(), authorId: z.string(), messageId: z.number().int().positive(),
+      resultSummary: z.string().trim().min(1), resultMessageIds: z.array(z.number().int().positive()).optional() },
     async (params: any) => {
       try {
         return toMcpResult(completeExploring(params));
@@ -93,6 +94,10 @@ export function createMcpServer(deps: McpServerDeps): McpServer {
       roomId: z.number(),
       messageId: z.number().optional(),
       type: z.enum(MESSAGE_TYPES).optional(),
+      list: z.literal(true).optional(),
+      targetMessageId: z.number().int().positive().optional(),
+      beforeId: z.number().int().positive().optional(),
+      limit: z.number().int().min(1).max(100).optional(),
     },
     async (params: any) => {
       try {

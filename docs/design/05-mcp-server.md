@@ -28,6 +28,8 @@ function revokeSessionCredential(roomId: number, seq: number): void;
 3. post_message、complete_exploring 保留的 roomId/authorId 参数必须与绑定身份一致，只用于校验；sessionSeq 始终来自上下文。
 4. stopping 和终态拒绝写入；人工终止立即撤销权限。校验与同步落库之间不插入 await，防止退出与写入竞态。旧凭据不能写到下一次 session。
 
+**实现现状（待办）**：本节的凭据级绑定尚未落地——当前 `packages/server/src/mcp-server/validation.ts` 仅按调用方自报的 `authorId` 查 `room_agents.state === 'running'` 与 `current_session_seq`，未校验凭据与 session `outcome`。见 `docs/TODO.md`。
+
 ## 4. `post_message`
 
 ```typescript
@@ -46,22 +48,24 @@ post_message(params: {
 1. 通用校验 + Session 绑定（第 2、3 节）。
 2. 字段校验：
    - `type` 是 `endorse`/`challenge`/`verify` 时，`targetMessageId` 必填，且必须以 `getMessageById(roomId, id)` 查到（消息 id 是 room 内编号，见 `01-storage.md`），否则报错。
-   - `referencedMessageIds` 只允许 `type === 'chain'` 时提供；提供时逐个以 `getMessageById(roomId, id)` 校验存在。
+   - `referencedMessageIds` 允许所有有类型消息提供；提供时逐个以 `getMessageById(roomId, id)` 校验存在。
    - `type === 'open_question'` 时 `targetMessageId` 可选，提供则同样校验存在性。
+   - hypothesis 必须指向 open_question；fact 若有目标也必须为 open_question。引用 ID 为正整数并去重；无类型消息不接受 referencedMessageIds。
 3. `const { message, supersededExploringId } = storage.insertMessage({ roomId, sessionSeq, authorId, content, type, targetMessageId, referencedMessageIds, summary })`。
 4. `roomEvents.emit('message', { roomId, message })`（见 `00-overview.md`"推送事件总线"）；若 `supersededExploringId != null`，额外 `roomEvents.emit('memoryUpdate', { roomId, messageId: supersededExploringId })`（这次插入的 `exploring` 消息自动顶替了该 agent 之前 active 的那条，旧消息的 `exploringStatus` 变了，需要单独推送），并调用 `orchestratorCore.resetStuckCount(roomId, authorId)`（换了新方向，"卡住"计数清零，见 `03-orchestrator-core.md` 第 5 节）。
-5. 若 `type != null`，调用 `orchestratorCore.onSubstantiveMessagePosted(roomId)`（对应触发源(1)，见 `03-orchestrator-core.md` 1.1）。
+5. 若 `type != null`，调用 `orchestratorCore.onSubstantiveMessagePosted(roomId)`（触发一次派发检查；是否真的派发由核心的"待派发"判定决定——只有触发型类型会唤醒其他 agent，见 `03-orchestrator-core.md` 1.1/1.2）。
 6. 返回 `{ messageId: message.id }`。
 
 ## 5. `complete_exploring`
 
 ```typescript
-complete_exploring(params: { roomId: number; authorId: string; messageId: number }): { ok: true }
+complete_exploring(params: { roomId: number; authorId: string; messageId: number; resultSummary: string; resultMessageIds?: number[] }): { ok: true }
 ```
 
 1. 通用校验 + Session 绑定（第 2、3 节）——理由同 `post_message`：只有固定绑定的 `running` session 才能调用，防止 session 已经结束后台进程还在迟到调用。
 2. `getMessageById(roomId, messageId)`（消息 id 是 room 内编号）：必须存在、`authorId` 与调用者一致、`type === 'exploring'`、`exploringStatus === 'active'`，否则报错。
-3. `storage.completeExploring(roomId, messageId)`（不带 note——note 是人类强制终止专用，见 `03-orchestrator-core.md` 第 3 节）。
+   同时校验 resultSummary 非空，resultMessageIds 为同 room 已有消息的正整数 ID。
+3. `storage.completeExploring(roomId, messageId, undefined, { resultSummary, resultMessageIds })`（传入 resultSummary 和 resultMessageIds，结束结果原子写入；系统 note 仍供人类强制终止使用，见 `03-orchestrator-core.md` 第 3 节）。
 4. `roomEvents.emit('memoryUpdate', { roomId, messageId })`（见 `00-overview.md`"推送事件总线"），并调用 `orchestratorCore.resetStuckCount(roomId, authorId)`（显式完成探索，"卡住"计数清零，见 `03-orchestrator-core.md` 第 5 节）。
 5. **不**触发 `onSubstantiveMessagePosted`（这是状态变更不是新消息，见 4.5 的"只追加"原则和 `03-orchestrator-core.md` 1.1 对触发源的定义）。
 6. 返回 `{ ok: true }`。
@@ -74,28 +78,28 @@ get_overview(params: { roomId: number }): OverviewPayload
 
 **无需 session 绑定**——按需求 4.4 的签名，`get_overview` 只接受 `roomId`，是纯读操作，不校验调用者身份。
 
-实现：直接 `return memoryManagement.buildOverview(roomId)`（见 `02-memory-management.md` 第 4 节，`OverviewPayload` 的字段定义、组装逻辑都在那边）。这是 agent 主动调用这个工具时的用法；同一份 `buildOverview` 也被 `04-agent-invocation.md` 在派发时调用，预渲染进 prompt——两处共用一份实现，不重复。
+实现：直接 `return memoryManagement.buildOverview(roomId)`（见 `02-memory-management.md` 第 3 节，`OverviewPayload` 的字段定义、组装逻辑都在那边）。这是 agent 主动调用这个工具时的用法；同一份 `buildOverview` 也被 `04-agent-invocation.md` 在派发时调用，预渲染进 prompt——两处共用一份实现，不重复。
 
 ## 7. `get_detail`
 
 ```typescript
-get_detail(params: { roomId: number; messageId?: number; type?: MessageType }): MessageWithAnnotations | MessageWithAnnotations[]
-// messageId 和 type 二选一，都不传或都传视为参数错误
+get_detail(params: { roomId: number; messageId?: number; type?: MessageType; list?: true; targetMessageId?: number; beforeId?: number; limit?: number }): MessageWithAnnotations | MessageWithAnnotations[] | { messages: MessageWithAnnotations[]; nextCursor: number | null }
+// 单条、type 全量、list:true 分页三种模式互斥，详见 02 §4
 ```
 
 **同样无需 session 绑定**（按需求 4.4 签名，纯读操作）。
 
-实现：直接 `return memoryManagement.buildDetail(roomId, messageId != null ? { messageId } : { type })`（见 `02-memory-management.md` 第 5 节）。
+实现：完整传递查询参数给 `memoryManagement.buildDetail(roomId, params)`，由其验证互斥模式并组装关系（见 `02-memory-management.md` 第 4 节）。
 
 ## 8. 对外依赖
 
 ```typescript
 // 存储层（见 01-storage.md）——get_overview/get_detail 用到的查询函数已经挪到记忆管理层，这里只保留 post_message/complete_exploring 自己需要的
-getRoom, getSession, getMessageById(roomId, id), insertMessage, completeExploring(roomId, messageId, note?)
+getRoom, getSession, getMessageById(roomId, id), insertMessage, completeExploring(roomId, messageId, note?, result?), validateMessageRelations(roomId, params)
 
 // 记忆管理层（见 02-memory-management.md）
 buildOverview(roomId: number): OverviewPayload
-buildDetail(roomId: number, params: { messageId: number } | { type: MessageType }): MessageWithAnnotations | MessageWithAnnotations[]
+buildDetail(roomId: number, params: DetailParams): MessageWithAnnotations | MessageWithAnnotations[] | DetailPage
 
 // 编排器核心（见 03-orchestrator-core.md）
 onSubstantiveMessagePosted(roomId: number): void
@@ -117,3 +121,7 @@ roomEvents.emit('message' | 'memoryUpdate', payload)
 - 不校验单个 agent CLI 侧是否接好 MCP（那要真的拉起 agent、消耗额度），只校验"编排器自身的 MCP 端点健康"。
 
 对外接口：`verifyMcpServer(url: string, timeoutMs?: number): Promise<void>`，供 `startApp` 调用。
+
+## 记忆连续性修订（2026-09-19）
+
+post_message 与人类 RPC 共用关系校验：hypothesis 必须指向 open_question，fact 可选指向 open_question，reaction 必须指向已有消息；所有有类型消息允许依据引用。complete_exploring 必填非空 resultSummary，可选同 room resultMessageIds，原子结束，不触发新消息派发。get_detail 保留原单条/按 type 模式，新增 list:true 的分页模式，可选 type/targetMessageId/beforeId/limit；分页默认30、最大100，返回 {messages,nextCursor}。messageId 与列表参数互斥，详细返回形状见 02 §4。

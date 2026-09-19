@@ -4,12 +4,14 @@
 
 ## 1. 事件驱动派发
 
-### 1.1 触发源（对应需求 3.3）
+### 1.1 触发源与触发型消息（对应需求 3.3）
+
+**触发型消息**：人类消息一律是触发型（不论带不带 type）；agent 消息只有 `fact` / `hypothesis` / `boundary` / `open_question` / `chain` / `challenge` 是触发型。`exploring`（状态广播）、`propose_completion`（信号）、`endorse` / `verify`（纯注解）、无类型纯聊天与系统占位都不是触发型，不唤醒任何 agent——否则 reaction/exploring 会互相刷出永不停息的调度。
 
 - **`onSubstantiveMessagePosted(roomId)`**：由 MCP Server 的 `post_message` handler（agent 消息，且 `type` 非空时才调用）和编排器对外接口的 `postHumanMessage` handler（人类消息一律调用）在消息成功写入存储后调用。
 - **`onSessionEnded(event)`**：由 Agent 调用适配层在一次 session 的进程结果确定后调用（见 `04-agent-invocation.md`），结合进程事实、清理归因和终止意图结算（第 2 节），确认结束后触发一次 `checkAndDispatch`。
 
-两者都只是"触发一次检查"，不携带需要特殊处理的语义差异——检查逻辑统一走 `checkAndDispatch`。
+两者都只是"触发一次检查"，不携带需要特殊处理的语义差异——是否真的派发由 1.2 的"待派发"判定决定，所以非触发型消息和 `passed` 的 session 结束都不会造成空转。
 
 ### 1.2 `checkAndDispatch(roomId)` 与并发正确性
 
@@ -20,8 +22,10 @@
 3. 按 `joinOrder` 顺序扫描 `getRoomAgents(roomId)`（每个元素是含 `agentId`/`registryKey` 的 `RoomAgentState`，见 `01-storage.md`）：
    - `dispatchEnabled === false` 的 agent：跳过（继续扫描后面的，见第 6 节）。
    - 遇到忙碌状态（`running` 或 `stopping`）且当前带 active `exploring`（用 `getActiveExploring(roomId)` 算出的 agentId 集合判断；agentId 是**实例标识**，见 `00-overview.md`）的 agent：该 agent 的内存 `stuckCount` + 1（见第 5 节"卡住提醒"计数）。
-   - 遇到 `state === 'idle'` 的 agent：记为 `dispatchTarget`（一个 `RoomAgentState`），停止扫描（排在它后面的 agent 这一次不会被摸到，不计数）。
-   若扫描完都没找到可派发的 `idle` agent：`roomEvents.emit('roomStatus', { roomId })`（这次扫描可能改了某些 agent 的 `stuckCount`），返回，不派发。
+   - 遇到 `state === 'idle'` 且**待派发**的 agent：记为 `dispatchTarget`（一个 `RoomAgentState`），停止扫描（排在它后面的 agent 这一次不会被摸到，不计数）。
+   - 遇到 `state === 'idle'` 但**不待派发**的 agent：跳过，继续扫描后面的 agent——不能让一个没有新信息的空闲 agent 挡住后面待派发的 agent。
+   **待派发**：存在一条**非本人发出**的触发型消息（`author_id = 'human'` 或 `type` ∈ 触发型集合，见 1.1），其 `created_at` **严格晚于**该 agent 最近一次 session 的 `started_at`（从没跑过视为满足；同一毫秒并列视为已消费、不派发）。判定纯查 `getLatestDispatchTriggerAt` / `getLatestSessionStartedAt`，不维护内存集合。
+   若扫描完都没找到 `dispatchTarget`：`roomEvents.emit('roomStatus', { roomId })`（这次扫描可能改了某些 agent 的 `stuckCount`），返回，不派发——没人产出新信息的稳定态就停在这里，不会空转。
 4. 调用 `createSession(roomId, dispatchTarget.agentId)` + `setAgentState(roomId, dispatchTarget.agentId, 'running', seq)`——这一步和上面的扫描、判断都在同一个同步调用栈内完成。
 5. 同步返回后，再调用 `agentInvocation.startSession({ roomId, seq, agentId: dispatchTarget.agentId, registryKey: dispatchTarget.registryKey })`（这是 fire-and-forget，不等待其完成）。`registryKey` 是唯一用于查 `agents.config.json` 的字段，`agentId` 只作为实例标识透传。**必须同时用 try/catch 包住这次调用**：它返回 Promise 的那部分已用 `.catch` 兜住，但同步阶段也可能抛错（如建目录失败）；而 `checkAndDispatch` 会被进程退出等事件回调直接调用，同步抛出会变成未捕获异常、把整个 server 打挂——任何同步抛出都要降级为"记录日志、这次派发失败"，不能让进程死。
 6. `roomEvents.emit('roomStatus', { roomId })`（见 `00-overview.md`"推送事件总线"）——同时覆盖第 4 步的状态迁移（新 session 出现、agent 变 `running`）和第 3 步扫描过程中可能产生的 `stuckCount`/`dispatchEnabled` 变化。
@@ -96,7 +100,7 @@ async function deleteRoom(roomId: number): Promise<void>;
 
 ## 5. "卡住提醒"计数（需求 4.6 / 3.1）
 
-计数发生在 `checkAndDispatch` 每次顺序扫描 agent 列表的过程中（见第 1.2 节第 3 步）：扫描沿途每遇到一个 `running`/`stopping` 且当前带 active `exploring` 的 agent，就给它的内存计数 `stuckCount` + 1，直到遇到第一个 `idle` 的 agent 为止（派给它，扫描停止，排在它后面的 agent 这一次不会被摸到、不会被计数）。计数器不落盘（不需要持久化，room 重启/进程重启后归零即可，属于 UI 提示性质）。
+计数发生在 `checkAndDispatch` 每次顺序扫描 agent 列表的过程中（见第 1.2 节第 3 步）：扫描沿途每遇到一个 `running`/`stopping` 且当前带 active `exploring` 的 agent，就给它的内存计数 `stuckCount` + 1，直到遇到第一个**可派发**（`idle` 且待派发）的 agent 为止（派给它，扫描停止，排在它后面的 agent 这一次不会被摸到、不会被计数）；`idle` 但不待派发的 agent 只被跳过，不终止扫描。计数器不落盘（不需要持久化，room 重启/进程重启后归零即可，属于 UI 提示性质）。
 
 **清零时机**：这个 agent 的 active `exploring` 状态发生变化时，`stuckCount` 归零。三处触发点都调用本节新增的 `resetStuckCount(roomId, agentId)`：
 - `insertMessage` 返回 `supersededExploringId != null` 时（自动顶替成新的一条），由调用方（`05-mcp-server.md` 的 `post_message`）调用。
@@ -116,7 +120,7 @@ async function deleteRoom(roomId: number): Promise<void>;
 - **结算更新**：`onSessionEnded` 结算为 `error` 时 `failureCount + 1`；结算为其他终态（`completed`/`passed`/`terminated`）时清零。`terminateAgentSession` 结算后同样清零。
 - **自动停用**：`failureCount` 达到阈值（默认 3）时，调用 `storage.setAgentEnabled(roomId, agentId, false)`，清零计数，`emit('roomStatus')`。停用状态**持久化**在 `room_agents.dispatch_enabled`，重启后仍生效。
 - **派发跳过**：`checkAndDispatch` 扫描时跳过 `dispatchEnabled === false` 的 agent（见 1.2 第 3 步），继续看后面的；停用不终止正在运行的 session。
-- **人工启停**：`setAgentEnabled(roomId, agentId, enabled)` 是人类显式操作。启用时清零 `failureCount`、`emit('roomStatus')` 并调用一次 `checkAndDispatch`（重新入队，可能立刻被派发）；停用只 `emit('roomStatus')`。系统**不自动恢复**，需人类显式启用。
+- **人工启停**：`setAgentEnabled(roomId, agentId, enabled)` 是人类显式操作。启用时清零 `failureCount`、`emit('roomStatus')` 并调用一次 `checkAndDispatch`（若存在晚于它上次 session 的触发型消息则可能立刻被派发，否则不派发）；停用只 `emit('roomStatus')`。系统**不自动恢复**，需人类显式启用。
 - **展示**：`getRoomStatus` 暴露每个 agent 的 `enabled` 与 `failureCount`，前端展示"连续失败，已停用派发"并提供启用/停用控件（见 `07-frontend.md` §5）。
 
 阈值默认 3，可通过服务端配置调整。这条机制是为了避免"配额/凭据失效等持续失败"时把 `maxSessions` 配额在短时间内烧完（`error` 本身也不占配额，见 `01-storage.md`）。
@@ -138,3 +142,11 @@ function resetStuckCount(roomId: number, agentId: string): void;
 function getAgentFailures(roomId: number): { agentId: string; failureCount: number }[];
 function setAgentEnabled(roomId: number, agentId: string, enabled: boolean): void;
 ```
+
+## 记忆连续性修订（2026-09-19）
+
+所有 agent 占用时当场取消本次派发，不排队、不保存 pending 请求；session 结束仍按既有规则独立检查派发，不补跑取消的请求。空闲检查和占位同步完成。每次实际启动读取最新 overview；typed 消息不增加或重置预算。输入大小超限将房间 paused_manual 并报告错误，结算未启动 session，阻止自动重试。
+
+## 调度收敛修订（2026-09-19）
+
+引入触发型消息与"待派发"判定（见 1.1/1.2）：触发源只触发检查，实际派发要求 agent 存在非本人发出、晚于其上次 session 开始时间的触发型消息。`passed` 与 reaction/exploring 不再派生新 session，房间在无人产出触发型消息后自然停止；`getLatestDispatchTriggerAt` 返回最新触发型消息时间（人类消息一律计入、排除调用 agent 自己），`getLatestSessionStartedAt` 返回该 agent 最近一次 session 开始时间，两者由 `dispatch.isDispatchOwed` 比较（同毫秒视为已消费）。
