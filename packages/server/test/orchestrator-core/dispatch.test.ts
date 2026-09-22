@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { createTestDb } from '../../src/storage/db';
 import { createRoom, getRoom, getRoomAgents, setRoomStatus, setAgentState, setAgentEnabled } from '../../src/storage/rooms';
-import { createSession } from '../../src/storage/sessions';
+import { createSession, getSession } from '../../src/storage/sessions';
 import { insertMessage } from '../../src/storage/messages';
 import { createStuckCounter } from '../../src/orchestrator-core/stuckCounter';
-import { checkAndDispatch, onSubstantiveMessagePosted } from '../../src/orchestrator-core/dispatch';
+import { checkAndDispatch, onSubstantiveMessagePosted, isDispatchOwed } from '../../src/orchestrator-core/dispatch';
 import { roomEvents } from '../../src/events';
 
 afterEach(() => {
@@ -196,6 +196,64 @@ describe('checkAndDispatch', () => {
   });
 });
 
+describe('checkAndDispatch — auto-confirm on silence (03-orchestrator-core.md §1.4)', () => {
+  it('auto-confirms when the room is quiet and the latest signal message is propose_completion', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential', { autoConfirmOnSilence: true });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'a fact', type: 'fact' });
+    const proposal = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'done', type: 'propose_completion' }).message;
+
+    checkAndDispatch(db, room.id, vi.fn(), createStuckCounter());
+
+    expect(getRoom(db, room.id)).toMatchObject({
+      status: 'completed', completionReason: 'auto_silence', completionReferenceMessageId: proposal.id,
+    });
+  });
+
+  it('does not auto-confirm when autoConfirmOnSilence was not enabled at room creation', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'done', type: 'propose_completion' });
+
+    checkAndDispatch(db, room.id, vi.fn(), createStuckCounter());
+
+    expect(getRoom(db, room.id)!.status).toBe('active');
+  });
+
+  it('does not auto-confirm once a newer trigger message supersedes the proposal', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential', { autoConfirmOnSilence: true });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'done', type: 'propose_completion' });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'new fact', type: 'fact' });
+
+    checkAndDispatch(db, room.id, vi.fn(), createStuckCounter());
+
+    expect(getRoom(db, room.id)!.status).toBe('active');
+  });
+
+  it('does not auto-confirm while another agent is still running or stopping', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential', { autoConfirmOnSilence: true });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'done', type: 'propose_completion' });
+    const session = createSession(db, room.id, 'claude');
+    setAgentState(db, room.id, 'claude', 'running', session.seq);
+
+    checkAndDispatch(db, room.id, vi.fn(), createStuckCounter());
+
+    expect(getRoom(db, room.id)!.status).toBe('active');
+  });
+
+  it('does not auto-confirm when nobody has proposed completion yet', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential', { autoConfirmOnSilence: true });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'a fact', type: 'fact' });
+
+    checkAndDispatch(db, room.id, vi.fn(), createStuckCounter());
+
+    expect(getRoom(db, room.id)!.status).toBe('active');
+  });
+});
+
 describe('onSubstantiveMessagePosted', () => {
   it('triggers a dispatch check', () => {
     const db = createTestDb();
@@ -206,5 +264,106 @@ describe('onSubstantiveMessagePosted', () => {
     onSubstantiveMessagePosted(db, room.id, startSession, createStuckCounter());
 
     expect(startSession).toHaveBeenCalledWith({ roomId: room.id, seq: 1, agentId: 'codex', registryKey: 'codex' });
+  });
+});
+
+// @ 定向消息（需求 3.3.2）：人类专属，只对被 @ 的那个 agent 是待派发触发源，不唤醒其他 agent；
+// 被派发的这次 session 标为 dispatchScope='directed'，其产出的消息也不参与其他 agent 的派发判定。
+//
+// createdAt/startedAt 都只有毫秒精度，同步的 better-sqlite3 调用可能落在同一毫秒里（"同一毫秒视为已消费"，
+// 见 03 §1.2）；这里用假时钟保证跨步骤的时间戳严格递增，避免测试因执行速度偶然打平时间戳而抖动。
+describe('@ 定向消息 (targetAgentId)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('isDispatchOwed: a directed message only owes the targeted agent, not others', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
+    vi.advanceTimersByTime(5);
+    // consume the broadcast goal message for both agents first.
+    createSession(db, room.id, 'codex');
+    createSession(db, room.id, 'claude');
+    vi.advanceTimersByTime(5);
+
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'just for you', targetAgentId: 'claude' });
+
+    expect(isDispatchOwed(db, room.id, 'claude')).toBe(true);
+    expect(isDispatchOwed(db, room.id, 'codex')).toBe(false);
+  });
+
+  it('checkAndDispatch: dispatches the targeted agent normally (agent sees no difference) while the session is stamped dispatchScope="directed"', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
+    vi.advanceTimersByTime(5);
+    createSession(db, room.id, 'codex');
+    createSession(db, room.id, 'claude');
+    vi.advanceTimersByTime(5);
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'just for you', targetAgentId: 'claude' });
+    const startSession = vi.fn();
+
+    checkAndDispatch(db, room.id, startSession, createStuckCounter());
+
+    // agent-facing 参数跟广播派发完全一样，不带任何 dispatchScope/definedMessage 信息（见需求 3.3.2）。
+    expect(startSession).toHaveBeenCalledWith({ roomId: room.id, seq: 3, agentId: 'claude', registryKey: 'claude' });
+    const agent = getRoomAgents(db, room.id).find((a) => a.agentId === 'claude');
+    expect(agent?.currentSessionSeq).toBe(3);
+    // 定向归属只落在 session 记录里，供调度层自己判断这次产出要不要参与其他 agent 的派发。
+    expect(getSession(db, room.id, 3)!.dispatchScope).toBe('directed');
+  });
+
+  it('a busy targeted agent leaves the directed message queued rather than dispatching immediately', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['claude'], 'sequential');
+    const session = createSession(db, room.id, 'claude');
+    setAgentState(db, room.id, 'claude', 'running', session.seq);
+    vi.advanceTimersByTime(5);
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'just for you', targetAgentId: 'claude' });
+    const startSession = vi.fn();
+
+    checkAndDispatch(db, room.id, startSession, createStuckCounter());
+
+    expect(startSession).not.toHaveBeenCalled();
+    expect(isDispatchOwed(db, room.id, 'claude')).toBe(true);
+  });
+
+  it('prioritizes the directed scope even when a broadcast trigger is also pending for the same agent', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
+    vi.advanceTimersByTime(5);
+    createSession(db, room.id, 'codex');
+    createSession(db, room.id, 'claude');
+    vi.advanceTimersByTime(5);
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'a fact', type: 'fact' });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'just for you', targetAgentId: 'claude' });
+    const startSession = vi.fn();
+
+    checkAndDispatch(db, room.id, startSession, createStuckCounter());
+
+    expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'claude' }));
+    const seq = startSession.mock.calls[0][0].seq;
+    expect(getSession(db, room.id, seq)!.dispatchScope).toBe('directed');
+  });
+
+  it("a directed session's own output does not wake other agents (private handling, publicly visible)", () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
+    createSession(db, room.id, 'codex');
+    const directedSession = createSession(db, room.id, 'claude', 'directed');
+    // claude posts a normally-triggering fact while running its directed session.
+    insertMessage(db, { roomId: room.id, sessionSeq: directedSession.seq, authorId: 'claude', content: 'a private finding', type: 'fact' });
+
+    expect(isDispatchOwed(db, room.id, 'codex')).toBe(false);
+
+    const startSession = vi.fn();
+    checkAndDispatch(db, room.id, startSession, createStuckCounter());
+    expect(startSession).not.toHaveBeenCalled();
   });
 });

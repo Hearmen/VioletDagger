@@ -1,13 +1,16 @@
 import Database from 'better-sqlite3';
 
-export const SCHEMA_SQL = `
+export const TABLES_SQL = `
 CREATE TABLE IF NOT EXISTS rooms (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   scheduling_mode TEXT NOT NULL DEFAULT 'sequential',
   status TEXT NOT NULL DEFAULT 'active',
+  completion_reason TEXT,
+  completion_reference_message_id INTEGER,
   max_sessions INTEGER NOT NULL,
   workdir TEXT NOT NULL DEFAULT '',
+  auto_confirm_on_silence INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -36,6 +39,12 @@ CREATE TABLE IF NOT EXISTS sessions (
   stop_intent TEXT,
   cleanup_started_at TEXT,
   exit_cause TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cache_read_tokens INTEGER,
+  cache_write_tokens INTEGER,
+  cost_usd REAL,
+  dispatch_scope TEXT NOT NULL DEFAULT 'broadcast',
   PRIMARY KEY (room_id, seq)
 );
 
@@ -62,6 +71,7 @@ CREATE TABLE IF NOT EXISTS messages (
   content TEXT NOT NULL,
   summary TEXT NOT NULL,
   target_message_id INTEGER,
+  target_agent_id TEXT,
   exploring_status TEXT,
   exploring_note TEXT,
   exploring_end_reason TEXT,
@@ -77,24 +87,34 @@ CREATE TABLE IF NOT EXISTS message_references (
   referenced_message_id INTEGER NOT NULL,
   PRIMARY KEY (room_id, message_id, referenced_message_id)
 );
+`;
 
+// 索引与 TABLES_SQL 分开执行：索引引用的列（如 target_agent_id）可能是老库要靠
+// migrate() 的 ALTER TABLE 才会补上的——必须先 migrate 再建索引，否则老库在
+// 索引创建这一步就会报 "no such column"（CREATE TABLE IF NOT EXISTS 对已存在的表是空操作，
+// 不会补列）。
+const INDEXES_SQL = `
 -- (room_id, id) 是主键，listMessages 游标分页直接走它，不需要单独索引。
 CREATE INDEX IF NOT EXISTS idx_messages_room_type ON messages(room_id, type);
 CREATE INDEX IF NOT EXISTS idx_messages_room_session ON messages(room_id, session_seq);
 CREATE INDEX IF NOT EXISTS idx_messages_target ON messages(room_id, target_message_id);
+CREATE INDEX IF NOT EXISTS idx_messages_target_agent ON messages(room_id, target_agent_id);
 -- session_events 按 (room_id, session_seq, id) 读取；一次性事件的幂等靠唯一索引
 -- (room_id, session_seq, kind, attempt_id)（见 01-storage.md）。
 CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(room_id, session_seq, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_session_events_unique ON session_events(room_id, session_seq, kind, attempt_id);
 `;
 
+export const SCHEMA_SQL = TABLES_SQL + INDEXES_SQL;
+
 export function createDb(path: string): Database.Database {
   const db = new Database(path);
   db.pragma('journal_mode = WAL');
   // SQLite 默认不启用外键；不打开的话 messages/message_references 的复合外键形同虚设。
   db.pragma('foreign_keys = ON');
-  db.exec(SCHEMA_SQL);
+  db.exec(TABLES_SQL);
   migrate(db);
+  db.exec(INDEXES_SQL);
   return db;
 }
 
@@ -150,6 +170,16 @@ function migrate(db: Database.Database): void {
     // 空串表示"按服务端默认目录解析"（见 01-storage.md §5.4）；老数据一律这样兜底。
     db.exec(`ALTER TABLE rooms ADD COLUMN workdir TEXT NOT NULL DEFAULT ''`);
   }
+  // 静默收敛自动确认（见 01-storage.md §5.6、03-orchestrator-core.md §1.4）：老库一律按"从未开启过"补齐，
+  // 已有 completed 房间历史上都是人工确认，回填 completion_reason='manual' 更准确地反映事实，不留 NULL 造成前端展示空白。
+  if (!roomColumns.some((column) => column.name === 'auto_confirm_on_silence')) {
+    db.exec(`ALTER TABLE rooms ADD COLUMN auto_confirm_on_silence INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!roomColumns.some((column) => column.name === 'completion_reason')) {
+    db.exec(`ALTER TABLE rooms ADD COLUMN completion_reason TEXT`);
+    db.exec(`ALTER TABLE rooms ADD COLUMN completion_reference_message_id INTEGER`);
+    db.exec(`UPDATE rooms SET completion_reason = 'manual' WHERE status = 'completed'`);
+  }
 
   // session 生命周期/退出字段（见 01-storage.md §5.3）：老库补齐为可空列，历史记录不伪造退出事实。
   const sessionColumns = db.prepare(`PRAGMA table_info(sessions)`).all() as { name: string }[];
@@ -164,6 +194,30 @@ function migrate(db: Database.Database): void {
     if (!sessionColumns.some((column) => column.name === name)) {
       db.exec(`ALTER TABLE sessions ADD COLUMN ${name} ${type}`);
     }
+  }
+
+  // 用量统计（见 01-storage.md 用量统计修订）：老库补列全部为 NULL，不推测回填——
+  // 这几列在这个功能上线前从未被采集过，NULL 就是唯一诚实的初值。
+  const usageColumns: [string, string][] = [
+    ['input_tokens', 'INTEGER'],
+    ['output_tokens', 'INTEGER'],
+    ['cache_read_tokens', 'INTEGER'],
+    ['cache_write_tokens', 'INTEGER'],
+    ['cost_usd', 'REAL'],
+  ];
+  for (const [name, type] of usageColumns) {
+    if (!sessionColumns.some((column) => column.name === name)) {
+      db.exec(`ALTER TABLE sessions ADD COLUMN ${name} ${type}`);
+    }
+  }
+
+  // @ 定向消息（需求 3.3.2）：老库补列，target_agent_id 为 NULL、dispatch_scope 默认 'broadcast'，
+  // 不推测回填历史 session 的定向归属（见 01-storage.md @ 定向消息修订）。
+  if (!messageColumns.some((column) => column.name === 'target_agent_id')) {
+    db.exec(`ALTER TABLE messages ADD COLUMN target_agent_id TEXT`);
+  }
+  if (!sessionColumns.some((column) => column.name === 'dispatch_scope')) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN dispatch_scope TEXT NOT NULL DEFAULT 'broadcast'`);
   }
 }
 

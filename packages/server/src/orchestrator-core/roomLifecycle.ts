@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import {
-  getRoom, setRoomStatus, increaseMaxSessions, getRoomAgents, deleteRoom as deleteRoomRecord,
+  getRoom, setRoomStatus, recordCompletion, increaseMaxSessions, getRoomAgents, deleteRoom as deleteRoomRecord,
 } from '../storage';
 import { roomEvents } from '../events';
 import { checkAndDispatch, type StartSession } from './dispatch';
@@ -36,7 +36,7 @@ export function resumeRoom(
 }
 
 export function confirmCompletion(db: Database.Database, roomId: number): void {
-  setRoomStatus(db, roomId, 'completed');
+  recordCompletion(db, roomId, 'manual');
   roomEvents.emit('roomStatus', { roomId });
 }
 

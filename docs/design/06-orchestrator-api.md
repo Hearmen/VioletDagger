@@ -7,16 +7,16 @@
 ```
 GET    /api/rooms       → RoomSummary[]
 GET    /api/rooms/:id   → Room
-POST   /api/rooms       { name: string; agentIds: string[]; schedulingMode: 'sequential'; maxSessions?: number; workdir?: string } → Room
+POST   /api/rooms       { name: string; agentIds: string[]; schedulingMode: 'sequential'; maxSessions?: number; workdir?: string; autoConfirmOnSilence?: boolean } → Room
 DELETE /api/rooms/:id   → { ok: true }        // 仅 completed 房间可删；级联删除，见 03-orchestrator-core.md 第 4 节
 GET    /api/agents      → { agentId: string; available: boolean; unavailableReason?: string }[]
 ```
 
-`GET /api/rooms/:id` 返回完整的 `Room`（含 `name`/`schedulingMode`/`maxSessions`/`workdir`）——直接刷新或直接打开某个房间的 URL 时，前端需要这个接口拿房间头部信息；`getRoomStatus`（第 4 节）只有运行时状态，不带这些创建时字段。
+`GET /api/rooms/:id` 返回完整的 `Room`（含 `name`/`schedulingMode`/`maxSessions`/`workdir`/`autoConfirmOnSilence`/`completionReason`/`completionReferenceMessageId`）——直接刷新或直接打开某个房间的 URL 时，前端需要这个接口拿房间头部信息；`getRoomStatus`（第 4 节）只有运行时状态，不带这些创建时字段（但 `completionReason`/`completionReferenceMessageId` 例外，见第 4 节，避免收尾那一刻还要多一次 REST 往返）。
 
 `GET /api/agents` 返回 agent 注册表（`04-agent-invocation.md` 的 `AgentRegistry`，服务启动时从 `agents.config.json` 加载进内存）里所有的 key，供建房间表单渲染可勾选的 agent 列表（见 `07-frontend.md` 第 11 节）。**这里的 `agentId` 指的是注册表 key（如 `"codex"`），不是房间内的 agent 实例标识**——它是建房间表单这一处的输入，跟 `getRoomStatus` 里 `agentId`（实例标识，见 `00-overview.md`）分属两个层次，不要混用。
 
-`POST /api/rooms` 校验：`agentIds` 非空，且每个都存在于 agent 注册表、已通过 session 身份隔离适配校验（available=true）（见 `04-agent-invocation.md` 第 1 节）；**允许重复**——同一个 agent 出现多次表示要加入多个实例（需求 3.2，数组里是注册表 key；实例标识由 `storage.createRoom` 按 `01-storage.md` 的规则生成）；`schedulingMode` v1 只接受 `'sequential'`；`maxSessions` **可选**，给了就必须是正整数（否则报错），不传则用服务端默认值 20（见 `01-storage.md` §5.1）。`workdir` **可选**（该 room 所有 agent CLI 的 spawn cwd，见 `01-storage.md` §5.4）：给了就做 `~` 展开 + 绝对化，并校验**存在且是目录**（否则报错）；不传则默认取服务端配置 `VIOLETDAGGER_WORKDIR`，再退回 server 进程 cwd。解析后的绝对路径写入 `rooms.workdir`。校验通过后 `storage.createRoom(name, agentIds, schedulingMode, { maxSessions, workdir })`（`room_agents` 的 `join_order` 按传入数组顺序写入，在 `createRoom` 内部完成；实例标识撞名时 `createRoom` 抛错，转为表单错误返回）。创建时不触发任何派发——房间里还没有消息，第一次派发要等人类发第一条消息（见需求 3.1）。
+`POST /api/rooms` 校验：`agentIds` 非空，且每个都存在于 agent 注册表、已通过 session 身份隔离适配校验（available=true）（见 `04-agent-invocation.md` 第 1 节）；**允许重复**——同一个 agent 出现多次表示要加入多个实例（需求 3.2，数组里是注册表 key；实例标识由 `storage.createRoom` 按 `01-storage.md` 的规则生成）；`schedulingMode` v1 只接受 `'sequential'`；`maxSessions` **可选**，给了就必须是正整数（否则报错），不传则用服务端默认值 20（见 `01-storage.md` §5.1）。`workdir` **可选**（该 room 所有 agent CLI 的 spawn cwd，见 `01-storage.md` §5.4）：给了就做 `~` 展开 + 绝对化，并校验**存在且是目录**（否则报错）；不传则默认取服务端配置 `VIOLETDAGGER_WORKDIR`，再退回 server 进程 cwd。解析后的绝对路径写入 `rooms.workdir`。`autoConfirmOnSilence` **可选**布尔值，不传按 `false`；写入 `rooms.auto_confirm_on_silence` 后房间生命周期内不可修改，没有对应的 PATCH/RPC 可以事后开关（见 `01-storage.md` §5.6、`03-orchestrator-core.md` §1.4）。校验通过后 `storage.createRoom(name, agentIds, schedulingMode, { maxSessions, workdir, autoConfirmOnSilence })`（`room_agents` 的 `join_order` 按传入数组顺序写入，在 `createRoom` 内部完成；实例标识撞名时 `createRoom` 抛错，转为表单错误返回）。创建时不触发任何派发——房间里还没有消息，第一次派发要等人类发第一条消息（见需求 3.1）。
 
 `DELETE /api/rooms/:id`：调用 `orchestratorCore.deleteRoom(roomId)`（见 `03-orchestrator-core.md` 第 4 节）——会先确认遗留 running/stopping session 已退出，再删除磁盘日志和级联删除 DB；清理未确认则返回错误并保留数据，最后 emit `roomDeleted`。非 `completed` 状态会收到 RPC 错误/HTTP 4xx，前端应提示"只有已结束的房间才能删除"。
 
@@ -64,10 +64,12 @@ type SessionLogFrame =
 ```typescript
 // 消息（targetMessageId/referencedMessageIds 都是本 room 内的消息 id，见 01-storage.md）
 listMessages(params: { cursor?: number; limit?: number }): { messages: Message[]; nextCursor: number | null };
-postHumanMessage(params: { content: string; type?: MessageType; targetMessageId?: number; referencedMessageIds?: number[] }): { messageId: number };
+postHumanMessage(params: { content: string; type?: MessageType; targetMessageId?: number; referencedMessageIds?: number[]; targetAgentId?: string }): { messageId: number };
 // authorId 固定为 "human"，不从客户端传入；storage.insertMessage(...) 返回 { message, supersededExploringId }，
 // emit('message', { roomId, message })，若 supersededExploringId != null 额外 emit('memoryUpdate', { roomId, messageId: supersededExploringId })（同 05-mcp-server.md post_message 的处理，见 00-overview.md），
 // 并无条件调用 orchestratorCore.onSubstantiveMessagePosted(roomId)（人类消息一律是触发型，见需求 3.3）
+// targetAgentId 提供时必须是 getRoomAgents(roomId) 中存在的 agent 实例标识，否则返回 RPC 错误、不写入（需求 3.3.2，@ 定向消息，人类专属）。
+// 是否真正派发、按广播还是定向处理，全部下沉到 03-orchestrator-core.md 的 isDispatchOwed/checkAndDispatch，这里不做任何特判。
 
 // 记忆视图（全文，不是摘要）
 getMemoryView(): MemoryViewPayload;
@@ -78,9 +80,13 @@ getMemoryView(): MemoryViewPayload;
 getRoomStatus(): {
   currentSessionCount: number; // countSessions(roomId)：只计 outcome != 'error' 的 session（见 01-storage.md）
   status: RoomStatus;
+  completionReason?: 'manual' | 'auto_silence';  // 仅 status === 'completed' 时给出，取自 rooms.completion_reason
+  completionReferenceMessageId?: number;         // 仅 completionReason === 'auto_silence' 时给出
+  allCaughtUp: boolean; // 见下方"派发收敛提示"
   agents: {
     agentId: string;               // agent 实例标识（见 00-overview.md），非注册表 key
     state: 'idle' | 'running' | 'stopping';
+    caughtUp: boolean;             // 见下方"派发收敛提示"；state !== 'idle' 时恒为 false
     sessionId?: number;            // 仅 running/stopping 时给出，取自 RoomAgentState.currentSessionSeq
     sessionStartedAt?: string;     // 仅 running/stopping 时给出，取自 Session.startedAt
     stopIntent?: 'terminate';
@@ -99,7 +105,9 @@ getEventTree(): {
   sessions: {
     seq: number; agentId: string; outcome: SessionOutcome;
     startedAt: string; endedAt: string | null;
-  }[]; // 按 seq 升序；纯查表，不是时间线结构
+    inputTokens: number | null; outputTokens: number | null;
+    cacheReadTokens: number | null; cacheWriteTokens: number | null; costUsd: number | null;
+  }[]; // 按 seq 升序；纯查表，不是时间线结构。用量字段让事件树的 session 标签不用再单独请求就能显示 token 数（见 07 §9）
 };
 // 依赖 01-storage.md 的 listSessions(roomId): Session[]
 
@@ -111,9 +119,14 @@ getSessionDetail(params: { sessionId: number }): {
   exitCode: number | null; exitSignal: string | null;
   stopIntent: 'terminate' | null;
   cleanupStartedAt: string | null; exitCause: Session['exitCause'];
+  inputTokens: number | null; outputTokens: number | null;
+  cacheReadTokens: number | null; cacheWriteTokens: number | null; costUsd: number | null;
   rawLog: string;        // 读取 session.rawLogPath 文件内容（日志展示已改走第 2.1 节的日志 WS，这里保留供下载/兜底）
   wroteMessages: boolean; // messages.length > 0
 };
+
+// 房间用量汇总：按 agent 和整个房间两级聚合（见 01-storage.md 的 getUsageTotals/UsageTotals）
+getUsageSummary(): { byAgent: Record<string, UsageTotals>; room: UsageTotals };
 
 // 控制操作
 terminateAgentSession(params: { sessionId: number }): { ok: true }; // 仅确认退出或已终态时成功；清理未确认返回 RPC error  // orchestratorCore.terminateAgentSession(roomId, sessionId)
@@ -122,6 +135,8 @@ pauseRoom(): { ok: true };                                            // orchest
 resumeRoom(params: { additionalSessions?: number }): { ok: true };    // orchestratorCore.resumeRoom(roomId, additionalSessions)
 confirmCompletion(): { ok: true };                                    // orchestratorCore.confirmCompletion(roomId)
 ```
+
+**派发收敛提示**（`getRoomStatus` 的 `caughtUp`/`allCaughtUp`）：纯展示信号，不改变任何房间/session 状态，跟 `completionReason`/静默收敛自动确认是两件事——这个不要求存在 `propose_completion`。`caughtUp` 复用 `03-orchestrator-core.md` §1.2 的 `isDispatchOwed` 判定（该函数从 `dispatch.ts` 导出供这里直接调用，不重新实现一遍）：`agent.state === 'idle' && !isDispatchOwed(db, roomId, agent.agentId)` 时为 `true`——意味着这个 agent 空闲，且没有一条晚于它上次 session 开始时间的触发型消息，暂时没有新东西要处理；`running`/`stopping` 恒为 `false`。`allCaughtUp` 为 `true` 需要同时满足：房间内至少有一个 `dispatchEnabled` 的 agent；这些 agent 全部 `caughtUp === true`；且 `countSessions(roomId) > 0`（防止刚建好、一条消息都没有的空房间被误判成"已收敛"）。停用派发的 agent 不参与这个判定。
 
 ## 5. 事件树依赖的存储函数
 
@@ -133,7 +148,7 @@ confirmCompletion(): { ok: true };                                    // orchest
 // 存储层
 listMessages, insertMessage, countSessions, listSessions,
 getMessagesBySession, listSessionEvents, getSession, getRoom, getRoomAgents,
-getActiveExploring, validateMessageRelations
+getActiveExploring, validateMessageRelations, getUsageTotals
 
 // 记忆管理层（见 02-memory-management.md）
 buildMemoryView(roomId: number): MemoryViewPayload
@@ -159,3 +174,19 @@ session_events 与消息分开返回，事件树详情展示人工终止请求�
 ## 记忆连续性修订（2026-09-19）
 
 postHumanMessage 使用与 MCP 同一关系校验；新 hypothesis 必须选择问题作为目标，fact 的目标若提供必须为问题。有类型消息均允许 referencedMessageIds。getMemoryView 新增 completionProposals/reactions/contextMessages/relations，前端据 ID 映射显示完整注解和回答，具体契约见 02 §5。message 推送会刷新关系视图，memoryUpdate 会刷新探索结束信息。
+
+## 静默收敛自动确认修订（2026-09-21）
+
+`POST /api/rooms` 新增可选 `autoConfirmOnSilence`（默认 `false`，建房时一次性写入，房间生命周期内不可修改，无对应的运行期开关接口）。`Room`（`GET /api/rooms/:id`）新增 `autoConfirmOnSilence`/`completionReason`/`completionReferenceMessageId`；`getRoomStatus` 额外带 `completionReason`/`completionReferenceMessageId`，让房间收尾那一刻前端不必再多发一次 REST 请求就能区分"人工确认"与"静默期自动确认"。机制细节见 `03-orchestrator-core.md` §1.4。
+
+## 用量统计修订（2026-09-21）
+
+`getEventTree` 的 `sessions[]`、`getSessionDetail` 都新增 `inputTokens`/`outputTokens`/`cacheReadTokens`/`cacheWriteTokens`/`costUsd`（`number | null`）；新增 `getUsageSummary()` 返回按 agent 和整个房间两级聚合的用量（`UsageTotals`，见 `01-storage.md`）。数据来源与解析规则见 `04-agent-invocation.md` §7；聚合口径（只统计已结束 session、明确区分"没数据"和"是 0"）见 `01-storage.md` 的用量统计修订。
+
+## 派发收敛提示修订（2026-09-21）
+
+`getRoomStatus` 新增 `agents[].caughtUp` 和房间级 `allCaughtUp`，复用 `dispatch.ts` 导出的 `isDispatchOwed` 判定，纯展示、不改变房间/session 状态。见上方"派发收敛提示"一节。前端展示见 `07-frontend.md` §5。
+
+## @ 定向消息修订（2026-09-22）
+
+`postHumanMessage` 新增可选 `targetAgentId`（需求 3.3.2），提供时校验是本房间已存在的 agent 实例标识，否则拒绝写入。`getRoomStatus` 的 `caughtUp`/`allCaughtUp` 复用的 `isDispatchOwed` 已经把定向条件计算在内（见 `03-orchestrator-core.md` 同名修订），不需要为定向消息单独调整这两个字段的语义——某个 agent 头上挂着一条尚未处理的定向消息时，它的 `caughtUp` 会照常是 `false`。

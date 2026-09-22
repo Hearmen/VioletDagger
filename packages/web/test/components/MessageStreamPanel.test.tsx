@@ -20,12 +20,20 @@ function renderPanel(props: Partial<ComponentProps<typeof MessageStreamPanel>> =
       onLoadEarlier={vi.fn()}
       onSend={vi.fn()}
       readOnly={false}
+      agentIds={[]}
       {...props}
     />,
   );
 }
 
 describe('MessageStreamPanel', () => {
+  it('shows each message row its own #id, not just referenced ones', () => {
+    renderPanel({
+      messages: [makeMessage({ id: 12, content: 'chat' })],
+    });
+    expect(screen.getByText('#12')).toBeInTheDocument();
+  });
+
   it('renders messages and highlights propose_completion', () => {
     renderPanel({
       messages: [
@@ -101,5 +109,47 @@ describe('MessageStreamPanel', () => {
     expect(screen.getByText('房间已结束，只读')).toBeInTheDocument();
     expect(screen.queryByLabelText('content')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Send' })).not.toBeInTheDocument();
+  });
+
+  it('shows a "→ @agentId" badge on a directed message', () => {
+    renderPanel({ messages: [makeMessage({ id: 3, content: 'psst', targetAgentId: 'claude' })] });
+    expect(screen.getByText('→ @claude')).toBeInTheDocument();
+  });
+
+  // @ 定向消息（需求 3.3.2）
+  describe('@ 定向某个 agent', () => {
+    it('does not open the mention menu when the room has no agents', () => {
+      renderPanel({ agentIds: [] });
+      fireEvent.change(screen.getByLabelText('content'), { target: { value: '@' } });
+      expect(screen.queryByRole('listbox', { name: '@ 定向某个 agent' })).not.toBeInTheDocument();
+    });
+
+    it('opens a candidate menu on "@", and picking one sets targetAgentId and inserts the token', () => {
+      const onSend = vi.fn();
+      renderPanel({ onSend, agentIds: ['codex', 'claude'] });
+
+      fireEvent.change(screen.getByLabelText('content'), { target: { value: 'hey @cl' } });
+      expect(screen.getByRole('option', { name: '@claude' })).toBeInTheDocument();
+      expect(screen.queryByRole('option', { name: '@codex' })).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('option', { name: '@claude' }));
+      expect(screen.getByText('发送给 @claude')).toBeInTheDocument();
+      expect((screen.getByLabelText('content') as HTMLTextAreaElement).value).toBe('hey @claude ');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      expect(onSend).toHaveBeenCalledWith({
+        content: 'hey @claude ', type: undefined, targetMessageId: undefined, targetAgentId: 'claude',
+      });
+    });
+
+    it('clears the directed target via its ✕ button without touching the reply target', () => {
+      renderPanel({ agentIds: ['claude'] });
+      fireEvent.change(screen.getByLabelText('content'), { target: { value: '@claude' } });
+      fireEvent.click(screen.getByRole('option', { name: '@claude' }));
+      expect(screen.getByText('发送给 @claude')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: '取消定向目标' }));
+      expect(screen.queryByText('发送给 @claude')).not.toBeInTheDocument();
+    });
   });
 });

@@ -82,7 +82,7 @@ export function onSessionEnded(
     exitCode: event.exitCode,
     signal: event.signal,
     exitCause: event.exitCause,
-  });
+  }, event.usage);
   appendSessionEvent(db, event.roomId, event.seq, 'process_exited', undefined, event.cleanupAttemptId);
   if (terminated) {
     appendSessionEvent(db, event.roomId, event.seq, 'terminated', undefined, event.cleanupAttemptId);
@@ -147,7 +147,7 @@ export async function terminateAgentSession(
       exitCode: result.exit.exitCode,
       signal: result.exit.signal,
       exitCause: result.exit.exitCause,
-    });
+    }, result.exit.usage);
     appendSessionEvent(db, roomId, seq, 'process_exited', undefined, result.exit.cleanupAttemptId);
     appendSessionEvent(db, roomId, seq, 'terminated', undefined, result.exit.cleanupAttemptId);
     releaseAgentIfCurrent(db, roomId, session.agentId, seq);

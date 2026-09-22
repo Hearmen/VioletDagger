@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { createTestDb } from '../../src/storage/db';
 import {
-  createRoom, getRoom, listRooms, setRoomStatus, increaseMaxSessions, getRoomAgents, setAgentState,
-  deleteRoom, assignInstanceIds,
+  createRoom, getRoom, listRooms, setRoomStatus, recordCompletion, increaseMaxSessions, getRoomAgents,
+  setAgentState, deleteRoom, assignInstanceIds,
 } from '../../src/storage/rooms';
 import { createSession, listSessions } from '../../src/storage/sessions';
 import { insertMessage, getMessagesByType, getAnnotations } from '../../src/storage/messages';
@@ -57,6 +57,32 @@ describe('rooms', () => {
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     setRoomStatus(db, room.id, 'paused_manual');
     expect(getRoom(db, room.id)!.status).toBe('paused_manual');
+  });
+
+  it('createRoom defaults autoConfirmOnSilence to false and honors an explicit true', () => {
+    const db = createTestDb();
+    const withoutFlag = createRoom(db, 'a', ['codex'], 'sequential');
+    expect(withoutFlag.autoConfirmOnSilence).toBe(false);
+    const withFlag = createRoom(db, 'b', ['codex'], 'sequential', { autoConfirmOnSilence: true });
+    expect(withFlag.autoConfirmOnSilence).toBe(true);
+  });
+
+  it('a fresh room has no completionReason until it is completed', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    expect(room.completionReason).toBeNull();
+    expect(room.completionReferenceMessageId).toBeNull();
+  });
+
+  it('recordCompletion sets status, reason and the optional reference message id', () => {
+    const db = createTestDb();
+    const manual = createRoom(db, 'a', ['codex'], 'sequential');
+    recordCompletion(db, manual.id, 'manual');
+    expect(getRoom(db, manual.id)).toMatchObject({ status: 'completed', completionReason: 'manual', completionReferenceMessageId: null });
+
+    const auto = createRoom(db, 'b', ['codex'], 'sequential', { autoConfirmOnSilence: true });
+    recordCompletion(db, auto.id, 'auto_silence', 7);
+    expect(getRoom(db, auto.id)).toMatchObject({ status: 'completed', completionReason: 'auto_silence', completionReferenceMessageId: 7 });
   });
 
   it('increaseMaxSessions adds to the existing limit', () => {

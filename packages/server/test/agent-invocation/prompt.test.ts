@@ -8,7 +8,7 @@ vi.mock('node:fs/promises', () => ({
 }));
 
 const summary = (id: number, type: MemorySummary['type'], text: string): MemorySummary => ({
-  id, type, summary: text, targetMessageId: null, referencedMessageIds: [], exploringStatus: null,
+  id, type, summary: text, targetMessageId: null, targetAgentId: null, referencedMessageIds: [], exploringStatus: null,
   exploringNote: null, exploringEndReason: null, exploringResultSummary: null, exploringResultMessageIds: [],
 });
 const baseOverview: OverviewPayload = {
@@ -23,7 +23,7 @@ const baseOverview: OverviewPayload = {
   recentRawMessages: [
     {
       id: 1, roomId: 1, sessionSeq: null, authorId: 'human', type: null,
-      content: 'build the thing', summary: 'build the thing', targetMessageId: null,
+      content: 'build the thing', summary: 'build the thing', targetMessageId: null, targetAgentId: null,
       referencedMessageIds: [], exploringStatus: null, exploringNote: null,
       exploringEndReason: null, exploringResultSummary: null, exploringResultMessageIds: [],
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -54,6 +54,17 @@ describe('buildPromptText', () => {
   it('renders "（无）" for empty sections', () => {
     const text = buildPromptText({ roomId: 7, agentId: 'codex', overview: baseOverview });
     expect(text).toMatch(/死胡同：\n（无）/);
+  });
+
+  // @ 定向消息（需求 3.3.2）：对 agent 来说定向和广播派发的 prompt 完全一样，只有消息本身的
+  // @agentId 标注（数据，不是"这次是定向 session"的元提示）会出现在 renderMemory 里。
+  it('renders a targetAgentId annotation on memory entries', () => {
+    const overview: OverviewPayload = {
+      ...baseOverview,
+      facts: [{ ...summary(3, 'fact', 'targeted fact'), targetAgentId: 'claude' }],
+    };
+    const text = buildPromptText({ roomId: 7, agentId: 'codex', overview });
+    expect(text).toContain('[#3] fact @claude：targeted fact');
   });
 });
 

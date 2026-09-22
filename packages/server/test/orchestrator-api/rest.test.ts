@@ -150,4 +150,23 @@ describe('createRoomHandler', () => {
       createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'], schedulingMode: 'parallel' }),
     ).toThrow(ApiError);
   });
+
+  it('defaults autoConfirmOnSilence to false and honors an explicit true', () => {
+    const db = createTestDb();
+    const withoutFlag = createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'], schedulingMode: 'sequential' });
+    expect(withoutFlag.autoConfirmOnSilence).toBe(false);
+    const withFlag = createRoomHandler(db, registry, {
+      name: 'b', agentIds: ['codex'], schedulingMode: 'sequential', autoConfirmOnSilence: true,
+    });
+    expect(withFlag.autoConfirmOnSilence).toBe(true);
+  });
+
+  it('rejects a non-boolean autoConfirmOnSilence', () => {
+    const db = createTestDb();
+    expect(() =>
+      createRoomHandler(db, registry, {
+        name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', autoConfirmOnSilence: 'yes' as any,
+      }),
+    ).toThrow(/autoConfirmOnSilence/);
+  });
 });

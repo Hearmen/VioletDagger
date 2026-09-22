@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { EventTreePayload, Message, MessageType } from '../api/types';
 import { Panel } from './Panel';
 import { MessageTypeBadge } from './MessageTypeBadge';
-import { colorForAgent, formatClock, truncate } from '../utils/format';
+import { colorForAgent, formatClock, formatTokens, truncate } from '../utils/format';
 
 const EDGE_COLORS: Partial<Record<MessageType, string>> = {
   endorse: 'var(--ok)',
@@ -35,11 +35,20 @@ function edgeTargets(message: Message): number[] {
 }
 
 // session 结果未揭晓（running/stopping）时标签只显示 agentId #seq；到达终态后追加结果
-// （见需求 3.5、07-frontend.md §9）。
+// （见需求 3.5、07-frontend.md §9）。展示文案与底层 outcome 值不是同一个词：'completed' 显示为
+// 'done'，避免和房间级 status === 'completed'（房间头部状态徽标、房间列表卡片）撞语义。
+const OUTCOME_LABELS: Partial<Record<SessionMeta['outcome'], string>> = {
+  completed: 'done',
+};
+
+// 用量后缀（07-frontend.md §9）：inputTokens/outputTokens 都非 null 才追加，只要有一个是 null
+// （如 kimi）就什么都不追加，不摆占位符；费用不放进这个标签，太挤，见 SessionDetailModal。
 function sessionTagLabel(meta: SessionMeta | undefined, agentId: string, seq: number): string {
   const base = `${agentId} #${seq}`;
   if (!meta || meta.outcome === 'running' || meta.outcome === 'stopping') return base;
-  return `${base} · ${meta.outcome}`;
+  const outcomeText = `${base} · ${OUTCOME_LABELS[meta.outcome] ?? meta.outcome}`;
+  if (meta.inputTokens == null || meta.outputTokens == null) return outcomeText;
+  return `${outcomeText} · ${formatTokens(meta.inputTokens + meta.outputTokens)}`;
 }
 
 export function EventTreePanel(props: {

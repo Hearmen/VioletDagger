@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import type { Message, SessionDetailPayload, SessionEventKind } from '../api/types';
 import { useSessionLog } from '../hooks/useSessionLog';
-import { authorInitial, authorLabel, colorForAgent, formatClock, formatDuration } from '../utils/format';
+import { authorInitial, authorLabel, colorForAgent, formatClock, formatCostUsd, formatDuration } from '../utils/format';
 import { MessageTypeBadge } from './MessageTypeBadge';
 import { SessionLogView } from './SessionLogView';
 
@@ -74,6 +74,15 @@ export function SessionDetailModal(props: {
           <span className="modal__spacer" />
           <button aria-label="Close" onClick={onClose}>关闭</button>
         </div>
+        {detail.inputTokens != null && detail.outputTokens != null && (
+          <div className="session-detail__usage mono" data-testid="session-usage">
+            <span>输入 {detail.inputTokens.toLocaleString()}</span>
+            <span>· 输出 {detail.outputTokens.toLocaleString()}</span>
+            {detail.cacheReadTokens != null && <span>· 缓存读 {detail.cacheReadTokens.toLocaleString()}</span>}
+            {detail.cacheWriteTokens != null && <span>· 缓存写 {detail.cacheWriteTokens.toLocaleString()}</span>}
+            {detail.costUsd != null && <span>· ≈ {formatCostUsd(detail.costUsd)}</span>}
+          </div>
+        )}
         <div className="modal__body modal__body--session-detail">
           <div className="session-detail__messages" data-testid="session-messages">
             {detail.messages.length === 0 && <p className="placeholder">这次 session 没有产出消息</p>}

@@ -67,11 +67,13 @@ describe('room lifecycle', () => {
     expect(getRoom(db, room.id)!.maxSessions).toBe(25);
   });
 
-  it('confirmCompletion sets status to completed', () => {
+  it('confirmCompletion sets status to completed with reason manual and no reference message', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     confirmCompletion(db, room.id);
-    expect(getRoom(db, room.id)!.status).toBe('completed');
+    expect(getRoom(db, room.id)).toMatchObject({
+      status: 'completed', completionReason: 'manual', completionReferenceMessageId: null,
+    });
   });
 });
 

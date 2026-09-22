@@ -9,9 +9,17 @@ import type { AgentRegistry, SpawnProcess, SpawnedProcess } from '../../src/agen
 
 vi.mock('node:fs', () => ({
   createWriteStream: vi.fn(() => {
-    const stream: any = { writableEnded: false, on: vi.fn(), write: vi.fn() };
+    const listeners: Record<string, Array<(...args: any[]) => void>> = {};
+    const register = (event: string, cb: (...args: any[]) => void) => {
+      (listeners[event] ??= []).push(cb);
+      return stream;
+    };
+    const stream: any = { writableEnded: false, on: vi.fn(register), once: vi.fn(register), write: vi.fn() };
     stream.end = vi.fn(() => {
       stream.writableEnded = true;
+      // 真实 writable stream 的 'finish' 是异步触发的；这里同步触发即可，
+      // 测试只关心 waitForLogFlush 最终会 resolve，不关心具体时序。
+      (listeners.finish ?? []).forEach((cb) => cb());
     });
     return stream;
   }),
@@ -221,6 +229,7 @@ describe('createAgentInvocation - startSession', () => {
     fake.emitStdout('hello ');
     fake.emitStderr('oops');
     fake.emitClose(0);
+    await flush();
 
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
     expect(onSessionEnded.mock.calls[0][0]).toMatchObject({
@@ -228,11 +237,49 @@ describe('createAgentInvocation - startSession', () => {
     });
   });
 
+  it('parses usage from the fully-flushed log file and attaches it to the exit event (04-agent-invocation.md §7)', async () => {
+    const { room, session, fake, invocation, onSessionEnded } = setup();
+    const usageEvent = {
+      type: 'turn.completed',
+      usage: { input_tokens: 350549, cached_input_tokens: 297088, cache_write_input_tokens: 0, output_tokens: 4122 },
+    };
+    const rawLog = `${JSON.stringify({ offset: 0, stream: 'stdout', text: `${JSON.stringify(usageEvent)}\n` })}\n`;
+    vi.mocked(readFile).mockResolvedValueOnce(rawLog);
+
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    fake.emitClose(0);
+    await flush();
+
+    expect(onSessionEnded.mock.calls[0][0].usage).toEqual({
+      inputTokens: 350549, outputTokens: 4122, cacheReadTokens: 297088, cacheWriteTokens: 0, costUsd: null,
+    });
+  });
+
+  it('does not attach usage when the log file cannot be read (e.g. ENOENT from the default mock)', async () => {
+    const { room, session, fake, invocation, onSessionEnded } = setup();
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    fake.emitClose(0);
+    await flush();
+
+    expect(onSessionEnded.mock.calls[0][0].usage).toBeUndefined();
+  });
+
+  it('does not attempt to parse usage for a spawn-failed session', async () => {
+    const { room, session, spawnProcess, invocation, onSessionEnded } = setup();
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'ghost', registryKey: 'ghost' });
+    await flush();
+    expect(spawnProcess).not.toHaveBeenCalled();
+    expect(onSessionEnded.mock.calls[0][0].usage).toBeUndefined();
+  });
+
   it('reports unexpected exit on nonzero close', async () => {
     const { room, session, fake, invocation, onSessionEnded } = setup();
     invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
     await flush();
     fake.emitClose(3);
+    await flush();
     expect(onSessionEnded.mock.calls[0][0]).toMatchObject({ exitCode: 3, exitCause: 'unexpected' });
   });
 
@@ -303,6 +350,7 @@ describe('createAgentInvocation - startSession', () => {
     await flush();
     fake.emitClose(0);
     fake.emitClose(0);
+    await flush();
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
   });
 
@@ -320,6 +368,7 @@ describe('createAgentInvocation - startSession', () => {
     invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
     await flush();
     expect(() => fake.emitClose(0)).not.toThrow();
+    await flush();
     expect(onSessionEnded).toHaveBeenCalledTimes(1);
   });
 
@@ -376,6 +425,7 @@ describe('createAgentInvocation - attachSessionLog', () => {
     handle.onExit((event) => exits.push(event.exitCode ?? -1));
     fake.emitStdout('second');
     fake.emitClose(0, null);
+    await flush();
 
     expect(received).toEqual([1]);
     expect(exits).toEqual([0]);
@@ -386,6 +436,7 @@ describe('createAgentInvocation - attachSessionLog', () => {
     invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
     await flush();
     fake.emitClose(0);
+    await flush();
     expect(invocation.attachSessionLog(room.id, session.seq)).toBeNull();
   });
 });

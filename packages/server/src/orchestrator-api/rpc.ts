@@ -14,6 +14,7 @@ import {
   getRoomAgents,
   getActiveExploring,
   listSessionEvents,
+  getUsageTotals,
 } from '../storage';
 import type { MessageType } from '../storage';
 import { buildMemoryView } from '../memory';
@@ -25,6 +26,7 @@ import {
   terminateAgentSession as orchestratorTerminateAgentSession,
   setAgentEnabled as orchestratorSetAgentEnabled,
   getStuckAgents,
+  isDispatchOwed,
   type StopSessionProcess,
   type FailureCounter,
 } from '../orchestrator-core';
@@ -54,9 +56,15 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
       type?: MessageType;
       targetMessageId?: number;
       referencedMessageIds?: number[];
+      targetAgentId?: string;
     }) {
       try { validateMessageRelations(db, roomId, params); }
       catch (err) { throw new ApiError((err as Error).message, 400); }
+
+      // @ 定向消息（需求 3.3.2，人类专属）：targetAgentId 必须是本房间已存在的 agent 实例标识。
+      if (params.targetAgentId != null && !getRoomAgents(db, roomId).some((agent) => agent.agentId === params.targetAgentId)) {
+        throw new ApiError(`targetAgentId "${params.targetAgentId}" is not an agent in this room`, 400);
+      }
 
       const { message, supersededExploringId } = insertMessage(db, {
         roomId,
@@ -65,6 +73,7 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
         content: params.content,
         type: params.type,
         targetMessageId: params.targetMessageId,
+        targetAgentId: params.targetAgentId,
         referencedMessageIds: params.referencedMessageIds,
       });
       roomEvents.emit('message', { roomId, message });
@@ -84,11 +93,30 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
       if (!room) throw new ApiError(`room not found: ${roomId}`, 404);
       const stuckAgentIds = new Set(getStuckAgents(db, roomId, stuckCounter).map((a) => a.agentId));
       const activeExploring = getActiveExploring(db, roomId);
+      const roomAgents = getRoomAgents(db, roomId);
+
+      // 派发收敛提示（纯展示，见 06-orchestrator-api.md §4）：caughtUp 复用 dispatch.ts 的 isDispatchOwed，
+      // 不重新实现一遍；allCaughtUp 只看 dispatchEnabled 的 agent，且要求房间至少跑过一次 session，
+      // 避免刚建好、一条消息都没有的空房间被误判成"已收敛"。
+      const enabledAgents = roomAgents.filter((agent) => agent.dispatchEnabled);
+      const caughtUpById = new Map(
+        roomAgents.map((agent) => [
+          agent.agentId,
+          agent.state === 'idle' && !isDispatchOwed(db, roomId, agent.agentId),
+        ]),
+      );
+      const allCaughtUp =
+        enabledAgents.length > 0 &&
+        countSessions(db, roomId) > 0 &&
+        enabledAgents.every((agent) => caughtUpById.get(agent.agentId));
 
       return {
         currentSessionCount: countSessions(db, roomId),
         status: room.status,
-        agents: getRoomAgents(db, roomId).map((agent) => {
+        completionReason: room.completionReason ?? undefined,
+        completionReferenceMessageId: room.completionReferenceMessageId ?? undefined,
+        allCaughtUp,
+        agents: roomAgents.map((agent) => {
           const active = agent.state === 'running' || agent.state === 'stopping';
           const session =
             active && agent.currentSessionSeq != null
@@ -103,6 +131,7 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
           return {
             agentId: agent.agentId,
             state: agent.state,
+            caughtUp: caughtUpById.get(agent.agentId) ?? false,
             sessionId: active ? agent.currentSessionSeq ?? undefined : undefined,
             sessionStartedAt: session?.startedAt,
             stopIntent: session?.stopIntent ?? undefined,
@@ -127,8 +156,18 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
           outcome: session.outcome,
           startedAt: session.startedAt,
           endedAt: session.endedAt,
+          inputTokens: session.inputTokens,
+          outputTokens: session.outputTokens,
+          cacheReadTokens: session.cacheReadTokens,
+          cacheWriteTokens: session.cacheWriteTokens,
+          costUsd: session.costUsd,
         })),
       };
+    },
+
+    // 按 agent 和整个房间两级聚合用量（见 01-storage.md 的 getUsageTotals/UsageTotals）。
+    getUsageSummary() {
+      return getUsageTotals(db, roomId);
     },
 
     getSessionDetail(params: { sessionId: number }) {
@@ -149,6 +188,11 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
         stopIntent: session.stopIntent,
         cleanupStartedAt: session.cleanupStartedAt,
         exitCause: session.exitCause,
+        inputTokens: session.inputTokens,
+        outputTokens: session.outputTokens,
+        cacheReadTokens: session.cacheReadTokens,
+        cacheWriteTokens: session.cacheWriteTokens,
+        costUsd: session.costUsd,
         rawLog,
         wroteMessages: messages.length > 0,
       };

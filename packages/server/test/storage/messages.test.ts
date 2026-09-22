@@ -6,7 +6,7 @@ import {
   insertMessage,
   getFirstMessage, getMessagesBySession, listMessages, getMessagesByType,
   getActiveExploring, getRecentRawMessages, getAnnotations, getMessageById, completeExploring,
-  validateMessageRelations,
+  validateMessageRelations, getLatestMessageByTypes, getLatestDirectedMessage, getLatestDispatchTriggerAt,
 } from '../../src/storage/messages';
 
 describe('insertMessage', () => {
@@ -297,5 +297,113 @@ describe('room-scoped message id', () => {
     expect(chainB.message.referencedMessageIds).toEqual([1]);
     expect(getMessagesByType(db, roomA.id, 'chain')[0].content).toBe('plan A');
     expect(getMessagesByType(db, roomB.id, 'chain')[0].content).toBe('plan B');
+  });
+});
+
+describe('getLatestMessageByTypes', () => {
+  it('returns the highest-id message among the given types, regardless of author', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'a fact', type: 'fact' });
+    const verify = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'looks fine', type: 'verify', targetMessageId: 1 });
+    const proposal = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'done', type: 'propose_completion' });
+
+    expect(getLatestMessageByTypes(db, room.id, ['fact', 'propose_completion'])!.id).toBe(proposal.message.id);
+    expect(getLatestMessageByTypes(db, room.id, ['verify'])!.id).toBe(verify.message.id);
+  });
+
+  it('returns null when no message of the given types exists', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'a fact', type: 'fact' });
+
+    expect(getLatestMessageByTypes(db, room.id, ['propose_completion'])).toBeNull();
+  });
+
+  it('scopes to the given room', () => {
+    const db = createTestDb();
+    const roomA = createRoom(db, 'a', ['codex'], 'sequential');
+    const roomB = createRoom(db, 'b', ['codex'], 'sequential');
+    insertMessage(db, { roomId: roomA.id, sessionSeq: null, authorId: 'codex', content: 'done A', type: 'propose_completion' });
+
+    expect(getLatestMessageByTypes(db, roomB.id, ['propose_completion'])).toBeNull();
+  });
+
+  // @ 定向消息（需求 3.3.2）：dispatch_scope='directed' 的 session 产出的消息不参与这个判定。
+  it('excludes messages produced by a directed session', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['claude'], 'sequential');
+    const directedSession = createSession(db, room.id, 'claude', 'directed');
+    insertMessage(db, { roomId: room.id, sessionSeq: directedSession.seq, authorId: 'claude', content: 'done privately', type: 'propose_completion' });
+
+    expect(getLatestMessageByTypes(db, room.id, ['propose_completion'])).toBeNull();
+  });
+});
+
+describe('@ 定向消息 (targetAgentId)', () => {
+  it('insertMessage persists targetAgentId and it round-trips through getMessageById', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const { message } = insertMessage(db, {
+      roomId: room.id, sessionSeq: null, authorId: 'human', content: 'just for you', targetAgentId: 'claude',
+    });
+
+    expect(message.targetAgentId).toBe('claude');
+    expect(getMessageById(db, room.id, message.id)!.targetAgentId).toBe('claude');
+  });
+
+  it('defaults targetAgentId to null when not provided', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const { message } = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'hi' });
+
+    expect(message.targetAgentId).toBeNull();
+  });
+
+  describe('getLatestDirectedMessage', () => {
+    it('returns the latest message targeted at the given agent', () => {
+      const db = createTestDb();
+      const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+      insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'first', targetAgentId: 'claude' });
+      const second = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'second', targetAgentId: 'claude' });
+
+      expect(getLatestDirectedMessage(db, room.id, 'claude')!.id).toBe(second.message.id);
+    });
+
+    it('returns null when nothing is targeted at that agent', () => {
+      const db = createTestDb();
+      const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+      insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'first', targetAgentId: 'claude' });
+
+      expect(getLatestDirectedMessage(db, room.id, 'codex')).toBeNull();
+    });
+  });
+
+  describe('getLatestDispatchTriggerAt', () => {
+    it('excludes messages targeted at a different agent', () => {
+      const db = createTestDb();
+      const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+      insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'just for claude', targetAgentId: 'claude' });
+
+      expect(getLatestDispatchTriggerAt(db, room.id, 'codex', ['fact'])).toBeNull();
+    });
+
+    it('excludes messages produced by a directed session', () => {
+      const db = createTestDb();
+      const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+      const directedSession = createSession(db, room.id, 'claude', 'directed');
+      insertMessage(db, { roomId: room.id, sessionSeq: directedSession.seq, authorId: 'claude', content: 'a private fact', type: 'fact' });
+
+      expect(getLatestDispatchTriggerAt(db, room.id, 'codex', ['fact'])).toBeNull();
+    });
+
+    it('still counts broadcast messages from an ordinary session', () => {
+      const db = createTestDb();
+      const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+      const session = createSession(db, room.id, 'claude');
+      const { message } = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'claude', content: 'a fact', type: 'fact' });
+
+      expect(getLatestDispatchTriggerAt(db, room.id, 'codex', ['fact'])).toBe(message.createdAt);
+    });
   });
 });

@@ -30,7 +30,11 @@ function makeMessage(overrides: Partial<Message> = {}): Message {
 }
 
 function makeSession(overrides: Partial<EventTreePayload['sessions'][number]> = {}): EventTreePayload['sessions'][number] {
-  return { seq: 1, agentId: 'codex', outcome: 'completed', startedAt: 't1', endedAt: 't2', ...overrides };
+  return {
+    seq: 1, agentId: 'codex', outcome: 'completed', startedAt: 't1', endedAt: 't2',
+    inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costUsd: null,
+    ...overrides,
+  };
 }
 
 describe('EventTreePanel', () => {
@@ -46,7 +50,7 @@ describe('EventTreePanel', () => {
         onOpenSession={vi.fn()}
       />,
     );
-    expect(screen.getByText('codex #1 · completed')).toBeInTheDocument();
+    expect(screen.getByText('codex #1 · done')).toBeInTheDocument();
     expect(screen.getByText('a fact')).toBeInTheDocument();
     expect(screen.getByText('人类')).toBeInTheDocument();
     expect(screen.getByText('the goal')).toBeInTheDocument();
@@ -101,6 +105,30 @@ describe('EventTreePanel', () => {
     expect(screen.getByText(/未发出任何实质消息/)).toBeInTheDocument();
   });
 
+  it('appends a compact token count to the session tag when both input and output tokens are known', () => {
+    const messages = [makeMessage({ id: 1, sessionSeq: 1, authorId: 'codex' })];
+    render(
+      <EventTreePanel
+        sessions={[makeSession({ seq: 1, agentId: 'codex', outcome: 'completed', inputTokens: 8000, outputTokens: 4345 })]}
+        messages={messages}
+        onOpenSession={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('codex #1 · done · 12.3k tok')).toBeInTheDocument();
+  });
+
+  it('omits the token suffix when the agent does not report token usage', () => {
+    const messages = [makeMessage({ id: 1, sessionSeq: 3, authorId: 'kimi' })];
+    render(
+      <EventTreePanel
+        sessions={[makeSession({ seq: 3, agentId: 'kimi', outcome: 'passed', inputTokens: null, outputTokens: null })]}
+        messages={messages}
+        onOpenSession={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('kimi #3 · passed')).toBeInTheDocument();
+  });
+
   it('shows an empty state when there are no messages', () => {
     render(<EventTreePanel sessions={[]} messages={[]} onOpenSession={vi.fn()} />);
     expect(screen.getByText('还没有任何事件')).toBeInTheDocument();
@@ -114,9 +142,28 @@ describe('SessionDetailModal', () => {
       messages: [makeMessage({ id: 42, content: 'a session fact' })],
       lifecycleEvents: [],
       exitCode: 0, exitSignal: null, stopIntent: null, cleanupStartedAt: null, exitCause: 'natural',
+      inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costUsd: null,
       rawLog: 'raw output', wroteMessages: true, ...overrides,
     };
   }
+
+  it('shows a usage line with cache/cost breakdown when input and output tokens are known', () => {
+    const detail = makeDetail({
+      inputTokens: 20, outputTokens: 6997, cacheReadTokens: 401226, cacheWriteTokens: 32806, costUsd: 0.28,
+    });
+    render(<SessionDetailModal roomId={1} detail={detail} onClose={vi.fn()} />);
+    const usage = screen.getByTestId('session-usage');
+    expect(usage).toHaveTextContent('输入 20');
+    expect(usage).toHaveTextContent('输出 6,997');
+    expect(usage).toHaveTextContent('缓存读 401,226');
+    expect(usage).toHaveTextContent('缓存写 32,806');
+    expect(usage).toHaveTextContent('$0.28');
+  });
+
+  it('omits the usage line entirely when no token data is available', () => {
+    render(<SessionDetailModal roomId={1} detail={makeDetail()} onClose={vi.fn()} />);
+    expect(screen.queryByTestId('session-usage')).not.toBeInTheDocument();
+  });
 
   it('renders nothing when detail is null', () => {
     const { container } = render(<SessionDetailModal roomId={1} detail={null} onClose={vi.fn()} />);

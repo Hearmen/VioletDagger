@@ -15,7 +15,7 @@ import { LiveSessionModal, type LiveSessionSnapshot, type LiveSessionTarget } fr
 import { ToastStack } from '../components/ToastStack';
 import type {
   Room, RoomStatusPayload, Message, MessageType, MemoryViewPayload, EventTreePayload,
-  SessionDetailPayload,
+  SessionDetailPayload, UsageSummaryPayload,
 } from '../api/types';
 
 interface MessagesPage {
@@ -38,6 +38,7 @@ export function RoomDashboardPage() {
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [memory, setMemory] = useState<MemoryViewPayload | null>(null);
   const [eventTree, setEventTree] = useState<EventTreePayload | null>(null);
+  const [usageSummary, setUsageSummary] = useState<UsageSummaryPayload | null>(null);
   const [sessionDetail, setSessionDetail] = useState<SessionDetailPayload | null>(null);
   const [liveSession, setLiveSession] = useState<LiveSessionTarget | null>(null);
   const [liveDetail, setLiveDetail] = useState<SessionDetailPayload | null>(null);
@@ -55,6 +56,8 @@ export function RoomDashboardPage() {
   const refreshMemory = () => socket.call<MemoryViewPayload>('getMemoryView').then(setMemory).catch(reportLoadError);
   const refreshEventTree = () => socket.call<EventTreePayload>('getEventTree').then(setEventTree).catch(reportLoadError);
   const refreshStatus = () => socket.call<RoomStatusPayload>('getRoomStatus').then(setStatus).catch(reportLoadError);
+  const refreshUsageSummary = () =>
+    socket.call<UsageSummaryPayload>('getUsageSummary').then(setUsageSummary).catch(reportLoadError);
 
   useEffect(() => {
     setLoadError(null);
@@ -62,6 +65,7 @@ export function RoomDashboardPage() {
     socket.call<RoomStatusPayload>('getRoomStatus').then(setStatus).catch(reportLoadError);
     socket.call<MemoryViewPayload>('getMemoryView').then(setMemory).catch(reportLoadError);
     socket.call<EventTreePayload>('getEventTree').then(setEventTree).catch(reportLoadError);
+    socket.call<UsageSummaryPayload>('getUsageSummary').then(setUsageSummary).catch(reportLoadError);
     socket
       .call<MessagesPage>('listMessages', {})
       .then((page) => {
@@ -87,6 +91,7 @@ export function RoomDashboardPage() {
       refreshStatus();
       fetchRoom(roomIdNum).then(setRoom).catch(reportLoadError);
       refreshEventTree();
+      refreshUsageSummary();
     });
     const unsubDeleted = socket.subscribe('roomDeleted', () => {
       setSessionDetail(null);
@@ -225,6 +230,7 @@ export function RoomDashboardPage() {
           status={status}
           connectionState={socket.connectionState}
           proposeCompletionId={proposeCompletionId}
+          roomUsage={usageSummary?.room}
           onJumpToMessage={setJumpToMessageId}
           onPause={() => socket.call('pauseRoom').catch(reportActionError)}
           onResume={(additionalSessions) =>
@@ -235,6 +241,7 @@ export function RoomDashboardPage() {
         />
         <AgentRail
           agents={status.agents}
+          usageByAgent={usageSummary?.byAgent}
           onTerminate={(sessionId) =>
             socket.call('terminateAgentSession', { sessionId }).catch(reportActionError)
           }
@@ -267,10 +274,12 @@ export function RoomDashboardPage() {
             content: string;
             type?: MessageType;
             targetMessageId?: number;
+            targetAgentId?: string;
           }) => socket.call('postHumanMessage', params).catch(reportActionError)}
           readOnly={readOnly}
           jumpToMessageId={jumpToMessageId}
           onJumpHandled={() => setJumpToMessageId(null)}
+          agentIds={status?.agents.map((agent) => agent.agentId) ?? []}
         />
         {eventTree ? (
           <EventTreePanel

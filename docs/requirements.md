@@ -108,6 +108,18 @@ v1 内置以上四个 agent 的默认配置模板。
 
 生命周期记录仅在 session 详情展示，不进入消息、共享记忆或派发 prompt。终态撤销凭据、拒绝迟到写入。原始日志可实时只读查看或历史回放，关闭查看界面不影响进程。历史消息不回删。
 
+### 3.3.2 @ 定向消息（人类专属）
+
+人类发消息时可选指定 `targetAgentId`（房间内某个 agent 实例标识，见 3.2），把这条消息**只**发给这一个 agent：
+
+- **仅人类可用**：`postHumanMessage` 新增可选参数 `targetAgentId`；agent 之间的 `post_message`（4.2）不支持这个字段，agent 不能互相定向。
+- **触发范围收窄，不是新增触发源**：一条带 `targetAgentId` 的消息，只对这一个 agent 是"待派发"的触发源（判定规则同 3.3 的"待派发"，只是把"存在一条非本人发出的触发型消息"换成"存在一条 `targetAgentId` 等于自己的消息"）；对其余 agent，这条消息**完全不计入**它们的派发判定——不多给它们一次机会，也不因为出现了这条消息而让它们的"待派发"状态发生变化。
+- **忙碌照常排队**：被 @ 的 agent 当前正忙（`running`/`stopping`）时，这条消息照常等它下一次变空闲、被下一次 `checkAndDispatch` 扫描到时按"待派发"规则派发，不打断当前 session，也不做任何优先插队处理。
+- **正常可见，只是不触发调度**：这条消息本身，以及被 @ 的 agent 因此被派发的这次 session 期间产出的**所有**消息（不论 `type` 是什么），照常进入原始消息流、记忆层、事件树，其他 agent 之后都能正常看到——**唯一的区别是它们不会被算作触发型消息去唤醒其他 agent**（不进入 3.3 的"待派发"判定，也不影响 3.3.1 静默收敛自动确认里"房间内最新一条信号类消息"的判定）。这是一次"私下处理、公开留痕"的会话，不是把内容从房间里隐藏起来。
+- 这次 session 仍然正常计入 `maxSessions` 总量，仍然遵循"单个 agent 自己的 session 是顺序的"（3.3 `sequential`），仍然可能被 `terminateAgentSession` 强制终止，卡住提醒、连续失败停用等既有机制不变。
+- 若被 @ 的 agent 当前 `dispatchEnabled=false`（3.3 §6"连续失败与派发停用"），这条消息会一直排队，直到人类重新启用该 agent 的派发——跟它对普通触发型消息的行为一致，不做特殊处理。
+- **对 agent 不可见**：被派发的 agent 拿到的输入（协议说明 + `get_overview` 快照）在广播和定向两种派发下逐字节一致，系统不会告诉它"这次是专门找你的"——定向只是调度层内部的排除规则，agent 不需要也不应该区分这次调用的性质。
+
 ### 3.4 错误处理（默认策略）
 
 - 某个 agent 的调用失败（进程报错退出）：记为一次系统消息（说明该 agent 这次 session 出错），该 agent 变回空闲，触发一次新的派发检查（见 3.3），不中断整个房间；这条占位消息在事件树里的呈现见 3.5。
@@ -150,7 +162,7 @@ agent 在 session 里发的每条消息都带着这次 session 的 `sessionId`�
 
 **强制终止**：`terminateAgentSession(roomId, sessionId)`——操作对象是**一次具体的 session**，不是 agent 本身（`sessionId` 从 `getRoomStatus` 的对应 agent 状态里拿，见上）。人类随时可主动调用，不需要先等"卡住提醒"触发。做三件事：(1) 如果这次 session 的底层进程还在跑，尽力终止它（按进程组终止，部分 CLI 无法保证清理干净其内部再拉起的子进程）；(2) 把这次 session 所属 agent 当前 active 的 `exploring`（如果有）标记为 `completed`，附带系统备注"人类强制终止"（不引入新的 `status` 值，仍是 `active`/`completed` 二态，见 4.6）；(3) 把这次 session 所属的 agent 状态设回空闲（从 `running`/`stopping` 回 `idle`），可以正常被派发。
 
-**人类发消息**：`postHumanMessage(roomId, content, type?, targetMessageId?, referencedMessageIds?)`，直接写入底层存储（不经过 MCP），`authorId` 固定为保留值 `"human"`。支持跟 agent 的 `post_message` 同样丰富的 `type`/`targetMessageId`/`referencedMessageIds`——人类可以直接对某条结论做 fact/hypothesis/challenge/verify/追问等结构化发言，而不只是纯聊天，这样才能正确进入事件树和对应的记忆层。
+**人类发消息**：`postHumanMessage(roomId, content, type?, targetMessageId?, referencedMessageIds?, targetAgentId?)`，直接写入底层存储（不经过 MCP），`authorId` 固定为保留值 `"human"`。支持跟 agent 的 `post_message` 同样丰富的 `type`/`targetMessageId`/`referencedMessageIds`——人类可以直接对某条结论做 fact/hypothesis/challenge/verify/追问等结构化发言，而不只是纯聊天，这样才能正确进入事件树和对应的记忆层。`targetAgentId` 是人类专属的 @ 定向能力，见 3.3.2。
 
 **房间生命周期控制**：人类可以随时主动调用，不需要等任何 agent 先发信号——`propose_completion` 只是触发前端提醒，不是这些操作的前提：
 - `confirmCompletion(roomId)` —— 结束房间，之后转为只读（见 7）。
@@ -187,6 +199,7 @@ post_message({
 - 消息一旦发出，type 和 content 永不改写。exploring 允许一次状态结束转换，同时写入结束原因和结果，见 4.6。
 - `sessionId` 是 **session 的属性，不是消息的必备字段**：一个 agent 在它的一次 session 里发的每条消息，都会被打上这次 session 的 `sessionId`（agent 不可自行指定，系统在写入时自动填充，作为这次 session 的产出记录，供事件树按 session 组织使用，见 3.5）。人类通过 3.5 的 `postHumanMessage` 发的消息**没有 `sessionId`**——它不是任何 session 的产出，这个字段对它不适用，不是留空/置 null 的特殊情况，而是概念上就不存在。两者共享同一份底层存储，只是 `sessionId` 这个字段只在"由某次 session 产出"的消息上才有意义。
 - 另有一个专用工具 `complete_exploring(roomId, authorId, messageId, resultSummary, resultMessageIds?)`，只用于把一条 `exploring` 记录标记为完成，不通过 `post_message`。
+- `post_message` 不支持定向到某个 agent（这是人类专属能力，见 3.3.2）。
 
 ### 4.3 记忆类型定义
 
@@ -198,8 +211,10 @@ post_message({
 | `open_question` | 提出的开放问题（已有回答通过关联展示）；可选带 `targetMessageId`，表示"追问"某条具体消息，而非全新问题 |
 | `chain` | 一条从输入到输出的候选端到端方案；可多条并存，**没有系统自动裁定的"当前最优"**——所有 chain 一律平等地列出摘要，由 agent/人类自己判断取舍；可选带 `referencedMessageIds`，标注依赖了哪些 fact/hypothesis（非强制，不填就只在 `content` 里用文字描述） |
 | `exploring` | 某个 agent 正在探索某方向的状态广播（用于防止重复劳动）。**是唯一一个有状态、非纯追加的类型**，详见 4.6 |
-| `propose_completion` | agent 认为任务可以结束了，发出的一次性信号。触发前端提醒，但不自动结束房间——只有人类调用 `confirmCompletion` 才真正结束，见 3.5 |
-| `endorse` / `challenge` / `verify` | 对某条已有消息（`targetMessageId`）的赞同/质疑/验证，纯注解，不改变原消息的 type，不触发任何自动的状态流转 |
+| `propose_completion` | agent 认为任务可以结束了，发出的一次性信号。触发前端提醒，但不自动结束房间——只有人类调用 `confirmCompletion` 才真正结束，见 3.5 ，纯注解，不改变原消息的 type，不触发任何自动的状态流转|
+| `challenge` | 对某条已有消息（`targetMessageId`）的质疑 |
+| `verify` | 对某条`challenge` （`targetMessageId`）的验证 |
+| `endorse`| 对某条已有消息（`targetMessageId`）的赞同/验证，纯注解，不改变原消息的 type，不触发任何自动的状态流转， |
 
 **开放问题 vs 假设**：`open_question` 是问题本身（可能已有候选回答），`hypothesis` 是对某个问题给出的候选回答（还没被认定为定论）。二者概念不重复。
 

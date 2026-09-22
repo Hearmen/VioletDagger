@@ -16,6 +16,7 @@ export function mapMessageRow(db: Database.Database, row: any): Message {
     content: row.content,
     summary: row.summary,
     targetMessageId: row.target_message_id,
+    targetAgentId: row.target_agent_id ?? null,
     referencedMessageIds: refs.map((r) => r.referenced_message_id),
     exploringStatus: row.exploring_status,
     exploringNote: row.exploring_note,
@@ -63,11 +64,11 @@ export function insertMessage(
     const id = next.nextId;
 
     db.prepare(
-      `INSERT INTO messages (room_id, id, session_seq, author_id, type, content, summary, target_message_id, exploring_status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (room_id, id, session_seq, author_id, type, content, summary, target_message_id, target_agent_id, exploring_status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       params.roomId, id, params.sessionSeq, params.authorId, params.type ?? null,
-      params.content, summary, params.targetMessageId ?? null, exploringStatus, createdAt,
+      params.content, summary, params.targetMessageId ?? null, params.targetAgentId ?? null, exploringStatus, createdAt,
     );
 
     if (params.referencedMessageIds?.length) {
@@ -170,6 +171,7 @@ export function getRoomMessages(db: Database.Database, roomId: number): Message[
   return rows.map((row) => ({
     id: row.id, roomId: row.room_id, sessionSeq: row.session_seq, authorId: row.author_id,
     type: row.type, content: row.content, summary: row.summary, targetMessageId: row.target_message_id,
+    targetAgentId: row.target_agent_id ?? null,
     referencedMessageIds: refs.get(row.id) ?? [], exploringStatus: row.exploring_status,
     exploringNote: row.exploring_note, exploringEndReason: row.exploring_end_reason ?? null,
     exploringResultSummary: row.exploring_result_summary ?? null,
@@ -182,7 +184,20 @@ const MESSAGE_TYPES: MessageType[] = [
   'exploring', 'propose_completion', 'endorse', 'challenge', 'verify',
 ];
 
+// 一条消息是否"参与跨-agent 自动化判定"（待派发/静默收敛，见需求 3.3.2、01-storage.md §2 新增不变量）：
+// 排除定向给别人的消息（target_agent_id 非空）和 dispatch_scope='directed' session 的产出——
+// 两者都只对触发那次定向 session 的那个 agent 有意义，不该唤醒/影响其他 agent 或房间级别的判定。
+const NOT_DISPATCH_RELEVANT_SQL = `
+  messages.target_agent_id IS NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM sessions
+    WHERE sessions.room_id = messages.room_id AND sessions.seq = messages.session_seq
+      AND sessions.dispatch_scope = 'directed'
+  )
+`;
+
 // 触发派发的消息里，除调用 agent 自己以外的最新一条的时间（人类消息一律算，见 03 §1.2）。
+// 排除定向给别人的消息、以及定向 session 产出的消息（见需求 3.3.2）。
 export function getLatestDispatchTriggerAt(
   db: Database.Database,
   roomId: number,
@@ -192,9 +207,30 @@ export function getLatestDispatchTriggerAt(
   const placeholders = triggerTypes.map(() => '?').join(', ');
   const row = db.prepare(
     `SELECT MAX(created_at) AS latest FROM messages
-     WHERE room_id = ? AND author_id != ? AND (author_id = 'human' OR type IN (${placeholders}))`,
+     WHERE room_id = ? AND author_id != ? AND (author_id = 'human' OR type IN (${placeholders}))
+       AND ${NOT_DISPATCH_RELEVANT_SQL}`,
   ).get(roomId, excludeAuthorId, ...triggerTypes) as { latest: string | null } | undefined;
   return row?.latest ?? null;
+}
+
+// 该 agent 作为 target_agent_id 的最新一条消息（只可能是人类发的，见需求 3.3.2）；不存在返回 null。
+// 供核心判定"待派发"的定向条件（03 §1.2），不比较时间戳——由调用方结合 getLatestSessionStartedAt 判定。
+export function getLatestDirectedMessage(db: Database.Database, roomId: number, targetAgentId: string): Message | null {
+  const row = db.prepare(
+    `SELECT * FROM messages WHERE room_id = ? AND target_agent_id = ? ORDER BY id DESC LIMIT 1`,
+  ).get(roomId, targetAgentId);
+  return row ? mapMessageRow(db, row) : null;
+}
+
+// 房间内 type ∈ types 里 id 最大的一条消息，不排除任何 author、不比较时间戳（但排除定向 session 的产出，
+// 见需求 3.3.2）；供静默收敛自动确认判定"最新一条信号类消息是不是 propose_completion"用
+// （03-orchestrator-core.md §1.4），跟 getLatestDispatchTriggerAt（逐 agent 判定"待派发"）用途不同、不复用。
+export function getLatestMessageByTypes(db: Database.Database, roomId: number, types: MessageType[]): Message | null {
+  const placeholders = types.map(() => '?').join(', ');
+  const row = db.prepare(
+    `SELECT * FROM messages WHERE room_id = ? AND type IN (${placeholders}) AND ${NOT_DISPATCH_RELEVANT_SQL} ORDER BY id DESC LIMIT 1`,
+  ).get(roomId, ...types);
+  return row ? mapMessageRow(db, row) : null;
 }
 
 export function validateMessageRelations(db: Database.Database, roomId: number, params: Pick<InsertMessageParams, 'type' | 'targetMessageId' | 'referencedMessageIds'>): void {

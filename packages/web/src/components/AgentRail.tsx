@@ -1,9 +1,36 @@
 import { useEffect, useState } from 'react';
-import type { RoomStatusPayload } from '../api/types';
-import { colorForAgent, formatElapsed } from '../utils/format';
+import type { RoomStatusPayload, UsageTotals } from '../api/types';
+import { colorForAgent, formatCostUsd, formatElapsed, formatTokens } from '../utils/format';
+
+// 用量行（07-frontend.md §5）：sessionCount === 0（这个 agent 在本房间还没跑完过一次）时不显示；
+// cacheRead/cacheWrite 只放悬浮 title，不占卡片空间；costUsd 为 null 时（如 kimi）不显示 $ 部分；
+// 部分 session 有费用、部分没有时加一个 * 提示"未计入"，不让总数看起来比实际更精确。
+function AgentUsageLine({ usage }: { usage: UsageTotals }) {
+  if (usage.sessionCount === 0) return null;
+  const title = [
+    `输入 ${usage.inputTokens.toLocaleString()}`,
+    `输出 ${usage.outputTokens.toLocaleString()}`,
+    usage.cacheReadTokens > 0 ? `缓存读 ${usage.cacheReadTokens.toLocaleString()}` : null,
+    usage.cacheWriteTokens > 0 ? `缓存写 ${usage.cacheWriteTokens.toLocaleString()}` : null,
+  ].filter(Boolean).join(' · ');
+  return (
+    <p className="agent-card__usage mono" title={title}>
+      {formatTokens(usage.inputTokens + usage.outputTokens)}
+      {usage.costUsd != null && (
+        <>
+          {' '}· {formatCostUsd(usage.costUsd)}
+          {usage.sessionsWithoutCost > 0 && (
+            <span title={`${usage.sessionsWithoutCost} 个 session 无费用数据，未计入`}>*</span>
+          )}
+        </>
+      )}
+    </p>
+  );
+}
 
 export function AgentRail(props: {
   agents: RoomStatusPayload['agents'];
+  usageByAgent?: Record<string, UsageTotals>;
   onTerminate: (sessionId: number) => void;
   onOpenSession: (sessionId: number) => void;
   onSetAgentEnabled: (agentId: string, enabled: boolean) => void;
@@ -31,7 +58,9 @@ export function AgentRail(props: {
             <div className="agent-card__top">
               <span className={`agent-card__dot ${agent.state === 'idle' ? 'agent-card__dot--idle' : ''}`} />
               <span className="agent-card__name">{agent.agentId}</span>
-              <span className="agent-card__state">{agent.state}</span>
+              <span className="agent-card__state">
+                {agent.state === 'idle' && agent.caughtUp ? 'completed' : agent.state}
+              </span>
               {agent.stuck && (
                 <span className="stuck-flag" title="这个 agent 可能卡住了，要不要看看">⚠</span>
               )}
@@ -59,6 +88,8 @@ export function AgentRail(props: {
                 探索中：{agent.activeExploringSummary}
               </p>
             )}
+
+            {props.usageByAgent?.[agent.agentId] && <AgentUsageLine usage={props.usageByAgent[agent.agentId]} />}
 
             <div className="agent-card__actions">
               {active && agent.sessionId != null && (

@@ -16,6 +16,7 @@ function readRecentRawMessagesCount(): number {
 function summarize(m: Message): MemorySummary {
   return {
     id: m.id, type: m.type, summary: m.summary, targetMessageId: m.targetMessageId,
+    targetAgentId: m.targetAgentId,
     referencedMessageIds: m.referencedMessageIds, exploringStatus: m.exploringStatus,
     exploringNote: m.exploringNote, exploringEndReason: m.exploringEndReason,
     exploringResultSummary: m.exploringResultSummary, exploringResultMessageIds: m.exploringResultMessageIds,

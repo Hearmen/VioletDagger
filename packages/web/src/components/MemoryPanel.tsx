@@ -42,6 +42,7 @@ export function MemoryPanel(props: { memory: MemoryViewPayload; onJumpToMessage?
       {items.has(message.id) && <div className="memory-item__detail">
         <div className="memory-item__content">{message.content}</div>
         {message.targetMessageId != null && <div>目标：{reference(message.targetMessageId)}</div>}
+        {message.targetAgentId != null && <div className="ref-chip mono">→ @{message.targetAgentId}</div>}
         {!!message.referencedMessageIds.length && <div>引用：{message.referencedMessageIds.map(reference)}</div>}
         {completed && <div className="memory-item__note">已完成：{({ explicit: '主动完成', superseded: '被新方向顶替', human_terminated: '人类终止' } as Record<string, string>)[message.exploringEndReason ?? ''] ?? '结束原因未记录'}；{message.exploringResultSummary ?? '未记录结果'} {message.exploringNote}
           {(message.exploringResultMessageIds ?? []).map(reference)}

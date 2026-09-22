@@ -11,6 +11,7 @@ export interface Message {
   content: string;
   summary: string;
   targetMessageId: number | null;
+  targetAgentId: string | null;
   referencedMessageIds: number[];
   exploringStatus: 'active' | 'completed' | null;
   exploringNote: string | null;
@@ -66,8 +67,11 @@ export interface Room {
   name: string;
   schedulingMode: 'sequential';
   status: RoomStatus;
+  completionReason: 'manual' | 'auto_silence' | null;
+  completionReferenceMessageId: number | null;
   maxSessions: number;
   workdir: string;
+  autoConfirmOnSilence: boolean;
   createdAt: string;
 }
 
@@ -94,9 +98,13 @@ export interface MemoryViewPayload {
 export interface RoomStatusPayload {
   currentSessionCount: number;
   status: RoomStatus;
+  completionReason?: 'manual' | 'auto_silence';
+  completionReferenceMessageId?: number;
+  allCaughtUp: boolean;
   agents: {
     agentId: string;
     state: 'idle' | 'running' | 'stopping';
+    caughtUp: boolean;
     sessionId?: number;
     sessionStartedAt?: string;
     stopIntent?: 'terminate';
@@ -117,6 +125,11 @@ export interface EventTreePayload {
     outcome: SessionOutcome;
     startedAt: string;
     endedAt: string | null;
+    inputTokens: number | null;
+    outputTokens: number | null;
+    cacheReadTokens: number | null;
+    cacheWriteTokens: number | null;
+    costUsd: number | null;
   }[];
 }
 
@@ -133,6 +146,29 @@ export interface SessionDetailPayload {
   stopIntent: 'terminate' | null;
   cleanupStartedAt: string | null;
   exitCause: SessionExitCause | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  costUsd: number | null;
   rawLog: string;
   wroteMessages: boolean;
+}
+
+// 见 01-storage.md 的 UsageTotals：sessionsWithoutTokens/sessionsWithoutCost 让前端能诚实标"不完整"，
+// 而不是让 NULL 被当成 0 悄悄拉低总量。
+export interface UsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  costUsd: number | null;
+  sessionCount: number;
+  sessionsWithoutTokens: number;
+  sessionsWithoutCost: number;
+}
+
+export interface UsageSummaryPayload {
+  byAgent: Record<string, UsageTotals>;
+  room: UsageTotals;
 }

@@ -359,6 +359,11 @@ body.is-resizing-y {
   overflow: hidden;
 }
 
+.agent-card__usage {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
 .agent-card__actions {
   display: flex;
   gap: 6px;
@@ -466,6 +471,11 @@ body.is-resizing-y {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.message__id {
+  color: var(--text-faint);
+  font-size: 11px;
 }
 
 .message__author {
@@ -590,6 +600,53 @@ body.is-resizing-y {
   min-height: 36px;
   max-height: 170px;
   line-height: 1.5;
+}
+
+.composer__textarea-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+/* @ 定向某个 agent（需求 3.3.2）：输入 @ 弹出的内联候选列表，锚定在文本框正上方。 */
+.composer__mention-menu {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 4px;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  z-index: 5;
+}
+
+.composer__mention-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.composer__mention-option:hover {
+  background: var(--accent-soft);
+}
+
+.composer__mention-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
 }
 
 .composer__type-trigger {
@@ -926,6 +983,16 @@ body.is-resizing-y {
   align-items: center;
   gap: 10px;
   padding: 10px var(--pad);
+  background: var(--panel-head);
+  border-bottom: 1px solid var(--border);
+}
+
+.session-detail__usage {
+  display: flex;
+  gap: 8px;
+  padding: 4px var(--pad);
+  font-size: 12px;
+  color: var(--text-muted);
   background: var(--panel-head);
   border-bottom: 1px solid var(--border);
 }

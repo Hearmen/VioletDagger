@@ -85,3 +85,16 @@ export function typeLabel(type: MessageType): string {
 export function truncate(text: string, max = 120): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
+
+// 用量展示（07-frontend.md §9/§5/§4）：调用方负责在 token/costUsd 为 null 时完全不渲染，
+// 这两个函数只管把已知的数字格式化成紧凑文案，不处理"没有数据"的情况。
+export function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}m tok`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k tok`;
+  return `${n} tok`;
+}
+
+export function formatCostUsd(n: number): string {
+  if (n === 0) return '$0';
+  return n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
+}

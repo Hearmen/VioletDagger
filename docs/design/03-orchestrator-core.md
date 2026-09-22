@@ -24,10 +24,13 @@
    - 遇到忙碌状态（`running` 或 `stopping`）且当前带 active `exploring`（用 `getActiveExploring(roomId)` 算出的 agentId 集合判断；agentId 是**实例标识**，见 `00-overview.md`）的 agent：该 agent 的内存 `stuckCount` + 1（见第 5 节"卡住提醒"计数）。
    - 遇到 `state === 'idle'` 且**待派发**的 agent：记为 `dispatchTarget`（一个 `RoomAgentState`），停止扫描（排在它后面的 agent 这一次不会被摸到，不计数）。
    - 遇到 `state === 'idle'` 但**不待派发**的 agent：跳过，继续扫描后面的 agent——不能让一个没有新信息的空闲 agent 挡住后面待派发的 agent。
-   **待派发**：存在一条**非本人发出**的触发型消息（`author_id = 'human'` 或 `type` ∈ 触发型集合，见 1.1），其 `created_at` **严格晚于**该 agent 最近一次 session 的 `started_at`（从没跑过视为满足；同一毫秒并列视为已消费、不派发）。判定纯查 `getLatestDispatchTriggerAt` / `getLatestSessionStartedAt`，不维护内存集合。
-   若扫描完都没找到 `dispatchTarget`：`roomEvents.emit('roomStatus', { roomId })`（这次扫描可能改了某些 agent 的 `stuckCount`），返回，不派发——没人产出新信息的稳定态就停在这里，不会空转。
-4. 调用 `createSession(roomId, dispatchTarget.agentId)` + `setAgentState(roomId, dispatchTarget.agentId, 'running', seq)`——这一步和上面的扫描、判断都在同一个同步调用栈内完成。
-5. 同步返回后，再调用 `agentInvocation.startSession({ roomId, seq, agentId: dispatchTarget.agentId, registryKey: dispatchTarget.registryKey })`（这是 fire-and-forget，不等待其完成）。`registryKey` 是唯一用于查 `agents.config.json` 的字段，`agentId` 只作为实例标识透传。**必须同时用 try/catch 包住这次调用**：它返回 Promise 的那部分已用 `.catch` 兜住，但同步阶段也可能抛错（如建目录失败）；而 `checkAndDispatch` 会被进程退出等事件回调直接调用，同步抛出会变成未捕获异常、把整个 server 打挂——任何同步抛出都要降级为"记录日志、这次派发失败"，不能让进程死。
+   **待派发**：满足下列**任一**条件（时间比较仍是"严格晚于该 agent 最近一次 session 的 `started_at`，从没跑过视为满足；同一毫秒并列视为已消费、不派发"）：
+   - **广播条件**（原有规则，排除范围收窄，见需求 3.3.2）：存在一条非本人发出、`target_agent_id` 为空、且不属于 `dispatch_scope='directed'` session 的触发型消息（`author_id = 'human'` 或 `type` ∈ 触发型集合，见 1.1）。`getLatestDispatchTriggerAt` 已按此收窄查询。
+   - **定向条件**（新增，见需求 3.3.2）：存在一条 `target_agent_id` 等于自己的消息（只可能是人类发的）。用 `getLatestDirectedMessage(roomId, agentId)` 取最新一条。
+   `isDispatchOwed(db, roomId, agentId)` 内部分别算出这两个时间戳（广播用 `getLatestDispatchTriggerAt`，定向用 `getLatestDirectedMessage(...)?.createdAt`），取二者较晚的一个与 `getLatestSessionStartedAt` 比较；只要有一个满足就是待派发，返回 true。判定纯查存储层这几个函数，不维护内存集合。
+   若扫描完都没找到 `dispatchTarget`：`roomEvents.emit('roomStatus', { roomId })`（这次扫描可能改了某些 agent 的 `stuckCount`），返回，不派发——没人产出新信息的稳定态就停在这里，不会空转。若房间开启了 `auto_confirm_on_silence`，这个稳定态在 emit 之前还要额外过一次"静默收敛自动确认"判定（见 §1.4）；未开启或判定不满足时和现状完全一样。
+4. 选中 `dispatchTarget` 后确定这次派发的 `dispatchScope`：如果满足条件的是"定向条件"（即 `getLatestDirectedMessage` 取到的消息晚于它上次 session 开始时间），`dispatchScope = 'directed'`；否则 `dispatchScope = 'broadcast'`。**广播和定向条件同时满足时，优先按定向处理**——人类明确 @ 了这个 agent，这次 session 就按"单独处理"对待，即使房间里同时还有别的广播触发消息在排队（那些广播消息不会因此消失，等它下次空闲仍会被正常评估）。调用 `createSession(roomId, dispatchTarget.agentId, dispatchScope)` + `setAgentState(roomId, dispatchTarget.agentId, 'running', seq)`——这一步和上面的扫描、判断都在同一个同步调用栈内完成。`dispatchScope` 到此为止只是落盘的元数据，不会被第 5 步带去 agent 那边（见 1.3）。
+5. 同步返回后，再调用 `agentInvocation.startSession({ roomId, seq, agentId: dispatchTarget.agentId, registryKey: dispatchTarget.registryKey })`（这是 fire-and-forget，不等待其完成）。`registryKey` 是唯一用于查 `agents.config.json` 的字段，`agentId` 只作为实例标识透传；**`dispatchScope` 不会传给 `startSession`**——它只用来决定第 4 步 `createSession` 落盘的值，agent 调用层和 agent 本身都不知道也不需要知道这次是广播还是定向派发（需求 3.3.2）。**必须同时用 try/catch 包住这次调用**：它返回 Promise 的那部分已用 `.catch` 兜住，但同步阶段也可能抛错（如建目录失败）；而 `checkAndDispatch` 会被进程退出等事件回调直接调用，同步抛出会变成未捕获异常、把整个 server 打挂——任何同步抛出都要降级为"记录日志、这次派发失败"，不能让进程死。
 6. `roomEvents.emit('roomStatus', { roomId })`（见 `00-overview.md`"推送事件总线"）——同时覆盖第 4 步的状态迁移（新 session 出现、agent 变 `running`）和第 3 步扫描过程中可能产生的 `stuckCount`/`dispatchEnabled` 变化。
 
 **不需要显式加锁/互斥**：`better-sqlite3` 是同步 API，Node.js 单线程执行模型保证"扫描 agent → 写 session/state"这段代码不会被另一次 `checkAndDispatch` 调用打断（只要这段代码本身不含 `await`）。两个触发事件即使"同时"发生，也会被 JS 事件循环序列化为先后两次独立调用，第二次调用执行时一定能看到第一次调用已经提交的状态。这比引入互斥锁更简单，也更准确地反映底层执行模型。
@@ -39,7 +42,20 @@
 1. **房间协议说明**——固定的规则性内容（消息类型含义、`exploring` 生命周期、人类消息权重更高、可用工具列表等），因为每次 session 都是从零开始，必须每次完整给出，不能假设 agent 记得上次的规则。这部分内容直接写死在 prompt 模板里（见 `04-agent-invocation.md` 第 2 节），不经过任何 API 调用。
 2. **当前房间状态**——`agentInvocation.startSession` 内部调用记忆管理层的 `buildOverview(roomId)`（见 `02-memory-management.md`），把结果**预渲染进 prompt**，不要求 agent 自己第一步先调用 MCP 工具才能看到房间状态。这是派发那一刻的快照；房间状态之后如果变了（其他并发 session 产出新内容），agent 仍然可以随时主动调用 MCP 的 `get_overview` 工具刷新——`get_overview` 工具本身也是调用同一个 `buildOverview`，两处调用同一份组装逻辑，不是两套实现。
 
-两者一起构成这次 session 的完整输入。
+两者一起构成这次 session 的完整输入，**跟 `dispatchScope` 无关**——广播和定向两种派发拿到的 prompt 逐字节一致（需求 3.3.2："对 agent 来说，定向和群发没有任何区别"）；`dispatchScope` 只是调度层内部记在这次 session 上的元数据，用于第 1.2 节"待派发"判定时排除定向 session 的产出，不会以任何形式透传给 `agentInvocation.startSession`/`buildPromptText`。
+
+### 1.4 静默收敛自动确认（`auto_confirm_on_silence`）
+
+只有创建时开启了 `auto_confirm_on_silence`（`01-storage.md` §1，房间生命周期内不可修改）的房间才会走这条分支；未开启的房间行为和 1.2 现状完全一样，不受影响。
+
+1.2 第 3 步"扫描完都没找到 `dispatchTarget`"这个稳定态分支里，`emit('roomStatus')` 之前追加：
+
+1. 房间内存在 `state === 'running' || state === 'stopping'` 的 agent——跳过，这次不判定（还有会话在跑，可能还会产出新内容，不能在这时候下收尾结论）。
+2. `getLatestMessageByTypes(roomId, [...DISPATCH_TRIGGER_TYPES, 'propose_completion'])`（`01-storage.md` §4）取房间内属于这七种类型、id 最大的一条消息，记为 `latest`。
+3. `latest` 为 `null`，或 `latest.type !== 'propose_completion'`——跳过。前者表示还没人提过收尾；后者表示提完收尾之后房间又产生了更新的 fact/hypothesis/boundary/open_question/chain/challenge——不要求这条更新的消息显式用 `targetMessageId` 指向那条 `propose_completion`，只要是更新的实质内容就视为收尾信号已过期，不自动确认。
+4. 否则：调用 `storage.recordCompletion(roomId, 'auto_silence', latest.id)`（`01-storage.md` §4，事务内把 `status` 置 `completed` 并写 `completion_reason`/`completion_reference_message_id`）。**不写任何聊天消息**——和人工调用 `confirmCompletion` 保持同样的静默方式；前端从 `getRoomStatus`/`GET /api/rooms/:id` 读到的 `completionReason`/`completionReferenceMessageId`（`06-orchestrator-api.md` §4）在房间头部展示"已于 #<id> 静默期自动确认收尾"，不进入消息时间线，事件树不需要改动。
+
+这次判定和 1.2 第 3 步的扫描共用同一次 `checkAndDispatch` 调用、同一个同步调用栈——不新增事件源，也不需要额外的定时器或轮询：房间本来就会在每次 `onSubstantiveMessagePosted`/`onSessionEnded` 时重新扫描一次，"没有 `dispatchTarget`"这个分支已经是"房间刚刚安静下来"的确切时刻，顺带查一次"安静下来的原因是不是因为大家已经认可收尾了"不需要额外机制。
 
 ## 2. 自然结束与最终结算
 
@@ -52,9 +68,9 @@
 | 异常退出、信号退出或启动失败，未进入人工终止流程 | error | 是 |
 | stopIntent=terminate，已确认主进程退出或从未启动 | terminated | 是 |
 
-没有自动运行时长/无输出超时；卡住时人类可暂停房间、查看日志并终止。MCP 消息可在调用期间持续产生，CLI stdout/stderr 不参与结果判定、不转为 fact。正常结束不自动完成 active exploring，不结束 room。
+没有自动运行时长/无输出超时；卡住时人类可暂停房间、查看日志并终止。MCP 消息可在调用期间持续产生，CLI stdout/stderr 不参与结果判定、不转为 fact——**用量统计是这条规则下唯一从日志内容提取并落盘的数据**（`04-agent-invocation.md` §7），但它不影响这张结算表，`completed`/`passed`/`error`/`terminated` 的判定逻辑完全不变，只是随 `finishSession` 多写几列数字。正常结束不自动完成 active exploring，不结束 room。
 
-只处理 running/stopping。事务内写 outcome、endedAt、退出元数据及 process_exited，且仅在 currentSessionSeq 等于本 seq 时释放 agent。撤销凭据，emit roomStatus 并执行一次 `checkAndDispatch`。**outcome 结算为 completed 之外的任何结果时**（passed/error/terminated），额外写一条无 type 的系统占位消息（`authorId` 为该 session 的 agentId、`sessionId` 为本次 seq），并 emit `message`——内容按结果分别说明"未发出任何实质消息"（passed）、报错原因（error）、"人工终止"（terminated）。事件树（`07-frontend.md` §9）靠这条消息本身留痕，不需要单独的 session 节点。
+只处理 running/stopping。事务内写 outcome、endedAt、退出元数据、用量统计（`event.usage`，见 04 §7）及 process_exited，且仅在 currentSessionSeq 等于本 seq 时释放 agent。撤销凭据，emit roomStatus 并执行一次 `checkAndDispatch`。**outcome 结算为 completed 之外的任何结果时**（passed/error/terminated），额外写一条无 type 的系统占位消息（`authorId` 为该 session 的 agentId、`sessionId` 为本次 seq），并 emit `message`——内容按结果分别说明"未发出任何实质消息"（passed）、报错原因（error）、"人工终止"（terminated）。事件树（`07-frontend.md` §9）靠这条消息本身留痕，不需要单独的 session 节点。
 
 ## 3. `terminateAgentSession(roomId, seq)`
 
@@ -85,8 +101,9 @@ function resumeRoom(roomId: number, additionalSessions?: number): void;
 // 若当前 status === 'paused_manual'：additionalSessions 可省略，直接 setRoomStatus(roomId, 'active') + emit('roomStatus', { roomId }) + checkAndDispatch(roomId)
 
 function confirmCompletion(roomId: number): void;
-// setRoomStatus(roomId, 'completed') + roomEvents.emit('roomStatus', { roomId })。不终止仍在跑的 session（它们跑完后正常写入结果，
-// 只是不会再触发新的派发——checkAndDispatch 第一步就会因 status !== 'active' 直接返回）
+// storage.recordCompletion(roomId, 'manual') + roomEvents.emit('roomStatus', { roomId })。不终止仍在跑的 session（它们跑完后正常写入结果，
+// 只是不会再触发新的派发——checkAndDispatch 第一步就会因 status !== 'active' 直接返回）。
+// 静默收敛自动确认（见 §1.4）是另一条独立路径，同样落到 recordCompletion，只是 reason 传 'auto_silence' 并带 referenceMessageId
 
 async function deleteRoom(roomId: number): Promise<void>;
 // 只允许 status === 'completed'，否则抛错（错误由 06-orchestrator-api.md 的 DELETE /api/rooms/:id 转成 HTTP 4xx）。
@@ -150,3 +167,22 @@ function setAgentEnabled(roomId: number, agentId: string, enabled: boolean): voi
 ## 调度收敛修订（2026-09-19）
 
 引入触发型消息与"待派发"判定（见 1.1/1.2）：触发源只触发检查，实际派发要求 agent 存在非本人发出、晚于其上次 session 开始时间的触发型消息。`passed` 与 reaction/exploring 不再派生新 session，房间在无人产出触发型消息后自然停止；`getLatestDispatchTriggerAt` 返回最新触发型消息时间（人类消息一律计入、排除调用 agent 自己），`getLatestSessionStartedAt` 返回该 agent 最近一次 session 开始时间，两者由 `dispatch.isDispatchOwed` 比较（同毫秒视为已消费）。
+
+## 静默收敛自动确认（2026-09-21）
+
+新增房间级只读开关 `auto_confirm_on_silence`（建房时一次性写入，房间生命周期内不可修改，见 `01-storage.md` §1/§5.6）。开启后，`checkAndDispatch` 在稳定态（无待派发 agent、且无 `running`/`stopping` session）下，若房间内 id 最大的信号类消息（`DISPATCH_TRIGGER_TYPES ∪ {'propose_completion'}`）恰好是 `propose_completion`，自动调用 `storage.recordCompletion(roomId, 'auto_silence', latest.id)` 完成收尾，不写任何聊天消息（见 §1.4）。`rooms` 新增 `completion_reason`/`completion_reference_message_id`，`confirmCompletion`（人工路径）与这条自动路径共用同一个 `recordCompletion`，只是 reason 不同，供前端区分"人工确认"与"自动确认"并展示依据消息（`06-orchestrator-api.md` §4）。
+
+动机：实测暴露"任务其实早已收敛（多方独立验证一致通过），但没有人盯着就会一直不收尾，只能靠人工手动点掉"的问题——调度层面"反应型消息互相唤醒、永不停息"的问题已由上面的"调度收敛修订"解决，这一条解决的是收敛之后仍然缺一个自动终止信号的问题。默认关闭（`auto_confirm_on_silence` 缺省 `false`），是否需要自动收尾由建房时人工决定，不改变已有房间的行为。
+
+## 用量统计修订（2026-09-21）
+
+`onSessionEnded` 结算时（§2）额外接收并透传 `event.usage`（`04-agent-invocation.md` §7）给 `finishSession`，随 outcome 一起落盘；这条不影响 outcome 判定表，纯粹是多存几列数字。
+
+## @ 定向消息修订（2026-09-22）
+
+需求 3.3.2 新增人类专属的定向消息（`postHumanMessage` 的可选 `targetAgentId`）。这一版把它接入派发算法（见 §1.2 正文）：
+
+- **"待派发"改为广播/定向两条件取其一**：广播条件沿用原规则但排除定向给别人的消息与定向 session 的产出；定向条件是"存在一条 `target_agent_id` 等于自己、晚于自己上次 session 开始时间的消息"，用新增的 `getLatestDirectedMessage(roomId, agentId)` 判定。`isDispatchOwed` 取两个时间戳中较晚者与 `getLatestSessionStartedAt` 比较。
+- **dispatchScope 的确定**：选中 `dispatchTarget` 时，若满足的是定向条件，这次派发的 `dispatch_scope='directed'`；广播和定向同时满足时优先按定向处理。`createSession` 签名新增必填的 `dispatchScope` 参数。**这个值只落盘、只供调度层自己用，不会传给 `agentInvocation.startSession`/`buildPromptText`**——对 agent 来说，定向和广播派发拿到的 prompt 逐字节一致，agent 无法也不需要区分这次调用的性质（需求 3.3.2）。
+- **私下处理、公开留痕**：`dispatch_scope='directed'` 的 session 产出的所有消息，正常写入并展示在消息流/记忆/事件树，唯一的差别是 `getLatestDispatchTriggerAt`（本节"待派发"判定）与 `getLatestMessageByTypes`（§1.4 静默收敛判定）查询时都跳过这些消息——它们不会把其它 agent 唤醒，也不会被算作"房间最新一条信号类消息"触发自动收尾。这是"此 agent 记录的消息不触发调度"的落地方式：范围是**这一次定向 session 产出的全部消息**，不是逐条消息单独打标。
+- **不影响其余机制**：定向 session 仍计入 `maxSessions`、仍遵循 `sequential`、仍可被 `terminateAgentSession` 终止，卡住提醒（§5）与连续失败停用（§6）不变；`dispatchEnabled=false` 的 agent 被 @ 时同样只是排队等待人类重新启用，不做特殊处理。

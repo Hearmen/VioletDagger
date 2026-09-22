@@ -17,10 +17,13 @@ export function MessageStreamPanel(props: {
     content: string;
     type?: MessageType;
     targetMessageId?: number;
+    targetAgentId?: string;
   }) => void;
   readOnly: boolean;
   jumpToMessageId?: number | null;
   onJumpHandled?: () => void;
+  // 房间内可 @ 的 agent 实例标识，按 joinOrder（需求 3.2、3.3.2），转交给 Composer 渲染 @ 候选。
+  agentIds: string[];
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
@@ -143,6 +146,7 @@ export function MessageStreamPanel(props: {
               </div>
               <div className="message__main">
                 <div className="message__head">
+                  <span className="message__id mono">#{message.id}</span>
                   <span
                     className="message__author"
                     style={isAgent ? { color: colorForAgent(message.authorId) } : undefined}
@@ -150,6 +154,11 @@ export function MessageStreamPanel(props: {
                     {authorLabel(message.authorId)}
                   </span>
                   {message.type && <MessageTypeBadge type={message.type} />}
+                  {message.targetAgentId != null && (
+                    <span className="ref-chip mono" style={{ color: colorForAgent(message.targetAgentId) }}>
+                      → @{message.targetAgentId}
+                    </span>
+                  )}
                   <span className="message__time">{formatClock(message.createdAt)}</span>
                 </div>
                 <div className="message__content">{message.content}</div>
@@ -203,6 +212,7 @@ export function MessageStreamPanel(props: {
           setTargetMessageId(undefined);
           clearReactionType();
         }}
+        agentIds={props.agentIds}
         onSend={(params) => {
           props.onSend(params);
           setTargetMessageId(undefined);

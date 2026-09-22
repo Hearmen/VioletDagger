@@ -9,6 +9,7 @@ import { getRoom, setRoomStatus, setSessionPgid, setSessionRawLogPath, insertMes
 import { roomEvents } from '../events';
 import { buildOverview } from '../memory';
 import { buildPromptText, writePromptFile } from './prompt';
+import { extractSessionUsage } from './usage';
 import type {
   AgentRegistry, OnSessionEnded, OnSessionExitProgress, StartSession, SessionExitEvent, LogChunk,
   SessionLogHandle, StopResult, DeleteRoomArtifacts, AgentInvocation, SpawnedProcess, SpawnProcess,
@@ -138,6 +139,34 @@ export function createAgentInvocation(deps: {
 
   function endLogStream(entry: RunningSession): void {
     if (entry.logStream && !entry.logStream.writableEnded) entry.logStream.end();
+  }
+
+  // 用量解析要读完整落盘的日志文件（04 §7），必须等写入流真正 flush 完才读，不然会读到截断的尾部。
+  function waitForLogFlush(entry: RunningSession): Promise<void> {
+    if (!entry.logStream || entry.logStream.writableEnded) return Promise.resolve();
+    return new Promise((resolve) => {
+      entry.logStream!.once('finish', () => resolve());
+      entry.logStream!.once('error', () => resolve());
+      entry.logStream!.end();
+    });
+  }
+
+  // 进程退出且日志已完整落盘后解析用量；spawn-failed/not-started 没有真正跑过，不解析。
+  // 解析失败（读文件失败、JSON 异常）一律降级为 undefined，不影响 outcome 结算（04 §7）。
+  async function resolveUsage(
+    entry: RunningSession,
+    rawLogPath: string,
+    exitCause: SessionExitEvent['exitCause'],
+    registryKey: string,
+  ): Promise<import('../storage').SessionUsage | undefined> {
+    if (exitCause === 'spawn-failed' || exitCause === 'not-started') return undefined;
+    await waitForLogFlush(entry);
+    try {
+      const text = await readFile(rawLogPath, 'utf-8');
+      return extractSessionUsage(registryKey, text);
+    } catch {
+      return undefined;
+    }
   }
 
   // 统一的退出结算入口：只上报一次，退出监听与清理 Promise 共用同一份退出事实（04 §6）。
@@ -335,8 +364,11 @@ export function createAgentInvocation(deps: {
       });
       proc.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
         const exitCause = entry.stopRequested ? 'managed-stop' : code === 0 ? 'natural' : 'unexpected';
-        finalize(entry, {
-          roomId, seq, agentId, exitCode: code, signal: signal ?? null, exitCause, rawLogPath,
+        void resolveUsage(entry, rawLogPath, exitCause, registryKey).then((usage) => {
+          finalize(entry, {
+            roomId, seq, agentId, exitCode: code, signal: signal ?? null, exitCause, rawLogPath,
+            ...(usage ? { usage } : {}),
+          });
         });
       });
     })().catch((err) => {

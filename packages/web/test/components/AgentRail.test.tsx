@@ -1,18 +1,29 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { AgentRail } from '../../src/components/AgentRail';
-import type { RoomStatusPayload } from '../../src/api/types';
+import type { RoomStatusPayload, UsageTotals } from '../../src/api/types';
 
 const noop = () => {};
 
 function makeAgent(overrides: Partial<RoomStatusPayload['agents'][number]> = {}): RoomStatusPayload['agents'][number] {
-  return { agentId: 'codex', state: 'idle', enabled: true, failureCount: 0, ...overrides };
+  return { agentId: 'codex', state: 'idle', caughtUp: false, enabled: true, failureCount: 0, ...overrides };
 }
 
-function renderRail(agents: RoomStatusPayload['agents'], handlers: { onTerminate?: any; onOpenSession?: any; onSetAgentEnabled?: any } = {}) {
+function makeUsage(overrides: Partial<UsageTotals> = {}): UsageTotals {
+  return {
+    inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+    costUsd: null, sessionCount: 0, sessionsWithoutTokens: 0, sessionsWithoutCost: 0, ...overrides,
+  };
+}
+
+function renderRail(
+  agents: RoomStatusPayload['agents'],
+  handlers: { onTerminate?: any; onOpenSession?: any; onSetAgentEnabled?: any; usageByAgent?: Record<string, UsageTotals> } = {},
+) {
   return render(
     <AgentRail
       agents={agents}
+      usageByAgent={handlers.usageByAgent}
       onTerminate={handlers.onTerminate ?? vi.fn()}
       onOpenSession={handlers.onOpenSession ?? noop}
       onSetAgentEnabled={handlers.onSetAgentEnabled ?? vi.fn()}
@@ -64,6 +75,23 @@ describe('AgentRail', () => {
     expect(onOpenSession).toHaveBeenCalledWith(7);
   });
 
+  it('shows "completed" instead of "idle" when the agent is idle and caught up', () => {
+    renderRail([makeAgent({ state: 'idle', caughtUp: true })]);
+    expect(screen.getByTestId('agent-codex')).toHaveTextContent('completed');
+    expect(screen.getByTestId('agent-codex')).not.toHaveTextContent('idle');
+  });
+
+  it('shows plain "idle" when the agent is idle but still owed a dispatch (queued behind another agent)', () => {
+    renderRail([makeAgent({ state: 'idle', caughtUp: false })]);
+    expect(screen.getByTestId('agent-codex')).toHaveTextContent('idle');
+  });
+
+  it('never shows "completed" for a running agent even if caughtUp were somehow true', () => {
+    renderRail([makeAgent({ state: 'running', caughtUp: true, sessionId: 1, sessionStartedAt: new Date().toISOString() })]);
+    expect(screen.getByTestId('agent-codex')).toHaveTextContent('running');
+    expect(screen.getByTestId('agent-codex')).not.toHaveTextContent('completed');
+  });
+
   it('shows a stuck indicator when stuck is true', () => {
     renderRail([makeAgent({ state: 'running', sessionId: 1, sessionStartedAt: new Date().toISOString(), stuck: true })]);
     expect(screen.getByTitle('这个 agent 可能卡住了，要不要看看')).toBeInTheDocument();
@@ -83,5 +111,39 @@ describe('AgentRail', () => {
     renderRail([makeAgent()], { onSetAgentEnabled });
     fireEvent.click(screen.getByRole('button', { name: '停用' }));
     expect(onSetAgentEnabled).toHaveBeenCalledWith('codex', false);
+  });
+
+  it('shows a compact usage line with cost when the agent has completed sessions with usage data', () => {
+    renderRail([makeAgent()], {
+      usageByAgent: {
+        codex: makeUsage({ inputTokens: 8000, outputTokens: 4345, sessionCount: 2, costUsd: 0.28 }),
+      },
+    });
+    expect(screen.getByTestId('agent-codex')).toHaveTextContent('12.3k tok');
+    expect(screen.getByTestId('agent-codex')).toHaveTextContent('$0.28');
+  });
+
+  it('marks the usage line with a * when some sessions have no cost data', () => {
+    renderRail([makeAgent()], {
+      usageByAgent: {
+        codex: makeUsage({ inputTokens: 5, outputTokens: 5, sessionCount: 2, costUsd: 0.1, sessionsWithoutCost: 1 }),
+      },
+    });
+    expect(screen.getByTitle('1 个 session 无费用数据，未计入')).toBeInTheDocument();
+  });
+
+  it('omits the $ part when the agent never reports a cost (e.g. codex-only token data)', () => {
+    renderRail([makeAgent()], {
+      usageByAgent: { codex: makeUsage({ inputTokens: 5, outputTokens: 5, sessionCount: 1, costUsd: null }) },
+    });
+    expect(screen.getByTestId('agent-codex')).toHaveTextContent('10 tok');
+    expect(screen.getByTestId('agent-codex')).not.toHaveTextContent('$');
+  });
+
+  it('shows no usage line at all when the agent has not finished a session yet (e.g. kimi with zero runs)', () => {
+    renderRail([makeAgent({ agentId: 'kimi' })], {
+      usageByAgent: { kimi: makeUsage({ sessionCount: 0 }) },
+    });
+    expect(screen.queryByText(/tok/)).not.toBeInTheDocument();
   });
 });

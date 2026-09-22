@@ -1,6 +1,6 @@
 import type { Message } from '../storage/types';
 
-export type MemorySummary = Pick<Message, 'id' | 'type' | 'summary' | 'targetMessageId' | 'referencedMessageIds' | 'exploringStatus' | 'exploringNote' | 'exploringEndReason' | 'exploringResultSummary' | 'exploringResultMessageIds'>;
+export type MemorySummary = Pick<Message, 'id' | 'type' | 'summary' | 'targetMessageId' | 'targetAgentId' | 'referencedMessageIds' | 'exploringStatus' | 'exploringNote' | 'exploringEndReason' | 'exploringResultSummary' | 'exploringResultMessageIds'>;
 export interface MessageRelations {
   annotationIds: number[];
   answerIds: number[];

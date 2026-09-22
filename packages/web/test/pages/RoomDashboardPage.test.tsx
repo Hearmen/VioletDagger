@@ -4,7 +4,7 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { RoomDashboardPage } from '../../src/pages/RoomDashboardPage';
 import * as rest from '../../src/api/rest';
 import { useRoomSocket } from '../../src/hooks/useRoomSocket';
-import type { Message, MemoryViewPayload, RoomStatusPayload } from '../../src/api/types';
+import type { Message, MemoryViewPayload, RoomStatusPayload, UsageTotals } from '../../src/api/types';
 
 vi.mock('../../src/api/rest');
 vi.mock('../../src/hooks/useRoomSocket');
@@ -25,6 +25,11 @@ vi.mock('../../src/components/SessionLogView', () => ({
 
 const emptyMemory: MemoryViewPayload = {
   facts: [], boundaries: [], openQuestions: [], chains: [], hypotheses: [], exploring: [],
+};
+
+const emptyUsageTotals: UsageTotals = {
+  inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+  costUsd: null, sessionCount: 0, sessionsWithoutTokens: 0, sessionsWithoutCost: 0,
 };
 
 function makeMessage(overrides: Partial<Message> = {}): Message {
@@ -56,17 +61,20 @@ describe('RoomDashboardPage', () => {
 
   function defaultCall(method: string) {
     if (method === 'getRoomStatus') {
-      return Promise.resolve<RoomStatusPayload>({ currentSessionCount: 1, status: 'active', agents: [] });
+      return Promise.resolve<RoomStatusPayload>({ currentSessionCount: 1, status: 'active', allCaughtUp: false, agents: [] });
     }
     if (method === 'listMessages') return Promise.resolve({ messages: [], nextCursor: null });
     if (method === 'getMemoryView') return Promise.resolve(emptyMemory);
     if (method === 'getEventTree') return Promise.resolve({ sessions: [] });
+    if (method === 'getUsageSummary') return Promise.resolve({ byAgent: {}, room: emptyUsageTotals });
     return Promise.resolve({ ok: true });
   }
 
   beforeEach(() => {
     vi.mocked(rest.fetchRoom).mockResolvedValue({
-      id: 1, name: 'room a', schedulingMode: 'sequential', status: 'active', maxSessions: 20, workdir: '/tmp/work', createdAt: 'now',
+      id: 1, name: 'room a', schedulingMode: 'sequential', status: 'active',
+      completionReason: null, completionReferenceMessageId: null,
+      maxSessions: 20, workdir: '/tmp/work', autoConfirmOnSilence: false, createdAt: 'now',
     });
     call.mockReset();
     call.mockImplementation(defaultCall);
@@ -141,7 +149,8 @@ describe('RoomDashboardPage', () => {
         return Promise.resolve<RoomStatusPayload>({
           currentSessionCount: 1,
           status: 'completed',
-          agents: [{ agentId: 'claude', state: 'running', sessionId: 3, sessionStartedAt: new Date().toISOString() }],
+          allCaughtUp: false,
+          agents: [{ agentId: 'claude', state: 'running', caughtUp: false, sessionId: 3, sessionStartedAt: new Date().toISOString() }],
         });
       }
       return defaultCall(method);
@@ -162,14 +171,17 @@ describe('RoomDashboardPage', () => {
         return Promise.resolve<RoomStatusPayload>({
           currentSessionCount: 1,
           status: 'active',
-          agents: [{ agentId: 'claude', state: 'running', sessionId: 7, sessionStartedAt: now }],
+          allCaughtUp: false,
+          agents: [{ agentId: 'claude', state: 'running', caughtUp: false, sessionId: 7, sessionStartedAt: now }],
         });
       }
       if (method === 'getSessionDetail') {
         return Promise.resolve({
           sessionId: 7, agentId: 'claude', startedAt: now, endedAt: null, outcome: 'running',
           messages: [], lifecycleEvents: [], exitCode: null, exitSignal: null, stopIntent: null,
-          cleanupStartedAt: null, exitCause: null, rawLog: '', wroteMessages: false,
+          cleanupStartedAt: null, exitCause: null,
+          inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costUsd: null,
+          rawLog: '', wroteMessages: false,
         });
       }
       return defaultCall(method);

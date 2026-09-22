@@ -11,10 +11,11 @@ function renderMemory(overview: OverviewPayload): string {
     if (rendered.has(m.id)) return '';
     rendered.add(m.id);
     const target = m.targetMessageId == null ? '' : ` → #${m.targetMessageId}`;
+    const targetAgent = m.targetAgentId == null ? '' : ` @${m.targetAgentId}`;
     const refs = m.referencedMessageIds.length ? ` 依据：${m.referencedMessageIds.map(id => '#'+id).join(' ')}` : '';
     const status = m.exploringStatus ? ` [${m.exploringStatus}]` : '';
     const agent = 'agentId' in m ? ` 占用：${m.agentId}` : '';
-    const lines = [`${indent}- [#${m.id}] ${m.type ?? '上下文'}${target}${status}${agent}：${m.summary}${refs}`];
+    const lines = [`${indent}- [#${m.id}] ${m.type ?? '上下文'}${target}${targetAgent}${status}${agent}：${m.summary}${refs}`];
     if (m.exploringStatus === 'completed') lines.push(`${indent}  结束：${m.exploringEndReason ?? '结束原因未记录'}；${m.exploringResultSummary ?? '未记录结果'}${m.exploringNote ? '；'+m.exploringNote : ''}；结果引用：${m.exploringResultMessageIds.map(id => '#'+id).join(' ')}`);
     const rel = overview.relations[m.id];
     if (rel?.answerIds.length) lines.push(`${indent}  已有回答：${rel.answerIds.map(id => '#'+id).join(' ')}`);
@@ -68,12 +69,22 @@ authorId: ${agentId}
 - get_detail(roomId, messageId | { type } | { list: true, type?, targetMessageId?, beforeId?, limit? })：按需深挖某条或某类记忆的完整内容，list:true 时分页浏览全部历史（含普通聊天）。
 
 **记忆类型**：fact（已确认事实）/ hypothesis（针对某个 open_question 的候选答案）/ boundary（已确认走不通的死胡同）/ open_question（提出的开放问题，可选 targetMessageId 表示追问某条消息）/ chain（一条候选端到端方案，可多条并存，没有系统裁定的"最优"）/ exploring（你正在探索的方向广播，见下）/ propose_completion（你认为任务可以结束了）/ endorse、challenge、verify（对某条消息的赞同/质疑/验证，targetMessageId 必填）。所有类型一旦发出，type 和 content 永不改写——只追加，不覆盖。
+| type | 含义 |
+|---|---|
+| fact| 已确认的事实 |
+| hypothesis | 针对某个 open_question 提出的候选答案，尚无定论；新写入必须通过 targetMessageId 关联该问题 |
+| boundary | 已确认走不通的路径/死胡同 |
+| open_question | 提出的开放问题（已有回答通过关联展示）；可选带 targetMessageId，表示"追问"某条具体消息 |
+| chain | 一条从输入到输出的候选端到端方案；可多条并存，**没有系统自动裁定的"当前最优"**——所有 chain 一律平等地列出摘要，由 agent/人类自己判断取舍；可选带 referencedMessageIds，标注依赖了哪些 fact/hypothesis（非强制） |
+| exploring | 某个 agent 正在探索某方向的状态广播（用于防止重复劳动）|
+| propose_completion | agent 认为任务可以结束了，发出的一次性信号|
+| endorse / challenge / verify | 对某条已有消息（targetMessageId）的赞同/质疑/验证|
 
 **exploring 的规则**：你同时只能有一条 active 的 exploring；发新的 exploring 会自动把你自己之前那条 active 的标记为 completed；探索完一个方向但还没想好下一步时，调用 complete_exploring 显式标记完成。
 
 **人类消息权重**：房间里 authorId 为 "human" 的消息，请更重视其判断——但不代表系统会强制覆盖你的看法，只是提醒你认知上多加权重。
 
-**结束本次会话**：你这次是一次性非交互调用，没有人类终端可以应答。所有的发现先通过 post_message 提交并等待成功；探索完成时调用 complete_exploring；完成本次工作后就结束本次回答，由系统在进程自然退出后记录本次 session。不要等待终端输入。什么都不调用直接结束是允许的，不会被视为异常，只是这次没有新内容。
+**结束本次会话**：你这次是一次性非交互调用，没有人类终端可以应答。所有的发现先通过 post_message 提交并等待成功；探索完成时调用 complete_exploring；不要等待终端输入。**一次 session 不限于只做一件事**：如果一项发现自然引出了下一步具体可做的动作，应该在本次会话内继续做下去，用合适的类型分别记录每一步，而不是止步于第一条就结束。**但不要在本次会话里对自己刚发出的消息做 endorse/verify**——这两类是声称"独立复核"的，自己给自己复核没有价值；如果你刚完成的工作已经足够，可以照常发 propose_completion 提议收尾，这不算自我背书。确认没有更多可做的增量后再结束，由系统在进程自然退出后记录本次 session；什么都不调用直接结束是允许的，不会被视为异常，只是这次没有新内容。
 
 **接续历史**：hypothesis 必须用 targetMessageId 指向 open_question；fact 可选回答问题。所有有类型消息都可以 referencedMessageIds 引用依据。先读取已有回答及注解；再次验证或质疑说明新增条件、证据或疑点。已有方案适用时直接引用，只有新路径或实质变化才发 chain，并说明变化。无增量可以结束。探索结束须记录结果摘要，无结论也如实记录。get_detail({roomId, list:true, type?, targetMessageId?, beforeId?, limit?}) 可分页浏览全部历史，包括普通聊天。人类约束优先查看原始消息，记忆摘要省略作者不改变其权重。
 
@@ -90,7 +101,7 @@ ${overview.guidance}
 
 ## 下一步
 
-请基于以上信息决定下一步做什么，任何你觉得对达成任务有帮助信息都可以通过 post_message 记录下来；需要最新的记忆数据可以重新调用 get_overview(roomId)。
+请基于以上信息决定接下来可以做的事，做完一件、发现有新的具体动作时继续做下一件，直到确认没有更多增量再停下；任何你觉得对达成任务有帮助的信息都可以通过 post_message 分别记录；需要最新的记忆数据可以重新调用 get_overview(roomId)。
 `;
 }
 

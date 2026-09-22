@@ -18,7 +18,7 @@ interface MessageRelations {
 }
 interface MemorySummary {
   id: number; type: MessageType | null; summary: string;
-  targetMessageId: number | null; referencedMessageIds: number[];
+  targetMessageId: number | null; targetAgentId: string | null; referencedMessageIds: number[];
   exploringStatus: 'active' | 'completed' | null;
   exploringEndReason: 'explicit' | 'superseded' | 'human_terminated' | null;
   exploringNote: string | null;
@@ -79,6 +79,10 @@ MemoryViewPayload 保留 facts/boundaries/openQuestions/chains/hypotheses/explor
 ## 6. 探索结束
 
 complete_exploring 必填非空 resultSummary，可选 resultMessageIds（同 room 已有消息）。状态、explicit 原因、摘要及结果 ID 同事务一次写入；重复结束拒绝。自动顶替记录 superseded，人类终止记录 human_terminated 和系统 note，不伪造结果。旧库新增可空字段和默认空数组，旧原因未知显示“结束原因未记录”，空结果显示“未记录结果”，不推断成无结论。后续补充通过新消息追加。
+
+## @ 定向消息修订（2026-09-22）
+
+`MemorySummary` 新增 `targetAgentId: string | null`（透传自 `Message.targetAgentId`，见 `01-storage.md`），§2 三个读取出口共用的关系投影在组装 `MemorySummary` 时一并带出这个字段，不需要额外查询。渲染格式见 `04-agent-invocation.md` §2.2（`renderMemory` 追加 `@agentId` 标注）与 `07-frontend.md`（MessageRow/MemoryPanel 的"→ @agentId"徽标）。
 
 ## 7. 边界与验证
 

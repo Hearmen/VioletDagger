@@ -1,4 +1,4 @@
-import type { SessionExitCause } from '../storage';
+import type { SessionExitCause, SessionUsage } from '../storage';
 
 export interface AgentMcpFileConfig {
   template: string;   // 文件内容模板（JSON），含 {{mcpUrl}}
@@ -45,6 +45,7 @@ export type SessionExitEvent = {
   exitCause: SessionExitCause;
   rawLogPath: string;
   cleanupAttemptId?: string;
+  usage?: SessionUsage; // 见 04-agent-invocation.md §7；spawn-failed/not-started 没有日志可读，不带这个字段
 };
 
 // 只读日志接入句柄（见 04-agent-invocation.md 第 4 节）：没有 write/resize/interactive 能力。
