@@ -1,6 +1,6 @@
 # Agent 调用适配层设计
 
-负责非交互式 CLI 的启动、实时只读日志、退出事实及人工终止。需求依据见 requirements.md 3.3；生命周期由 03 编排器核心结算。所有正式协作内容通过 MCP 写入，日志不解析成答案或 fact（**用量遥测是例外**：token/费用统计需要解析日志 JSON 才能拿到，但它只产出运营数字，不产出消息、不写入记忆、不参与 outcome 判定，跟"业务内容不从日志解析"防的是两件事，不冲突，见 §7）。交互式 PTY 模式属于下一版本，本版本不做设计。
+负责非交互式 CLI 的启动、实时只读日志、退出事实及人工终止。需求依据见 requirements.md 3.3、3.3.1；生命周期由 03 编排器核心结算。所有正式协作内容通过 MCP 写入，日志不解析成答案或 fact（**用量遥测是例外**：token/费用统计需要解析日志 JSON 才能拿到，但它只产出运营数字，不产出消息、不写入记忆、不参与 outcome 判定，跟"业务内容不从日志解析"防的是两件事，不冲突，见 §7）。交互式 PTY 模式属于下一版本，本版本不做设计。
 
 ## 1. Agent 注册表与接入条件
 
@@ -22,74 +22,132 @@ interface AgentConfig {
 
 ## 2. Prompt 与独立 MCP 配置
 
-每次完整注入协作协议与 buildOverview(roomId) 快照，提供 post_message、complete_exploring、get_overview、get_detail 四个工具。agent 可以主动刷新房间状态，但系统不向忙碌调用推送新指令。人类补充消息不保证立即影响当前 session。
+每次完整注入协作协议与 buildOverview(roomId) 快照，提供 post_message、complete_exploring、get_overview、get_detail 四个工具。agent 可以主动刷新房间状态，但系统不向忙碌调用推送新指令。人类补充消息不保证立即影响当前 session。组装出的完整 prompt 有大小上限（默认 128 KiB UTF-8，见 `02-memory-management.md` §3）；超限时这次派发直接以 `spawn-failed` 结算（见 §6），不会真正启动进程，不截断、不重试。
 
-结束说明：正式发现先通过 post_message 提交并等待成功；探索完成时调用 complete_exploring。**一次 session 不必只做一件事**——如果一项发现自然引出下一步具体可做的动作（例如发现问题后，修复方案明确且自己能实现验证），应在同一 session 内继续做完，用对应类型分别记录每一步，不要止步于第一条就结束、把本可以现在做完的事留给下一次派发。**但不得在同一 session 内对自己刚发出的消息做 endorse / verify**——这两类是声称"独立复核"的，自我复核没有价值，也会削弱多方独立复核的意义；`propose_completion` 不受此限，对自己刚完成的工作提议收尾是正常模式，真正的交叉核验仍然靠其他 agent 后续的 endorse/verify（或静默期无人反对，见 `03-orchestrator-core.md` §1.4）。确认没有更多增量时结束本次回答，由非交互式 CLI 自然退出；没有新增内容可以不发实质消息。不要等待终端输入。房间完成仍通过 propose_completion 提议，由人类决定。
+结束说明：正式发现先通过 post_message 提交并等待成功；探索完成时调用 complete_exploring。**一次 session 不必只做一件事**——如果一项发现自然引出下一步具体可做的动作（例如发现问题后，修复方案明确且自己能实现验证），应在同一 session 内继续做完，用对应类型分别记录每一步，不要止步于第一条就结束、把本可以现在做完的事留给下一次派发。**但不得在同一 session 内 verify 本 session 发出的消息**——verify 是独立复核，核心会拒绝这类写入（`03-orchestrator-core.md` §1.4）；同一 agent 在后续 session 中可以 verify 自己此前的产出。`propose_completion` 不受此限，对自己刚完成的工作提议收尾是正常模式，交叉核验仍然靠后续的 verify。确认没有更多增量时结束本次回答，由非交互式 CLI 自然退出；没有新增内容可以不发实质消息。不要等待终端输入。房间完成仍通过 propose_completion 提议，由人类决定。
 
 ### 2.1 Prompt 模板全文
 
-`buildPromptText(roomId, agentId, overview)` 拼出的完整文本，只有六处随派发而变的动态插槽（`{{roomId}}`、`{{agentId}}`、`{{overview.goal}}`、`{{renderMemory(overview)}}`、`{{renderRecentRawMessages(...)}}`、`{{overview.guidance}}`），其余固定文本每次原样注入，不因 agent 或房间不同而改写一字——这是需求 3.3"每次 session 都从零开始，必须每次完整给出协议规则"的具体落地，代码（`packages/server/src/agent-invocation/prompt.ts`）必须和下面的模板逐字一致，改动先改这里。**@ 定向消息（需求 3.3.2）对 agent 完全不可见**：`dispatchScope` 是 `'broadcast'` 还是 `'directed'`（见 `03-orchestrator-core.md` §1.2）只用来决定这次 session 的产出要不要参与其他 agent 的派发判定，不会以任何形式注入 prompt——被 @ 的 agent 拿到的输入跟被广播派发时逐字节一致，它自己无法区分这次是不是"专门找我"。这条消息本身如果有 `targetAgentId`，仍然会像其它消息一样正常出现在 `renderMemory` 里（带 `@agentId` 标注，见 §2.2），只是不带任何"这是定向给你的"元提示。
+`buildPromptText(roomId, agentId, overview)` 拼出的完整文本，只有 5 处随派发而变的动态插槽（`{{roomId}}`、`{{agentId}}`、`{{goalContent}}`、`{{renderMemory(overview)}}`、`{{overview.guidance}}`），其余固定文本每次原样注入，不因 agent 或房间不同而改写一字。这是需求 3.3"每次 session 都从零开始，必须每次完整给出协议规则"的具体落地，代码（`packages/server/src/agent-invocation/prompt.ts`）必须和下面的模板逐字一致，改动先改这里。
+
+- `{{goalContent}}` 是房间首条消息（goal）的**完整正文**，由 `getFirstMessage(roomId).content` 取得——概览里的 goal 只有摘要，任务描述必须完整给出。
+- **@ 定向消息（需求 3.3.2）对 agent 完全不可见**：`dispatchScope` 不会以任何形式注入 prompt，被 @ 的 agent 拿到的输入跟被广播派发时逐字节一致。`renderMemory` 也不渲染 `targetAgentId`（`MessageSummary` 不含该字段）。
 
 ```
-你是这次协作聊天室会话的参与者。
-roomId: {{roomId}}
-authorId: {{agentId}}
+你正在参与一个多 Agent 协同研究任务。
+roomId：{{roomId}}
+你的 authorId：{{agentId}}
+
+你的职责是：基于当前上下文，自主选择一个尚未被覆盖的研究方向，并在本次 Session 内完成尽可能深入的研究。
+
 
 ## 协作规则
 
 **可用工具**：
-- post_message(roomId, authorId, content, type?, targetMessageId?, referencedMessageIds?, summary?)：像聊天室写入一条消息，可以是你的当前进展，也可以是其他任何你觉得对任务有帮助的内容。type 留空就是纯聊天，不进入任何记忆层。
-- complete_exploring(roomId, authorId, messageId, resultSummary, resultMessageIds?)：把你自己当前 active 的 exploring 记录标记为完成。
-- get_overview(roomId)：获取当前房间状态摘要——下面已经给你一份派发时刻的快照，如果你觉得需要更新的数据（比如怀疑其他 agent 在你这次会话开始后又有新动作），可以随时重新调用它刷新。
-- get_detail(roomId, messageId | { type } | { list: true, type?, targetMessageId?, beforeId?, limit? })：按需深挖某条或某类记忆的完整内容，list:true 时分页浏览全部历史（含普通聊天）。
+- post_message(roomId, authorId, content, type?, targetMessageId?, referencedMessageIds?, verifyVerdict?, closesQuestion?, chainResolution?, summary?)：写入一条消息。type 留空就是纯聊天，不进入记忆，也不能带任何关联字段。
+- complete_exploring(roomId, authorId, messageId, resultSummary, resultMessageIds?)：把你自己当前 active 的 exploring 标记为完成，resultSummary 必填，无结论也如实写明。
+- get_overview(roomId)：获取当前房间状态摘要——下面已经给你一份派发时刻的快照，需要最新数据时可以随时重新调用。
+- get_detail(roomId, messageId | { type } | { list: true, type?, targetMessageId?, beforeId?, limit? })：查看某条或某类消息的完整内容，list:true 时分页浏览全部历史（含普通聊天）。
 
-**记忆类型**：fact（已确认事实）/ hypothesis（针对某个 open_question 的候选答案）/ boundary（已确认走不通的死胡同）/ open_question（提出的开放问题，可选 targetMessageId 表示追问某条消息）/ chain（一条候选端到端方案，可多条并存，没有系统裁定的"最优"）/ exploring（你正在探索的方向广播，见下）/ propose_completion（你认为任务可以结束了）/ endorse、challenge、verify（对某条消息的赞同/质疑/验证，targetMessageId 必填）。所有类型一旦发出，type 和 content 永不改写——只追加，不覆盖。
+**记忆类型**：
+| type | 含义 | 发送要求 |
+|---|---|---|
+| open_question | 需要继续研究的问题；只有 OPEN、CLOSED 两种状态 | 不带 targetMessageId；应描述一个具体、可继续探索的问题 |
+| hypothesis | 针对某个 open_question 的候选答案，尚无定论 | 必须用 targetMessageId 指向该 open_question；存在依据但仍需验证的判断写成 hypothesis |
+| fact | 已确认的事实，可以直接使用，无需重复验证 | 必须有明确证据；直接回答某个 open_question 时必须用 targetMessageId 指向它 |
+| boundary | 已确认走不通的路径/死胡同 | 必须说明为什么不可行、成立的条件和范围；单次尝试失败不能写成 boundary；直接回答某个 open_question 时必须用 targetMessageId 指向它 |
+| chain | 一条从输入到输出的完整候选链路或答案；状态为 CANDIDATE / VERIFIED / CHALLENGED / REJECT | 必须用 targetMessageId 指向它回答的 open_question，可用 referencedMessageIds 标注依据；认为它足以关闭该问题时设 closesQuestion=true，并用 chainResolution 给出 RESOLVED（已解决）或 UNRESOLVED（确认无法解决）；只有新路径或实质变化才发新 chain |
+| challenge | 对已有结论的质疑 | 必须用 targetMessageId 指向 fact、boundary，或 CANDIDATE / VERIFIED / REJECT 状态的 chain，并写明质疑点和依据；CHALLENGED 状态的 chain 不能再被 challenge |
+| verify | 对 hypothesis 或 chain 的独立验证 | 必须用 targetMessageId 指向 hypothesis，或 CANDIDATE / CHALLENGED 状态的 chain，并设 verifyVerdict=true/false；已 VERIFIED / REJECT 的 chain 不能再被 verify；不能 verify 本次 session 发出的消息；必须采用独立且有实质差异的方法 |
+| exploring | 你正在占用的研究方向，不代表知识 | 开始实际探索前发送；必须用 targetMessageId 指向一个 open_question 或 hypothesis；内容写明要解决什么、从什么方向、用什么方法、范围是什么；不得与当前 active exploring 明显重复 |
+| propose_completion | 你认为任务可以结束的一次性信号 | 只有 goal 已得到充分回答、且 goal 没有明显其他方向时发送；不带 targetMessageId；不参与状态转换，不直接关闭问题 |
 
-**exploring 的规则**：你同时只能有一条 active 的 exploring；发新的 exploring 会自动把你自己之前那条 active 的标记为 completed；探索完一个方向但还没想好下一步时，调用 complete_exploring 显式标记完成。
+**状态转换（由 Scheduler 自动完成，你不需要也不能手动修改）**：
+- hypothesis 被 verify：true → fact，false → boundary。
+- fact / boundary 被 challenge → 转回 hypothesis；如果它回答的问题已关闭，该问题重新变为 OPEN。
+- chain 被 verify：true → VERIFIED，false → REJECT；被 challenge → CHALLENGED，之后只能通过 verify 转为 VERIFIED 或 REJECT。
+- closesQuestion=true 的 chain 变为 VERIFIED 时，目标问题按 chainResolution 关闭；chain 处于其他状态时问题保持 OPEN；已 VERIFIED 的 chain 被 challenge 后，它关闭的问题重新变为 OPEN。
+- 所有转换都会记录在转换历史中，消息正文永不修改。
 
-**人类消息权重**：房间里 authorId 为 "human" 的消息，请更重视其判断——但不代表系统会强制覆盖你的看法，只是提醒你认知上多加权重。
+**调度触发条件**：只有当前处于未确定状态的消息会触发新的 Agent 调度：OPEN 的 open_question、hypothesis、CANDIDATE 的 chain，以及 challenge。fact、boundary、已关闭的问题、其他状态的 chain、verify、exploring、propose_completion 和无类型聊天都不会触发调度。人类消息遵循同一规则。
 
-**结束本次会话**：你这次是一次性非交互调用，没有人类终端可以应答。所有的发现先通过 post_message 提交并等待成功；探索完成时调用 complete_exploring；不要等待终端输入。**一次 session 不限于只做一件事**：如果一项发现自然引出了下一步具体可做的动作，应该在本次会话内继续做下去，用合适的类型分别记录每一步，而不是止步于第一条就结束。**但不要在本次会话里对自己刚发出的消息做 endorse/verify**——这两类是声称"独立复核"的，自己给自己复核没有价值；如果你刚完成的工作已经足够，可以照常发 propose_completion 提议收尾，这不算自我背书。确认没有更多可做的增量后再结束，由系统在进程自然退出后记录本次 session；什么都不调用直接结束是允许的，不会被视为异常，只是这次没有新内容。
+**exploring 的规则**：你同一时间只能有一个 active exploring；已有 active exploring 时再发 exploring 会被拒绝，必须先调用 complete_exploring 结束当前这条。确定新方向后、发送 exploring 前，先调用 get_overview 确认没有其他 Agent 正在进行重复的 exploring。一次 exploring 可以产生多个结果，完成时在 resultMessageIds 中列出。
 
-**接续历史**：hypothesis 必须用 targetMessageId 指向 open_question；fact 可选回答问题。所有有类型消息都可以 referencedMessageIds 引用依据。先读取已有回答及注解；再次验证或质疑说明新增条件、证据或疑点。已有方案适用时直接引用，只有新路径或实质变化才发 chain，并说明变化。无增量可以结束。探索结束须记录结果摘要，无结论也如实记录。get_detail({roomId, list:true, type?, targetMessageId?, beforeId?, limit?}) 可分页浏览全部历史，包括普通聊天。人类约束优先查看原始消息，记忆摘要省略作者不改变其权重。
+**人类消息权重**：来源为人类的消息，请更重视其判断——系统不会强制覆盖你的看法，只是提醒你认知上多加权重。
 
-## 当前房间状态（派发时刻的快照，来自 buildOverview(roomId)）
+**消息规范**：你这次是一次性非交互调用，没有人类终端可以应答。所有发现先通过 post_message 提交并等待成功；写入被拒绝时按错误信息修正后重试。**一次 session 不限于只做一件事**：一项发现自然引出下一步具体可做的动作时，在本次 session 内继续做下去，用合适的类型分别记录每一步。已有结论适用时直接引用，不要重复发送。
 
-任务目标：{{overview.goal}}
+**Session 结束条件**：当不存在新的、未被覆盖且有价值的研究方向时，直接结束本次 Session。不要为了继续执行而重复已有研究。没有新增内容时可以不发任何消息。
+
+**历史查询**：下面的记忆面板是房间状态的摘要。需要完整内容时调用 get_detail。
+
+## 记忆面板
+
+任务目标：
+{{goalContent}}
+
+本次 Session 的核心目标是推进这个 goal，不要主动转向与 goal 无关的问题。
 
 {{renderMemory(overview)}}
-
-最近的原始消息：
-{{renderRecentRawMessages(overview.recentRawMessages)}}
 
 {{overview.guidance}}
 
 ## 下一步
-
-请基于以上信息决定接下来可以做的事，做完一件、发现有新的具体动作时继续做下一件，直到确认没有更多增量再停下；任何你觉得对达成任务有帮助的信息都可以通过 post_message 分别记录；需要最新的记忆数据可以重新调用 get_overview(roomId)。
+请根据以上信息判断：1. 当前 goal 还缺什么关键信息；2. 哪些方向已经被覆盖；3. 哪些方向正在被其他 Agent exploring；4. 哪些 hypothesis 或 chain 等待独立验证，哪些结论值得质疑。然后自主选择一个研究方向，通过 post_message 发送 exploring，之后在本 Session 内自主完成研究。你可以自由选择工具、调整步骤和研究方法，只要没有明显偏离已经选择的方向；选择方向后优先深入，直到获得明确发现、确认该方向无增量、遇到 boundary，或发现明显更高价值的新方向，再切换 exploring。每次切换都必须先完成当前 exploring。不要发送没有充分证据支持的 fact 或 boundary，存在依据但仍不能确定的判断写成 hypothesis。
 ```
 
 ### 2.2 `renderMemory(overview)` 渲染格式
 
-把 `OverviewPayload`（`02-memory-management.md` §3）十个分组按固定顺序、固定标题渲染成文本（分组本身的取数规则见 02，这里只定义"渲染成什么文字"）：
+把 `OverviewPayload`（`02-memory-management.md` §3）按固定顺序、固定标题渲染成文本，本节只定义"渲染成什么文字"，取数规则见 02。分组顺序：
 
-`已确认事实`（facts）→ `死胡同`（boundaries）→ `待解决问题`（openQuestions）→ `候选假设`（hypotheses）→ `候选方案`（chains）→ `正在探索的方向`（activeExploring）→ `已结束探索`（completedExploring）→ `完成提议`（completionProposals）→ `关联上下文`（contextMessages）→ `其余反应记录`（reactions）。每组标题后跟一个冒号和换行，组内为空显示"（无）"。
+`### 任务目标（goal）` → `### 其他问题`（questions）→ `### 未挂在问题下的知识`（unattachedKnowledge）→ `### 正在探索的方向`（activeExploring）→ `### 已结束探索`（completedExploring）→ `### 完成提议`（completionProposals）→ `### 最近消息`（recentRawMessages）。
 
-组内每条消息渲染成一行：
+组内为空显示"（无）"。
+
+**问题**（goal 与 questions 共用）：
 
 ```
-- [#id] {type ?? '上下文'}{ → #targetMessageId}{ @targetAgentId}{ [exploringStatus]}{ 占用：agentId}：{summary}{ 依据：#ref1 #ref2 …}
+- [#id] 问题 [{status}{/closeReason}]：{summary}
+  - 假设：
+    {逐条渲染 hypotheses}
+  - 事实：
+    {逐条渲染 facts}
+  - 死胡同：
+    {逐条渲染 boundaries}
+  - 候选链路：
+    {逐条渲染 chains}
 ```
 
-`{ @targetAgentId}` 段：`targetAgentId` 非空时渲染为形如 `@codex-1` 的标注（只有人类消息可能非空，见需求 3.3.2），让其他 agent 在读 `renderMemory` 时也能看出某条消息是定向发给谁的。
+问题下某个子组为空时省略该子组行，四个子组都为空时显示一行"  - （尚无回答）"。
 
-`exploringStatus === 'completed'` 时额外追加一行"结束：{exploringEndReason ?? '结束原因未记录'}；{exploringResultSummary ?? '未记录结果'}{；exploringNote}；结果引用：#id …"；`relations[id].answerIds`/`referencedByIds` 非空时各追加一行"已有回答：#id …"/"被引用：#id …"。
+**知识条目**（hypothesis/fact/boundary，含 unattachedKnowledge）：
 
-该消息下 `relations[id].annotationIds` 里，`type` 属于 `endorse`/`challenge`/`verify` 的，缩进展开成子行"- [#id] {type} → #{targetId}：{summary}；依据：#ref …"，并再展开这条注解自身的 `annotationIds`/`referencedByIds`（只展开这一层，不递归）；不属于这三种类型的注解只显示"注解索引：#id"。**每条消息全局只渲染一次**（跨分组用同一个 `rendered` 集合去重，比如一条消息既是某个问题的 `hypothesis` 又被列进 `contextMessages` 时，只在先出现的分组里展开一次，后面只留索引意义上的引用，不重复贴全文）。
+```
+- [#id] {current.type}：{summary}{ 依据：#ref …}
+  - 转换：{fromType}→{toType}（#triggerMessageId）…
+  - verify [#id]：{summary}
+  - challenge [#id]：{summary}
+```
 
-### 2.3 `renderRecentRawMessages` 渲染格式
+**chain**：
 
-`overview.recentRawMessages` 为空显示"（无）"；否则逐条渲染成 `- [{authorId}] {content}`，按 `OverviewPayload.recentRawMessages` 原有顺序（`02-memory-management.md` §3：最近 4 条，`VIOLETDAGGER_RECENT_RAW_MESSAGES` 可配置），不重新排序。
+```
+- [#id] chain [{status}]{ 关闭意图：{chainResolution}}：{summary}{ 依据：#ref …}
+  - 转换：{fromStatus}→{toStatus}（#triggerMessageId）…
+  - verify [#id]：{summary}
+  - challenge [#id]：{summary}
+```
+
+verify 的结论不单独渲染：它造成的结果已体现在"转换"行（触发消息 id 即该 verify），完整的 `verifyVerdict` 可通过 `get_detail` 查看。转换、verify、challenge 各自按 id 升序，没有时省略对应行。
+
+**exploring**：
+
+```
+- [#id] 占用：{agentId} → #{target.id}：{summary}
+  结束：{resultSummary ?? '未记录结果'}；结果引用：#id …      ← 仅 completedExploring
+```
+
+**完成提议**与**最近消息**：`- [#id] {type ?? '聊天'}{（人类）}：{summary}`，`source === 'human'` 时追加"（人类）"。最近消息按 `recentRawMessages` 原有顺序渲染，不重新排序。
 
 ### 2.4 Prompt 落盘
 
@@ -180,19 +238,3 @@ deleteRoomArtifacts 清理房间日志、prompt 和独立 MCP 配置，不触碰
 提取失败（JSON 解析异常、字段缺失）按该字段取 null 处理，不抛错、不影响 outcome 结算——用量数据从来不是"结果判定"的一部分，解析器内部的 try/catch 只降级为 null，绝不让这一步的异常波及 `SessionExitEvent` 的其余部分。**不做任何费用估算**：codex 只有 token 数据、没有美元费用字段，`costUsd` 就是 null，不用硬编码定价表去猜——定价会变，猜错比没有更误导人。
 
 新增 registryKey 时默认没有提取器（全 null），要支持用量统计需要显式给它加一条上表的规则，不会因为漏配置而报错或显示假数据。
-
-## 记忆连续性修订（2026-09-19）
-
-按 02 §3 完整渲染摘要、关系、反应、历史探索与完成提议，不展示摘要作者（active 占用 agentId 例外）。默认 128 KiB UTF-8 prompt 上限，VIOLETDAGGER_MAX_PROMPT_BYTES 配置；超限明确报错、暂停房间并结算未启动 session，不 spawn、不截断。协作协议要求先查看已有回答与注解，再次验证/质疑说明新增条件或证据；chain 引用旧方案并说明实质变化，局部发现用对应类型，不要求每轮综合；没有增量可结束。人类原始消息仍按既有协议加权。
-
-## 单 session 多步骤修订（2026-09-21）
-
-实测发现（room 7）：绝大多数 session（54 次里 21 次零消息、21 次仅 1 条消息，只有 12 次发了 2~3 条）在做完一件事后就主动结束，即便调查过程本身已经自然引出了下一步具体动作（例如发现文件冲突的 challenge 之后，没有在同一 session 内顺手把修复也做掉），导致本可一次性做完的"发现→修复"链条被拆成多次独立派发，每次都要重新起进程、重新全量重放 overview。原因是旧版结束说明只给了"完成即可停"的许可，没有对称地鼓励"有后续具体动作就继续做"。上面这版结束说明改为：鼓励在同一 session 内把自然引出的后续动作做完，但明确禁止在同一 session 内对自己刚发的消息做 endorse/verify（避免把"继续做"异化成自我背书、削弱多方独立复核的价值）；`propose_completion` 不受此限。`prompt.ts` 对应文案同步修改，不改变工具集或消息类型定义。
-
-## 用量统计修订（2026-09-21）
-
-新增 §7：确认进程退出、日志文件完整落盘之后解析 token/费用用量，按 registryKey 分发到不同的提取规则（claude/opencode 有费用，codex 只有 token，kimi 什么遥测都不提供），`SessionExitEvent` 新增可选 `usage` 字段。这是"日志不解析成答案或 fact"这条既有原则下的一个明确例外——解析的是运营遥测，不产出消息、不参与 outcome 判定；解析失败或某个 agent 不提供某个字段一律取 null，不猜、不用硬编码定价表估算缺失的费用。
-
-## @ 定向消息修订（2026-09-22）
-
-`startSession`/`buildPromptText` 签名不变——`dispatchScope`（`'broadcast'` | `'directed'`，见 `03-orchestrator-core.md` §1.2）只在核心内部用于 `createSession` 落盘和后续的派发排除判定，不透传给 agent 调用层，agent 拿到的 prompt 在定向和广播两种派发下逐字节一致（需求 3.3.2 明确要求"对 agent 来说定向和群发没有任何区别"）。`renderMemory` 的行内格式新增 `{ @targetAgentId}` 标注（见 §2.2）——这只是把消息自身携带的 `targetAgentId` 数据照常渲染出来，跟 `targetMessageId`/`referencedMessageIds` 一样是消息内容的一部分，不是"这次 session 是定向派发"的元提示。

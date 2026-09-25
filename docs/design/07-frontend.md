@@ -45,7 +45,8 @@ React + Vite。只消费 `06-orchestrator-api.md` 的 REST + WebSocket 接口，
 - **agent 身份色**：`colorForAgent(agentId)` 对 `agentId`（**agent 实例标识**，见 `00-overview.md`）做稳定 hash 映射到色相，`hsl(h 65% 62%)`。同一实例在 agent 卡片、消息头像、事件树节点上颜色一致；同一 agent 的不同实例因标识不同而得到不同色相。
 - **保留作者身份**：`authorId === 'human'` 固定 violet + "人类"标识；`authorId === 'system'` 固定 `--text-muted` + "系统"标识（系统错误消息）。两者都不参与身份色 hash。
 - **状态色**：room `active`→`--ok`，`paused_limit`/`paused_manual`→`--warn`，`completed`→`--text-muted`；agent `running`→其身份色，`idle`→`--text-faint`，`stopping`→`--warn`，`stuck`→`--warn`（图标 + 卡片描边）；**已停用派发**的 agent 整卡降为 `--text-muted` + "已停用派发"。
-- **消息类型徽标**：每种 `MessageType` 一个双色（前景 + 半透明背景）小徽标：`fact` 绿、`hypothesis` 蓝、`boundary` 橙红、`open_question` 琥珀、`chain` 紫、`exploring` 青、`propose_completion` 翠绿高亮、`endorse` 绿、`challenge` 红、`verify` 蓝。无 `type` 的纯聊天不显示徽标。
+- **消息类型徽标**：每种 `MessageType` 一个双色（前景 + 半透明背景）小徽标：`fact` 绿、`hypothesis` 蓝、`boundary` 橙红、`open_question` 琥珀、`chain` 紫、`exploring` 青、`propose_completion` 翠绿高亮、`challenge` 红、`verify` 蓝。无 `type` 的纯聊天不显示徽标。徽标始终显示消息的**当前** type。
+- **状态徽标**：紧跟类型徽标，只用于有状态的类型。`open_question`：`OPEN` 琥珀描边、`CLOSED/RESOLVED` `--ok`、`CLOSED/UNRESOLVED` `--text-muted`；`chain`：`CANDIDATE` `--text-muted`、`VERIFIED` `--ok`、`CHALLENGED` `--warn`、`REJECT` `--danger`；`verify`：`true`/`false`（目标为 hypothesis 显示"成立/不成立"，目标为 chain 显示"通过/驳回"）。
 - 面板标题栏统一：左侧标题 + 数量徽标，右侧可选动作，`position: sticky; top: 0`。
 
 ## 3. 布局骨架（可拖动分隔条）
@@ -96,10 +97,9 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 顶栏，`grid-area: header`，`position: sticky`。左侧：返回房间列表的链接、房间名（`GET /api/rooms/:id`）、状态徽标、`currentSessionCount / maxSessions`（`--mono`）、房间总用量（`getUsageSummary().room`，格式见 §5 AgentRail 用量行；`sessionCount === 0` 时不显示这一项）、以及该房间的工作目录 `workdir`（`--mono`、`--text-faint`、单行截断 + 悬浮 `title` 给完整路径）。房间总用量随 `roomStatus` 推送后的重拉节奏一起刷新，不单独轮询。右侧按状态渲染控制：
 
 - `active`：`Pause`；其余非 `completed`：`Resume`（`paused_limit` 时弹输入框要求填 `additionalSessions`，必填不可提交；`paused_manual` 直接调用，见 `03-orchestrator-core.md` 第 4 节）；非 `completed` 恒有 `Confirm Completion`（`--danger` 描边 + 二次确认弹窗）。
-- `completed`：pause/resume/confirm 控制隐藏，顶栏显示"已结束 · 只读"；`completionReason`（`GET /api/rooms/:id` 初次加载读到，`roomStatus` 推送后从 `getRoomStatus` 重拉刷新，见 `06-orchestrator-api.md` §4）为 `'auto_silence'` 时额外追加"· 静默期自动确认（依据 #`completionReferenceMessageId`）"，`#<id>` 是锚点，点击滚动到该消息（不在已加载消息分页窗口内时退化为纯文本，不为此单独拉取）；为 `'manual'` 时不追加——人工点了 `Confirm Completion` 这件事本身已经足够清楚，不需要再解释一遍。并保留一个 `Delete Room` 按钮（`--danger` 描边 + 二次确认弹窗）——只有 completed 房间可删；删除成功后跳回 `/`。
+- `completed`：pause/resume/confirm 控制隐藏，顶栏显示"已结束 · 只读"，并保留一个 `Delete Room` 按钮（`--danger` 描边 + 二次确认弹窗）——只有 completed 房间可删；删除成功后跳回 `/`。
 - 连接状态：`disconnected` 时顶栏下方压一条 `--danger` 且不可关闭的提示条"连接已断开，正在重连…"；`connecting` 时右侧一个呼吸圆点。
 - **`propose_completion` 提醒**：已加载消息中存在 `propose_completion` 且房间未 `completed` 时，顶栏下方再压一条可关闭的 `role="alert"` 提醒条"有 agent 提议完成这个房间"，并提供跳转到该消息的锚点。用户关闭后，直到下一条新的 `propose_completion` 到达前不再出现。该提醒由前端从已加载消息流派生，不需要额外接口或状态管理；消息流分页导致更早的提议不在窗口内时不显示，这是可接受的降级。
-- **派发收敛提醒**：`getRoomStatus().allCaughtUp === true` 且房间仍是 `active` 时，顶栏下方压一条可关闭的 `role="alert"` 提醒条"所有 agent 都已完成，看起来任务已经收敛"。和上面的 `propose_completion` 提醒是两回事，不要求存在 `propose_completion`，纯粹是"没人再有新话说"的观察性提示，不改变房间状态，只是提示人类可以去看看、决定要不要手动 `Confirm Completion`。用户关闭后，直到 `allCaughtUp` 从 `false` 变回 `true`（即房间重新活跃过一轮之后再次收敛）前不再出现，跟 `propose_completion` 提醒的"关闭后等下一条新消息"是同一种去抖动思路，只是触发条件换成了 `allCaughtUp` 的这次翻转而不是消息 id。
 
 ## 5. AgentRail
 
@@ -113,7 +113,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
   [终止]
 ```
 
-- 状态点用身份色/状态色；`state` 徽标 `running`/`stopping`/`idle`，`state === 'idle' && caughtUp === true` 时徽标改显示 `completed`（`caughtUp` 见 `06-orchestrator-api.md` §4"派发收敛提示"）——这个 agent 空闲且暂时没有新触发消息要处理，跟"idle 但还在排队等派发"（同批有多个 agent 待派发时，只有排在前面的那个会先被拿去派发，后面的短暂停留在这个状态）区分开。
+- 状态点用身份色/状态色；`state` 徽标 `running`/`stopping`/`idle`。
 - **用量行**：来自 `getUsageSummary().byAgent[agentId]`（`UsageTotals`，见 `01-storage.md`）。`sessionCount === 0`（这个 agent 在本房间还没跑完过一次）时不显示这一行；否则显示 `inputTokens + outputTokens` 的紧凑数字（如 `12.3k tok`，`cacheReadTokens`/`cacheWriteTokens` 悬浮显示明细，不占卡片空间）；`costUsd` 非 null 时接一个 `· $0.28`，为 null 时（这个 agent 完全不提供费用数据，如 kimi）不显示 `$` 部分；`sessionsWithoutCost > 0` 且 `costUsd` 非 null 时（部分 session 有费用、部分没有）在后面加一个 `*`，悬浮提示"N 个 session 无费用数据，未计入"——不静默让总数显得比实际更精确。
 - `running`/`stopping` 且 `sessionStartedAt` 存在时，本地每秒 tick 显示 `已运行 HH:mm:ss`（系统不做超时判定，这是人类判断"跑太久"的唯一依据，需求 3.3）。
 - `sessionId` 徽标可点击（`running`/`stopping` 才有）→ `LiveSessionModal`（实时只读日志，见 §10.1）；`终止` 按钮调用 `terminateAgentSession({ sessionId })`（需求 3.5：操作对象是具体 session，不是 agent）。只要 session 仍为 running/stopping 就保留"终止"，包括已 completed 的房间。
@@ -137,6 +137,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 
 - 头像圆点用身份色；`human` 用固定 violet + "人类"标识，`system` 用 `--text-muted` + "系统"标识。
 - 行左侧 3px 竖条：被选为 `targetMessageId` 时 `--accent` + 光晕。无 `type` 的纯聊天正常显示，只是没有类型徽标。
+- 类型与状态徽标见 §2，按消息的当前值显示；消息被 Scheduler 转换过 type 或状态时（`memoryUpdate` 推送后重拉），行内徽标随之更新，转换历史在 MemoryPanel 条目层查看（§8）。房间首条消息额外带一个"goal"标签。
 - `targetAgentId` 非空的消息（需求 3.3.2，@ 定向消息），在类型徽标之后追加一个"→ @agentId"小徽标（身份色描边，`--mono`），让所有人一眼看出这条消息是定向发的；不影响该消息其余的正常渲染，事件树/记忆面板同样可见。
 - `propose_completion` 渲染为整行高亮卡片（翠绿左边框 + "提议完成"徽标），并配合第 4 节的顶栏提醒条一起构成需求 3.5/7 的"前端提醒"，复用已有 `newMessage` 推送，不需要额外接口。
 - **目标选择**：点击消息行 = 设为发送目标（`targetMessageId`），再点一次取消；Composer 顶部显示"正在回复 #id ✕"，并据此浮出反应类选项（见 §7）。
@@ -147,29 +148,41 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 
 固定在消息面板底部：
 
-- **默认即纯聊天**：初始只有文本框 + 发送按钮，发出的消息 `type` 为空；纯聊天仍是实质消息、照常触发派发检查（`03-orchestrator-core.md` 1.1）。类型选择器默认折叠，覆盖发任务 / 补充指令 / 闲聊等绝大多数场景。
+- **首条消息**：房间还没有任何消息时，Composer 顶部显示提示"第一条消息就是任务目标"，类型固定为 `open_question`（类型选择器和 @ 候选都不显示），发送时不带 `type`，由服务端强制写为 `open_question`（`03-orchestrator-core.md` §1.4）。
+- **默认即纯聊天**：之后初始只有文本框 + 发送按钮，发出的消息 `type` 为空；无 type 的消息不触发调度（需求 3.3）。
 - **类型选择器按需展开**：文本框左侧一个不显眼的"＋ 类型"按钮，点击展开；选中后按钮显示该类型徽标，可一键清除回到纯聊天。
-- **人类可选类型只含需求 3.5 举的这几项**：`fact` / `hypothesis`（始终可选）+ `open_question`（提问；目标可选表示"追问"某条消息）。agent 专有记忆类型（`boundary` / `chain` / `exploring` / `propose_completion`）不提供入口——它们是 agent 工作的产物，由 agent 经 MCP 写入。
-- **选中目标消息后追加反应类选项**：点选一条消息（§6"目标选择"）后，选择器自动展开并追加 `endorse` / `challenge` / `verify`；取消目标（再点该消息或点 ✕）时移除这三项，已选中的反应类型一并清空。
-- `06-orchestrator-api.md` 的 `postHumanMessage` 签名不变（仍接受全部 `type`），仅前端不给其余类型的入口。
-- **@ 定向某个 agent**（需求 3.3.2，人类专属）：文本框内输入 `@` 弹出内联候选列表，按 `joinOrder` 列出当前房间的 agent 实例（颜色复用 `colorForAgent`），方向键/点击选中后插入 `@agentId ` 文本 token 并把 `targetAgentId` 记入组件状态；选中后 Composer 顶部追加一个"发送给 @agentId ✕"提示 chip（与"正在回复 #id ✕"chip 并列显示，互不冲突，可同时存在）；点 ✕ 或删除输入框里的 token 都清除该状态。房间没有 agent 时 `@` 不弹出候选，不影响正常打字。
+- **不需要目标的类型**：`open_question`、`fact`、`boundary`（fact/boundary 未选目标时即为不挂在问题下的知识）。
+- **需要目标的类型**：点选一条消息（§6"目标选择"）后，按目标的当前 type 与状态追加可选类型，规则与服务端校验一致（`03-orchestrator-core.md` §1.4）：
+  - 目标为 `OPEN` 或 `CLOSED` 的 `open_question`：`hypothesis`、`fact`、`boundary`、`chain`。
+  - 目标为 `fact`/`boundary`：`challenge`。
+  - 目标为 `hypothesis`：`verify`。
+  - 目标为 `chain`：`CANDIDATE` 时 `verify`、`challenge`；`VERIFIED`/`REJECT` 时 `challenge`；`CHALLENGED` 时 `verify`。
+  - 取消目标（再点该消息或点 ✕）时移除这些选项，已选中的依赖目标的类型一并清空。
+- **附加字段**：选 `verify` 时显示二选一开关（目标为 hypothesis："成立 → fact / 不成立 → boundary"；目标为 chain："通过 / 驳回"），未选不可提交；选 `chain` 时显示"关闭该问题"勾选框，勾选后必须再选"已解决 / 无法解决"（`chainResolution`）。
+- `exploring`、`propose_completion` 不提供入口；`06-orchestrator-api.md` 的 `postHumanMessage` 仍接受全部 type，仅前端不给入口。
+- **@ 定向某个 agent**（需求 3.3.2，人类专属）：文本框内输入 `@` 弹出内联候选列表，按 `joinOrder` 列出当前房间的 agent 实例（颜色复用 `colorForAgent`），方向键/点击选中后插入 `@agentId ` 文本 token 并把 `targetAgentId` 记入组件状态；选中后 Composer 顶部追加一个"发送给 @agentId ✕"提示 chip（与"正在回复 #id ✕"chip 并列显示，可同时存在）；点 ✕ 或删除输入框里的 token 都清除该状态。未选类型或所选类型不是触发型时，chip 旁显示一行 `--text-muted` 提示"这条消息不会唤醒 @agentId"（触发型判定见 `03-orchestrator-core.md` §1.1），不阻止发送。房间没有 agent 时 `@` 不弹出候选。
 - `content` 用自适应高度 `textarea`（最多 8 行后内部滚动）；`Ctrl/Cmd + Enter` 发送。
-- 调用 `postHumanMessage({ content, type?, targetMessageId?, targetAgentId? })`（`referencedMessageIds` 供所有有类型消息使用，人类 UI 不产生，接口仍接受）；成功后由 `newMessage` 推送自然带回，**本地不做乐观插入**。发送成功后清空输入与选择状态。
+- 调用 `postHumanMessage({ content, type?, targetMessageId?, verifyVerdict?, closesQuestion?, chainResolution?, targetAgentId? })`（`referencedMessageIds`、`summary` 人类 UI 不产生，接口仍接受）；服务端校验失败时按 §15 toast 展示错误并保留输入；成功后由 `newMessage` 推送自然带回，**本地不做乐观插入**。发送成功后清空输入与选择状态。
 - `completed` 房间：Composer 整块替换为"房间已结束，只读"提示条，不渲染输入控件（满足需求 7）。
 
 ## 8. MemoryPanel
 
 中列上方一行。数据只来自 `getMemoryView()`（全文与关系，见 `06-orchestrator-api.md`），展示为**总线 + 逐级下钻**的渐进式结构（需求 3.5）。三个层级：
 
-1. **记忆总线**（常驻顶部，不可折叠）：各类别的索引 chips 横排，每个 chip 显示类别名 + 计数；计数直接由当前 `getMemoryView()` 返回的各分组数组长度派生（`exploring` 显示 `active`/`completed` 两个计数）。默认**不展开任何类别**。
-2. **类别层**（点击某个 chip 后，在该类别下方内联展开）：每条一行，含类型徽标、消息 ID、summary，不展示作者；再次点击 chip 折叠。
-3. **条目层**（点击类别层里的某条）：展开这条的全文（不截断，`white-space: pre-wrap`）、`targetMessageId` 的 `↳ #id` 跳转，`targetAgentId` 非空时的"→ @agentId"徽标（复用 §6 MessageRow 同款样式，见需求 3.3.2），以及挂在它上面的注解信息。
+1. **记忆总线**（常驻顶部，不可折叠）：各类别的索引 chips 横排，每个 chip 显示类别名 + 计数；计数直接由 `getMemoryView()` 返回的各分组数组长度派生（`openQuestions` 额外显示 `OPEN` 数，`chains` 额外显示 `VERIFIED` 数，`exploring` 显示 `active`/`completed` 两个计数）。默认**不展开任何类别**。
+2. **类别层**（点击某个 chip 后，在该类别下方内联展开）：每条一行，含类型徽标、状态徽标（§2）、消息 ID、summary，不展示作者；goal（`goalMessageId`）在 `openQuestions` 中置顶并带"goal"标签；再次点击 chip 折叠。
+3. **条目层**（点击类别层里的某条）：展开这条的全文（不截断，`white-space: pre-wrap`）、`targetMessageId` 的 `↳ #id` 跳转、`targetAgentId` 非空时的"→ @agentId"徽标（复用 §6 MessageRow 同款样式），以及：
+   - 转换历史（`transitions[id]`）：逐条"{from}→{to} · 由 #trigger · 时间"。
+   - 指向它的 challenge / verify（从 `challenges`/`verifies` 分组按 `targetMessageId` 查出），各自带摘要与跳转。
+   - 它是 `open_question` 时：按 hypothesis / fact / boundary / chain 分组列出回答它的消息；它是 `chain` 且 `closesQuestion` 时显示关闭意图（`chainResolution`）。
+   - 引用（`referencedMessageIds`）与反向引用。
+   所有关联都由 `getMemoryView()` 的全量数据直接定位，不依赖 `MessageStreamPanel` 是否已加载该消息。
 
-- 分组展示顺序固定：facts → hypotheses → chains → boundaries → openQuestions → exploring → completionProposals → contextMessages。reaction 在目标下显示；无有效目标的历史 reaction 仍显示，不能丢弃。
+- 分组展示顺序固定：openQuestions → hypotheses → facts → boundaries → chains → exploring → completionProposals → challenges → verifies。challenge/verify 既在目标条目下展示，也在各自类别里完整列出。
 - 允许同时展开多个类别（各自独立折叠），但初始态是全部折叠——"渐进式"指按需展开，不做懒请求。
 - 带 `targetMessageId` 的 `↳ #id` 点击后在消息流里滚动定位并短暂高亮该消息。
 - 面板 body 始终显示细滚动条（见 §3），内容过长时可滚动查看，不截断。**实现坑**：`.memory-view` 既是滚动容器又是 flex 列容器，而 `.memory-group` 带 `overflow:hidden`——按 flex 规范后者的"自动最小尺寸"失效，会被 `flex-shrink` 压扁、内容被裁掉。必须禁止子项收缩：`.memory-view > * { flex: 0 0 auto; }`。
-- `exploring` 类别（需求 4.6/3.5）：条目层按消息 ID 展示，不按作者分组。`exploringStatus === 'active'` 正常展示（青色徽标）；`'completed'` 整条降为 `--text-muted` + "已完成"标签，若带 `exploringNote` 一并展示。**保留可见、不从视图消失**。
+- `exploring` 类别（需求 4.6/3.5）：条目层按消息 ID 展示，不按作者分组。`exploringStatus === 'active'` 正常展示（青色徽标）；`'completed'` 整条降为 `--text-muted` + "已完成"标签，同时展示结束原因（`explicit` 显示"主动完成"，`human_terminated` 显示"人类强制终止"）、结果摘要（`exploringResultSummary`，为空显示"未记录结果"）、结果引用（`exploringResultMessageIds`）及 `exploringNote`（如有）。**保留可见、不从视图消失**。
 - 实时更新（见第 13 节）：收到 `newMessage`/`memoryUpdate`/`roomStatus` 后重拉 `getMemoryView()`——总线计数随之刷新；已展开的类别与条目保持展开状态、内容就地更新。
 
 ## 9. EventTreePanel
@@ -181,7 +194,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - outcome 展示文案与配色：`completed`→`done`/`--ok`、`passed`→`passed`/`--warn`、`error`→`error`/`--danger`、`terminated`→`terminated`/`--accent`、`running`→身份色呼吸、`stopping`→等待色。
 - **用量后缀**：outcome 之后，`getEventTree().sessions` 里这条 session 的 `inputTokens`/`outputTokens` 都非 null 时追加 `· 12.3k tok`（两者之和的紧凑数字）；只要有一个是 null（如 kimi）就什么都不追加，不摆占位符。费用不放进这个标签（太挤），要看费用和 cache read/write 拆分点进 `SessionDetailModal`（见 §10.2）。
 - `passed`/报错/人工终止且此前没有实质消息的情况，由编排器核心补写的系统占位消息（见需求 3.5、`03-orchestrator-core.md` §2）会作为一条普通消息节点出现在时间线上，旁边的 session 标签同样按上面规则显示 `· passed`/`· error`/`· terminated`——不需要额外的展示逻辑。
-- **关联线**：每个消息节点带 `data-message-id`；反应类消息（`endorse`/`challenge`/`verify`，以及带 `targetMessageId` 的 `open_question`）和带 `referencedMessageIds` 的 `chain`，在节点旁用一层绝对定位的 SVG（贝塞尔曲线）连到目标节点；目标不在当前时间线内（未加载）时跳过。连线颜色取源消息类型徽标色，选中目标时高亮。主轴就是真实时间，源节点和目标节点通常本就相邻，连线不再需要跨越远距离的容器。
+- **关联线**：每个消息节点带 `data-message-id`；反应类消息（`challenge`/`verify`）和带 `referencedMessageIds` 的 `chain`，在节点旁用一层绝对定位的 SVG（贝塞尔曲线）连到目标节点；目标不在当前时间线内（未加载）时跳过。连线颜色取源消息类型徽标色，选中目标时高亮。主轴就是真实时间，源节点和目标节点通常本就相邻，连线不再需要跨越远距离的容器。
 - 空态：没有任何消息时显示"还没有任何事件"。
 
 ## 10. Session 视图
@@ -245,7 +258,7 @@ function useSessionLog(roomId: number, seq: number, mode: 'live' | 'replay'): {
 四种推送事件的消费方式不同（`data` 格式见 `06-orchestrator-api.md` 第 2 节——WS 连接本身已按房间绑定，推送都不重复携带 `roomId`）：
 
 - **`newMessage`**：`data` 是完整 `Message` 对象——MessageStreamPanel 直接 append 到列表末尾（同一份 `messages` 状态也让 EventTreePanel 的人类消息节点同步更新）；若 `message.type != null`，MemoryPanel 增量刷新（直接重新调用一次 `getMemoryView()`），并重新拉一次 `getEventTree()`。
-- **`memoryUpdate`**：`data` 是 `{ messageId }`——收到后重新调用 `getMemoryView()`。
+- **`memoryUpdate`**：`data` 是 `{ messageId }`（某条已有消息的 type 或状态变了）——收到后重新调用 `getMemoryView()`；若该消息在已加载的 `messages` 中，用 `getMemoryView()` 返回的同 id 消息替换它，使消息流与事件树的徽标同步更新。
 - **`roomStatus`**：`data` 是 `{}`（纯信号）——收到后重新调用 `getRoomStatus()`，并刷新 `GET /api/rooms/:id`、`getEventTree()`。session 结束时 `roomStatus` 一定会到，但 `newMessage` 不一定（`passed` 不产生消息，`error` 会插入一条 system 消息）。人工终止请求、清理进度/失败、`setAgentEnabled` 也触发 roomStatus；当前打开的 SessionDetailModal 按该信号重拉详情；LiveSessionModal 按 08 第 2/8 节刷新固定目标状态。
 - **`roomDeleted`**：`data` 是 `{}`——终态推送。收到后若 `LiveSessionModal`/`SessionDetailModal`（日志）还开着先关闭，然后 `navigate('/')` 回房间列表。
 
@@ -260,7 +273,7 @@ function useSessionLog(roomId: number, seq: number, mode: 'live' | 'replay'): {
 GET /api/rooms, GET /api/rooms/:id, POST /api/rooms, DELETE /api/rooms/:id, GET /api/agents
 
 // 06-orchestrator-api.md WS RPC
-listMessages, postHumanMessage, getMemoryView, getRoomStatus, getEventTree,
+listMessages, postHumanMessage, getMemoryView, getRoomStatus, getEventTree, getUsageSummary,
 getSessionDetail, terminateAgentSession, setAgentEnabled, pauseRoom, resumeRoom, confirmCompletion
 
 // 06-orchestrator-api.md WS 推送
@@ -314,23 +327,3 @@ src/
 - 生命周期事件与执行日志不进入消息/记忆面板；SessionDetailModal 单独展示生命周期记录。
 - AgentRail 展示 `enabled`/`failureCount`：连续失败被自动停用的 agent 需人类点"启用"才重新入队（`03-orchestrator-core.md` §6）；停用不终止正在运行的 session。
 - 删除房间清理失败时展示错误并留在原页面，保留日志、记录及打开的弹窗。
-
-## 记忆连续性修订（2026-09-19）
-
-记忆面板保留既有分组，新增完成提议；reaction 在目标下展开，不平铺重复列表；以 getMemoryView 的 reactions/contextMessages 与各分组构造 ID 表，使用 relations 展示注解、回答与被引用 ID。反应的目标为反应或普通消息也能定位，不依赖聊天窗口加载。移除记忆条目的作者展示及按作者分组（原始消息流作者保持）。探索显示结束原因、结果及结果引用；历史缺失明确显示未记录。Composer 发送 hypothesis 必须选择问题，fact 若指定目标必须为问题。
-
-## 静默收敛自动确认与文案消歧修订（2026-09-21）
-
-事件树 session 标签的展示文案与底层 `outcome` 值拆开：`outcome === 'completed'` 现在显示为 `done`，避免和房间级 `status === 'completed'`（房间头部状态徽标、房间列表卡片）共用同一个词造成"这条消息完成了"和"这个房间完成了"混淆（见 §9）；`--ok` 令牌的注释同步更新（见 §2）。数据层不变，纯前端展示文案调整。RoomHeader（§4）新增 `completionReason`/`completionReferenceMessageId` 的展示：`completed` 房间在原有"已结束 · 只读"文案后，`auto_silence` 时追加"静默期自动确认（依据 #id）"并提供跳转锚点，`manual` 时不追加；数据来自 `GET /api/rooms/:id` 与 `getRoomStatus`（`03-orchestrator-core.md` §1.4、`06-orchestrator-api.md` §4）。
-
-## 用量统计修订（2026-09-21）
-
-新增 token/费用展示，三个层级：事件树 session 标签追加紧凑 token 数（§9）；SessionDetailModal 新增用量明细行，含 cache read/write 拆分和费用（§10.2）；AgentRail 每个 agent 卡片新增累计用量行、RoomHeader 新增房间总用量（§4/§5）。三处都遵循同一条原则：**四个 token 字段（或费用）全为 null 时对应的行/后缀完全不显示，不摆"—"或"$0"这种会被误读成"确实是 0"的占位符**；`AgentRail` 的用量行在部分 session 有费用、部分没有时额外标一个 `*` 提示"未计入"，不让不完整的数据看起来很精确。数据来自 `04-agent-invocation.md` §7 的日志解析和 `01-storage.md` 的 `getUsageTotals` 聚合，`06-orchestrator-api.md` 的 `getEventTree`/`getSessionDetail`/`getUsageSummary` 下发。
-
-## 派发收敛提示修订（2026-09-21）
-
-AgentRail（§5）：`state === 'idle' && caughtUp === true` 时状态徽标显示 `completed`，代替普通的 `idle`——这个 agent 空闲且暂时没有新触发消息要处理（跟"idle 但还在排队等派发"区分开）。RoomHeader（§4）新增派发收敛提醒：`getRoomStatus().allCaughtUp === true` 且房间仍 `active` 时压一条可关闭提醒条"所有 agent 都已完成，看起来任务已经收敛"，和已有的 `propose_completion` 提醒是两回事、不要求存在 `propose_completion`，纯展示、不改变房间状态。数据来自 `06-orchestrator-api.md` 的 `getRoomStatus` 新增字段 `agents[].caughtUp`/`allCaughtUp`。
-
-## @ 定向消息修订（2026-09-22）
-
-Composer（§7）新增 @ 定向某个 agent 的输入方式：输入 `@` 弹出候选、选中后插入 token 并设置 `targetAgentId`，Composer 顶部对应一个"发送给 @agentId ✕"chip，随 `postHumanMessage` 一起发出。MessageRow（§6）与 MemoryPanel 条目层（§8）都新增"→ @agentId"小徽标渲染 `targetAgentId`（见 `02-memory-management.md` 的 `MemorySummary.targetAgentId`）。`src/api/types.ts` 的 `Message` 新增 `targetAgentId: string | null`，`postHumanMessage` 请求体新增可选 `targetAgentId`。需求与派发算法细节见 `03-orchestrator-core.md` 同名修订、需求 3.3.2。
