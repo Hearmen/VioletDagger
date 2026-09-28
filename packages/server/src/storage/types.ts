@@ -3,11 +3,10 @@ export interface Room {
   name: string;
   schedulingMode: 'sequential';
   status: 'active' | 'paused_limit' | 'paused_manual' | 'completed';
-  completionReason: 'manual' | 'auto_silence' | null;         // 仅 status === 'completed' 有值
-  completionReferenceMessageId: number | null;                // 仅 completionReason === 'auto_silence' 有值
   maxSessions: number;
   workdir: string;   // 绝对路径；空串表示按服务端默认目录解析（历史数据）
-  autoConfirmOnSilence: boolean;   // 创建时一次性写入，房间生命周期内不可修改
+  dispatchPending: boolean;       // 房间标记（见 01-storage.md rooms.dispatch_pending）
+  pendingAuthorId: string | null; // 标记作者（见 rooms.pending_author_id）
   createdAt: string;
 }
 
@@ -26,6 +25,7 @@ export interface RoomAgentState {
   state: 'idle' | 'running' | 'stopping';
   currentSessionSeq: number | null;
   dispatchEnabled: boolean;
+  directedPending: boolean; // 定向标记（见 room_agents.directed_pending）
 }
 
 export type SessionExitCause =
@@ -95,23 +95,51 @@ export type SessionOutcome = Session['outcome'];
 
 export type MessageType =
   | 'fact' | 'hypothesis' | 'boundary' | 'open_question' | 'chain'
-  | 'exploring' | 'propose_completion' | 'endorse' | 'challenge' | 'verify';
+  | 'exploring' | 'propose_completion' | 'challenge' | 'verify';
 
-export interface Message {
+export const MESSAGE_TYPES: readonly MessageType[] = [
+  'fact', 'hypothesis', 'boundary', 'open_question', 'chain',
+  'exploring', 'propose_completion', 'challenge', 'verify',
+];
+
+export type QuestionStatus = 'OPEN' | 'CLOSED';
+export type CloseReason = 'RESOLVED' | 'UNRESOLVED';
+export type ChainStatus = 'CANDIDATE' | 'VERIFIED' | 'CHALLENGED' | 'REJECT';
+
+export interface StateTransition {
   id: number;
   roomId: number;
-  sessionSeq: number | null;
-  authorId: string;
-  type: MessageType | null;
+  messageId: number;
+  fromType: MessageType | null;
+  toType: MessageType | null;
+  fromStatus: string | null;
+  toStatus: string | null;
+  triggerMessageId: number;
+  reason: string | null;
+  createdAt: string;
+}
+
+export interface Message {
+  id: number;                      // room 内自增，仅在本 room 内有意义
+  roomId: number;
+  sessionSeq: number | null;       // 人类消息为 null
+  authorId: string;                // agent 实例标识，或 "human"/"system"
+  type: MessageType | null;        // 当前 type
   content: string;
   summary: string;
   targetMessageId: number | null;
-  // 非空表示这条消息通过 @ 定向发给该 agent 实例（需求 3.3.2）；只有人类消息可能非空。
-  targetAgentId: string | null;
-  referencedMessageIds: number[];
-  exploringStatus: 'active' | 'completed' | null;
+  targetAgentId: string | null;    // 非空表示这条消息通过 @ 定向发给该 agent，只有人类消息可能非空
+  referencedMessageIds: number[];  // 从 message_references 联表得到
+  questionStatus: QuestionStatus | null;       // 仅 open_question
+  questionCloseReason: CloseReason | null;     // 仅 CLOSED 的 open_question
+  questionClosedBy: number | null;             // 仅 CLOSED 的 open_question
+  chainStatus: ChainStatus | null;             // 仅 chain
+  closesQuestion: boolean;                     // 仅 chain 可能为 true
+  chainResolution: CloseReason | null;         // 仅 closesQuestion 的 chain
+  verifyVerdict: boolean | null;               // 仅 verify
+  exploringStatus: 'active' | 'completed' | null;  // 仅 exploring
   exploringNote: string | null;
-  exploringEndReason: 'explicit' | 'superseded' | 'human_terminated' | null;
+  exploringEndReason: 'explicit' | 'human_terminated' | null;
   exploringResultSummary: string | null;
   exploringResultMessageIds: number[];
   createdAt: string;
@@ -126,5 +154,8 @@ export interface InsertMessageParams {
   targetMessageId?: number;
   targetAgentId?: string;
   referencedMessageIds?: number[];
+  verifyVerdict?: boolean;
+  closesQuestion?: boolean;
+  chainResolution?: CloseReason;
   summary?: string;
 }

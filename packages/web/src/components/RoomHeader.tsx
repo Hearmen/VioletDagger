@@ -51,22 +51,16 @@ export function RoomHeader(props: {
   const { room, status, connectionState, proposeCompletionId, onJumpToMessage } = props;
   const readOnly = status.status === 'completed';
   const [dismissedProposeId, setDismissedProposeId] = useState<number | null>(null);
-  const [dismissedCaughtUp, setDismissedCaughtUp] = useState(false);
-
-  // completionReason 优先取 getRoomStatus（roomStatus 推送后重拉，最新），初次加载前退回 GET /api/rooms/:id
-  // 拿到的 room 快照（见 06-orchestrator-api.md §4、03-orchestrator-core.md §1.4）。
-  const completionReason = status.completionReason ?? room.completionReason ?? undefined;
-  const completionReferenceMessageId = status.completionReferenceMessageId ?? room.completionReferenceMessageId ?? undefined;
 
   const showProposeBanner =
     !readOnly && proposeCompletionId != null && proposeCompletionId !== dismissedProposeId;
 
-  // 关闭后直到 allCaughtUp 从 false 变回 true（房间重新活跃过一轮之后再次收敛）前不再出现，
-  // 跟 propose_completion 提醒"关闭后等下一条新消息"是同一种去抖动思路（07-frontend.md §4）。
+  // 无任务派发提醒（07-frontend.md §4）：关闭后要等 dispatchIdle 先变回 false、再变为 true 才再次出现。
+  const [dismissedIdle, setDismissedIdle] = useState(false);
   useEffect(() => {
-    if (!status.allCaughtUp) setDismissedCaughtUp(false);
-  }, [status.allCaughtUp]);
-  const showCaughtUpBanner = status.status === 'active' && status.allCaughtUp && !dismissedCaughtUp;
+    if (!status.dispatchIdle) setDismissedIdle(false);
+  }, [status.dispatchIdle]);
+  const showIdleBanner = status.dispatchIdle && !dismissedIdle;
 
   function handleResume() {
     if (status.status === 'paused_limit') {
@@ -109,26 +103,7 @@ export function RoomHeader(props: {
         <span className={`conn-dot conn-dot--${connectionState}`} title={connectionState} />
         {readOnly ? (
           <div className="room-header__controls">
-            <span className="room-header__readonly">
-              已结束 · 只读
-              {completionReason === 'auto_silence' && completionReferenceMessageId != null && (
-                <>
-                  {' '}· 静默期自动确认（依据{' '}
-                  {onJumpToMessage ? (
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => onJumpToMessage(completionReferenceMessageId)}
-                    >
-                      #{completionReferenceMessageId}
-                    </button>
-                  ) : (
-                    `#${completionReferenceMessageId}`
-                  )}
-                  ）
-                </>
-              )}
-            </span>
+            <span className="room-header__readonly">已结束 · 只读</span>
             {props.onDeleteRoom && (
               <button className="danger" onClick={handleDeleteRoom}>
                 Delete Room
@@ -165,10 +140,11 @@ export function RoomHeader(props: {
             </button>
           </div>
         )}
-        {showCaughtUpBanner && (
+        {showIdleBanner && (
           <div role="alert" className="banner banner--warn">
-            所有 agent 都已完成，看起来任务已经收敛
-            <button className="ghost banner__close" onClick={() => setDismissedCaughtUp(true)}>
+            当前没有任务可派发：所有 agent 均空闲，且没有待处理的触发型消息
+            {status.disabledAgentCount > 0 && `（${status.disabledAgentCount} 个 agent 已停用派发）`}
+            <button className="ghost banner__close" onClick={() => setDismissedIdle(true)}>
               关闭
             </button>
           </div>

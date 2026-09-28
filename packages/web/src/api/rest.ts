@@ -35,7 +35,6 @@ export async function createRoom(body: {
   schedulingMode: 'sequential';
   maxSessions?: number;
   workdir?: string;
-  autoConfirmOnSilence?: boolean;
 }): Promise<Room> {
   const res = await fetch('/api/rooms', {
     method: 'POST',

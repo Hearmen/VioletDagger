@@ -13,16 +13,18 @@ import { createPostMessageHandler } from './postMessage';
 import { createCompleteExploringHandler } from './completeExploring';
 import { createGetOverviewHandler, createGetDetailHandler } from './readTools';
 import { McpToolError } from './validation';
+import type { Message } from '../storage';
+import type { SubmitMessageInput } from '../orchestrator-core/submitMessage';
 
 const MESSAGE_TYPES = [
   'fact', 'hypothesis', 'boundary', 'open_question', 'chain',
-  'exploring', 'propose_completion', 'endorse', 'challenge', 'verify',
+  'exploring', 'propose_completion', 'challenge', 'verify',
 ] as const;
 
 export interface McpServerDeps {
   db: Database.Database;
   roomEvents: EventEmitter;
-  onSubstantiveMessagePosted: (roomId: number) => void;
+  submitMessage: (input: SubmitMessageInput) => { message: Message; changedMessageIds: number[] };
   resetStuckCount: (roomId: number, agentId: string) => void;
 }
 
@@ -52,6 +54,9 @@ export function createMcpServer(deps: McpServerDeps): McpServer {
       type: z.enum(MESSAGE_TYPES).optional(),
       targetMessageId: z.number().optional(),
       referencedMessageIds: z.array(z.number()).optional(),
+      verifyVerdict: z.boolean().optional(),
+      closesQuestion: z.boolean().optional(),
+      chainResolution: z.enum(['RESOLVED', 'UNRESOLVED']).optional(),
       summary: z.string().optional(),
     },
     async (params: any) => {

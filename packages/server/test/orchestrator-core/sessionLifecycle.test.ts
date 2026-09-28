@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createTestDb } from '../../src/storage/db';
-import { createRoom, getRoomAgents, setAgentState, setRoomStatus } from '../../src/storage/rooms';
+import {
+  createRoom, getRoom, getRoomAgents, setAgentState, setRoomStatus, setDispatchPending,
+} from '../../src/storage/rooms';
 import { createSession, getSession, listSessionEvents } from '../../src/storage/sessions';
 import { insertMessage, getMessagesBySession, getActiveExploring } from '../../src/storage/messages';
 import { createStuckCounter } from '../../src/orchestrator-core/stuckCounter';
@@ -49,7 +51,7 @@ describe('onSessionEnded', () => {
     expect(getSession(db, room.id, session.seq)!.outcome).toBe('passed');
     const messages = getMessagesBySession(db, room.id, session.seq);
     expect(messages).toHaveLength(2); // 原来的闲聊 + 补写的占位消息
-    const placeholder = messages.find((m) => m.content.includes('未发出任何实质消息'))!;
+    const placeholder = messages.find((m) => m.content.includes('未发出任何带类型的消息'))!;
     expect(placeholder.authorId).toBe('codex'); // 占位消息归属产生这次 session 的 agent，而非 'system'
     expect(placeholder.type).toBeNull();
     expect(messageListener).toHaveBeenCalledTimes(1);
@@ -161,12 +163,61 @@ describe('onSessionEnded', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
     const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
+    setDispatchPending(db, room.id, true, 'human');
     const startSession = vi.fn();
 
     onSessionEnded(db, exitEvent(room.id, session.seq, 'codex'), startSession, createStuckCounter(), createFailureCounter());
 
     expect(startSession).toHaveBeenCalled();
+  });
+
+  it('an errored broadcast session restores the room flag with itself as author, so another agent picks it up', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    setAgentState(db, room.id, 'codex', 'running', session.seq);
+    const startSession = vi.fn();
+
+    onSessionEnded(
+      db, exitEvent(room.id, session.seq, 'codex', { exitCode: 1, exitCause: 'unexpected' }),
+      startSession, createStuckCounter(), createFailureCounter(),
+    );
+
+    expect(getSession(db, room.id, session.seq)!.outcome).toBe('error');
+    expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'claude' }));
+    expect(getRoom(db, room.id)!.dispatchPending).toBe(false);
+  });
+
+  it('an errored directed session restores its own directed flag', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex', 'directed');
+    setAgentState(db, room.id, 'codex', 'running', session.seq);
+    const startSession = vi.fn();
+
+    onSessionEnded(
+      db, exitEvent(room.id, session.seq, 'codex', { exitCode: 1, exitCause: 'unexpected' }),
+      startSession, createStuckCounter(), createFailureCounter(),
+    );
+
+    expect(getRoom(db, room.id)!.dispatchPending).toBe(false);
+    expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'codex' }));
+    expect(getSession(db, room.id, session.seq + 1)!.dispatchScope).toBe('directed');
+  });
+
+  it('a completed or passed session does not restore any flag', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const session = createSession(db, room.id, 'codex');
+    setAgentState(db, room.id, 'codex', 'running', session.seq);
+    const startSession = vi.fn();
+
+    onSessionEnded(db, exitEvent(room.id, session.seq, 'codex'), startSession, createStuckCounter(), createFailureCounter());
+
+    expect(getSession(db, room.id, session.seq)!.outcome).toBe('passed');
+    expect(getRoom(db, room.id)!.dispatchPending).toBe(false);
+    expect(startSession).not.toHaveBeenCalled();
   });
 });
 
@@ -235,7 +286,8 @@ describe('terminateAgentSession', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
     const session = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
+    setDispatchPending(db, room.id, true, 'human');
     const startSession = vi.fn();
 
     await terminateAgentSession(
@@ -250,7 +302,8 @@ describe('setAgentEnabled', () => {
   it('re-enables an agent, clears its failure count, and triggers dispatch', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
+    setDispatchPending(db, room.id, true, 'human');
     setAgentEnabled(db, room.id, 'codex', false, vi.fn(), createStuckCounter(), createFailureCounter());
     const failureCounter = createFailureCounter();
     failureCounter.increment(room.id, 'codex');

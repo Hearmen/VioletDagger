@@ -64,7 +64,7 @@ function buildDeps() {
   return {
     db: createTestDb(),
     roomEvents: new EventEmitter(),
-    onSubstantiveMessagePosted: vi.fn(),
+    submitMessage: vi.fn(),
     resetStuckCount: vi.fn(),
   };
 }

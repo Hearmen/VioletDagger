@@ -41,7 +41,7 @@ describe('sessions', () => {
     expect(updated.endedAt).not.toBeNull();
   });
 
-  it('countSessions excludes error sessions (they do not consume maxSessions)', () => {
+  it('countSessions counts every session, error included (all consume maxSessions)', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const s1 = createSession(db, room.id, 'codex');
@@ -50,11 +50,11 @@ describe('sessions', () => {
     finishSession(db, room.id, s1.seq, 'completed');
     finishSession(db, room.id, s2.seq, 'error');
     finishSession(db, room.id, s3.seq, 'passed');
-    // 3 个 session，其中 1 个 error 不计入配额。
-    expect(countSessions(db, room.id)).toBe(2);
+    // 3 个 session，error 同样计入配额（需求 3.3）。
+    expect(countSessions(db, room.id)).toBe(3);
   });
 
-  it('listSessions returns sessions ordered by seq, countSessions counts non-error sessions', () => {
+  it('listSessions returns sessions ordered by seq, countSessions counts all sessions', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
     createSession(db, room.id, 'codex');

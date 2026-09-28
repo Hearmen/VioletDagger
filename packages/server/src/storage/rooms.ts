@@ -9,11 +9,10 @@ function mapRoomRow(row: any): Room {
     name: row.name,
     schedulingMode: row.scheduling_mode,
     status: row.status,
-    completionReason: row.completion_reason ?? null,
-    completionReferenceMessageId: row.completion_reference_message_id ?? null,
     maxSessions: row.max_sessions,
     workdir: row.workdir ?? '',
-    autoConfirmOnSilence: row.auto_confirm_on_silence !== 0,
+    dispatchPending: row.dispatch_pending !== 0,
+    pendingAuthorId: row.pending_author_id ?? null,
     createdAt: row.created_at,
   };
 }
@@ -44,7 +43,6 @@ export function assignInstanceIds(
 export interface CreateRoomOptions {
   maxSessions?: number; // 正整数，缺省 20
   workdir?: string;     // 绝对路径（由 06 层解析/校验）；缺省写 ''，表示按服务端默认目录兜底
-  autoConfirmOnSilence?: boolean; // 不传按 false；一次性写入，房间生命周期内不可修改，不提供对应的 setter（见 01-storage.md §5.6）
 }
 
 export function createRoom(
@@ -54,7 +52,7 @@ export function createRoom(
   schedulingMode: 'sequential',
   options: CreateRoomOptions = {},
 ): Room {
-  const { maxSessions, workdir, autoConfirmOnSilence } = options;
+  const { maxSessions, workdir } = options;
   if (maxSessions != null && (!Number.isInteger(maxSessions) || maxSessions <= 0)) {
     throw new Error('maxSessions must be a positive integer');
   }
@@ -62,15 +60,14 @@ export function createRoom(
   const agents = assignInstanceIds(agentIds);
   const maxSessionsValue = maxSessions ?? DEFAULT_MAX_SESSIONS;
   const workdirValue = workdir?.trim() ? workdir.trim() : '';
-  const autoConfirmValue = autoConfirmOnSilence ? 1 : 0;
   const insertRoom = db.prepare(
-    `INSERT INTO rooms (name, scheduling_mode, status, max_sessions, workdir, auto_confirm_on_silence, created_at) VALUES (?, ?, 'active', ?, ?, ?, ?)`,
+    `INSERT INTO rooms (name, scheduling_mode, status, max_sessions, workdir, created_at) VALUES (?, ?, 'active', ?, ?, ?)`,
   );
   const insertAgent = db.prepare(
     `INSERT INTO room_agents (room_id, agent_id, registry_key, join_order, state) VALUES (?, ?, ?, ?, 'idle')`,
   );
   const roomId = db.transaction(() => {
-    const info = insertRoom.run(name, schedulingMode, maxSessionsValue, workdirValue, autoConfirmValue, createdAt);
+    const info = insertRoom.run(name, schedulingMode, maxSessionsValue, workdirValue, createdAt);
     const id = info.lastInsertRowid as number;
     agents.forEach((agent, idx) => insertAgent.run(id, agent.agentId, agent.registryKey, idx));
     return id;
@@ -97,19 +94,6 @@ export function setRoomStatus(db: Database.Database, roomId: number, status: Roo
   db.prepare(`UPDATE rooms SET status = ? WHERE id = ?`).run(status, roomId);
 }
 
-// confirmCompletion（人工路径）与静默收敛自动确认（03-orchestrator-core.md §1.4）都只通过这一个函数落盘
-// completed 状态，manual 路径不传 referenceMessageId，列保持 NULL（见 01-storage.md §4）。
-export function recordCompletion(
-  db: Database.Database,
-  roomId: number,
-  reason: 'manual' | 'auto_silence',
-  referenceMessageId?: number,
-): void {
-  db.prepare(
-    `UPDATE rooms SET status = 'completed', completion_reason = ?, completion_reference_message_id = ? WHERE id = ?`,
-  ).run(reason, referenceMessageId ?? null, roomId);
-}
-
 export function increaseMaxSessions(db: Database.Database, roomId: number, additional: number): void {
   db.prepare(`UPDATE rooms SET max_sessions = max_sessions + ? WHERE id = ?`).run(additional, roomId);
 }
@@ -118,6 +102,7 @@ export function increaseMaxSessions(db: Database.Database, roomId: number, addit
 export function deleteRoom(db: Database.Database, roomId: number): void {
   db.transaction(() => {
     db.prepare(`DELETE FROM message_references WHERE room_id = ?`).run(roomId);
+    db.prepare(`DELETE FROM state_transition_log WHERE room_id = ?`).run(roomId);
     db.prepare(`DELETE FROM messages WHERE room_id = ?`).run(roomId);
     db.prepare(`DELETE FROM session_events WHERE room_id = ?`).run(roomId);
     db.prepare(`DELETE FROM sessions WHERE room_id = ?`).run(roomId);
@@ -135,6 +120,7 @@ function mapRoomAgentRow(row: any): RoomAgentState {
     state: row.state,
     currentSessionSeq: row.current_session_seq,
     dispatchEnabled: row.dispatch_enabled !== 0,
+    directedPending: row.directed_pending !== 0,
   };
 }
 
@@ -165,4 +151,29 @@ export function setAgentEnabled(
 ): void {
   db.prepare(`UPDATE room_agents SET dispatch_enabled = ? WHERE room_id = ? AND agent_id = ?`)
     .run(enabled ? 1 : 0, roomId, agentId);
+}
+
+// 房间标记（见 docs/design/01-storage.md、03-orchestrator-core.md §1.2）：置位时记下标记作者，
+// 已经置位时只更新作者；清除时作者一并清空。何时置位/清除由核心决定。
+export function setDispatchPending(db: Database.Database, roomId: number, pending: true, authorId: string): void;
+export function setDispatchPending(db: Database.Database, roomId: number, pending: false): void;
+export function setDispatchPending(
+  db: Database.Database,
+  roomId: number,
+  pending: boolean,
+  authorId?: string,
+): void {
+  db.prepare(`UPDATE rooms SET dispatch_pending = ?, pending_author_id = ? WHERE id = ?`)
+    .run(pending ? 1 : 0, pending ? authorId : null, roomId);
+}
+
+// 定向标记（需求 3.3.2）：只改 directed_pending。
+export function setDirectedPending(
+  db: Database.Database,
+  roomId: number,
+  agentId: string,
+  pending: boolean,
+): void {
+  db.prepare(`UPDATE room_agents SET directed_pending = ? WHERE room_id = ? AND agent_id = ?`)
+    .run(pending ? 1 : 0, roomId, agentId);
 }

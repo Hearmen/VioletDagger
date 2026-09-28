@@ -2,14 +2,12 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { EventTreePayload, Message, MessageType } from '../api/types';
 import { Panel } from './Panel';
 import { MessageTypeBadge } from './MessageTypeBadge';
-import { colorForAgent, formatClock, formatTokens, truncate } from '../utils/format';
+import { colorForAgent, formatClock, formatDuration, formatTokens, truncate } from '../utils/format';
 
 const EDGE_COLORS: Partial<Record<MessageType, string>> = {
-  endorse: 'var(--ok)',
   challenge: 'var(--danger)',
   verify: 'var(--info)',
   chain: 'var(--accent)',
-  open_question: 'var(--warn)',
 };
 
 type SessionMeta = EventTreePayload['sessions'][number];
@@ -23,12 +21,10 @@ interface Edge {
   color: string;
 }
 
+// 关联线（07-frontend.md §9）：challenge/verify 连到目标，chain 连到每个引用的依据。
 function edgeTargets(message: Message): number[] {
   if (message.type === 'chain') return message.referencedMessageIds;
-  if (message.type === 'endorse' || message.type === 'challenge' || message.type === 'verify') {
-    return message.targetMessageId != null ? [message.targetMessageId] : [];
-  }
-  if (message.type === 'open_question') {
+  if (message.type === 'challenge' || message.type === 'verify') {
     return message.targetMessageId != null ? [message.targetMessageId] : [];
   }
   return [];
@@ -41,14 +37,28 @@ const OUTCOME_LABELS: Partial<Record<SessionMeta['outcome'], string>> = {
   completed: 'done',
 };
 
+// 运行时长后缀（07-frontend.md §9）：只对已结束（endedAt 非 null）的 session 显示 endedAt − startedAt；
+// 任一时间戳无法解析时不追加。running 的实时时长只在 AgentRail 展示。
+function sessionDuration(meta: SessionMeta): string | null {
+  if (meta.endedAt == null) return null;
+  const start = Date.parse(meta.startedAt);
+  const end = Date.parse(meta.endedAt);
+  if (Number.isNaN(start) || Number.isNaN(end)) return null;
+  return formatDuration((end - start) / 1000);
+}
+
 // 用量后缀（07-frontend.md §9）：inputTokens/outputTokens 都非 null 才追加，只要有一个是 null
 // （如 kimi）就什么都不追加，不摆占位符；费用不放进这个标签，太挤，见 SessionDetailModal。
 function sessionTagLabel(meta: SessionMeta | undefined, agentId: string, seq: number): string {
   const base = `${agentId} #${seq}`;
   if (!meta || meta.outcome === 'running' || meta.outcome === 'stopping') return base;
-  const outcomeText = `${base} · ${OUTCOME_LABELS[meta.outcome] ?? meta.outcome}`;
-  if (meta.inputTokens == null || meta.outputTokens == null) return outcomeText;
-  return `${outcomeText} · ${formatTokens(meta.inputTokens + meta.outputTokens)}`;
+  const parts = [base, OUTCOME_LABELS[meta.outcome] ?? meta.outcome];
+  const duration = sessionDuration(meta);
+  if (duration != null) parts.push(duration);
+  if (meta.inputTokens != null && meta.outputTokens != null) {
+    parts.push(formatTokens(meta.inputTokens + meta.outputTokens));
+  }
+  return parts.join(' · ');
 }
 
 export function EventTreePanel(props: {

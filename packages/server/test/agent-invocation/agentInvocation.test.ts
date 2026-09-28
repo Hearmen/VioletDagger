@@ -129,7 +129,7 @@ describe('createAgentInvocation - startSession', () => {
 
     const args = vi.mocked(spawnProcess).mock.calls[0][1];
     expect(args).toHaveLength(1);
-    expect(args[0]).toContain('authorId: codex');
+    expect(args[0]).toContain('你的 authorId：codex');
     expect(args[0]).not.toContain('{{prompt}}');
   });
 
@@ -379,7 +379,7 @@ describe('createAgentInvocation - startSession', () => {
     await flush();
     expect(spawnProcess.mock.calls[0][2].stdio).toEqual(['pipe', 'pipe', 'pipe']);
     expect(fake.stdin.write).toHaveBeenCalledTimes(1);
-    expect(fake.stdin.write.mock.calls[0][0]).toContain('authorId: kimi');
+    expect(fake.stdin.write.mock.calls[0][0]).toContain('你的 authorId：kimi');
     expect(fake.stdin.end).toHaveBeenCalled();
   });
 });

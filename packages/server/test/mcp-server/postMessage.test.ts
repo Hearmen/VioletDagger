@@ -1,53 +1,54 @@
 import { describe, it, expect, vi } from 'vitest';
-import { EventEmitter } from 'node:events';
 import { createTestDb } from '../../src/storage/db';
 import { createRoom, setAgentState } from '../../src/storage/rooms';
-import { insertMessage } from '../../src/storage/messages';
+import { insertMessage, getMessageById } from '../../src/storage/messages';
 import { createSession } from '../../src/storage/sessions';
 import { createPostMessageHandler } from '../../src/mcp-server/postMessage';
 import { McpToolError } from '../../src/mcp-server/validation';
+import { submitMessage } from '../../src/orchestrator-core/submitMessage';
+import { createStuckCounter } from '../../src/orchestrator-core/stuckCounter';
 
 function setup() {
   const db = createTestDb();
   const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+  const goal = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
   const session = createSession(db, room.id, 'codex');
   setAgentState(db, room.id, 'codex', 'running', session.seq);
-  const roomEvents = new EventEmitter();
-  const onSubstantiveMessagePosted = vi.fn();
-  const resetStuckCount = vi.fn();
-  const postMessage = createPostMessageHandler({ db, roomEvents, onSubstantiveMessagePosted, resetStuckCount });
-  return { db, room, session, roomEvents, onSubstantiveMessagePosted, resetStuckCount, postMessage };
+  const startSession = vi.fn();
+  const submit = vi.fn((input) => submitMessage(db, input, startSession, createStuckCounter()));
+  const postMessage = createPostMessageHandler({ db, submitMessage: submit });
+  return { db, room, goal, session, submit, startSession, postMessage };
 }
 
 describe('createPostMessageHandler', () => {
-  it('inserts a plain chat message and does not trigger dispatch', () => {
-    const { room, onSubstantiveMessagePosted, postMessage } = setup();
+  it('delegates to submitMessage with the bound agent identity and session', () => {
+    const { room, session, submit, postMessage } = setup();
     const result = postMessage({ roomId: room.id, authorId: 'codex', content: 'just chatting' });
     expect(result.messageId).toBeGreaterThan(0);
-    expect(onSubstantiveMessagePosted).not.toHaveBeenCalled();
+    expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+      roomId: room.id, author: { kind: 'agent', agentId: 'codex', sessionSeq: session.seq }, content: 'just chatting',
+    }));
   });
 
-  it('triggers onSubstantiveMessagePosted when type is provided', () => {
-    const { room, onSubstantiveMessagePosted, postMessage } = setup();
-    postMessage({ roomId: room.id, authorId: 'codex', content: 'a fact', type: 'fact' });
-    expect(onSubstantiveMessagePosted).toHaveBeenCalledWith(room.id);
-  });
-
-  it('emits message and memoryUpdate and resets stuck count when a new exploring supersedes the old one', () => {
-    const { db, room, session, roomEvents, resetStuckCount, postMessage } = setup();
-    const first = insertMessage(db, {
-      roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'exploring A', type: 'exploring',
+  it('passes verify/chain fields through and lets the core apply transitions', () => {
+    const { db, room, goal, postMessage } = setup();
+    const h = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'h', type: 'hypothesis', targetMessageId: goal.id });
+    postMessage({ roomId: room.id, authorId: 'codex', content: 'checked', type: 'verify', targetMessageId: h.id, verifyVerdict: false });
+    expect(getMessageById(db, room.id, h.id)!.type).toBe('boundary');
+    const { messageId } = postMessage({
+      roomId: room.id, authorId: 'codex', content: 'plan', type: 'chain', targetMessageId: goal.id,
+      closesQuestion: true, chainResolution: 'RESOLVED', referencedMessageIds: [h.id],
     });
-    const messageEvents: any[] = [];
-    const memoryEvents: any[] = [];
-    roomEvents.on('message', (e) => messageEvents.push(e));
-    roomEvents.on('memoryUpdate', (e) => memoryEvents.push(e));
+    expect(getMessageById(db, room.id, messageId)).toMatchObject({ chainStatus: 'CANDIDATE', closesQuestion: true, chainResolution: 'RESOLVED', referencedMessageIds: [h.id] });
+  });
 
-    postMessage({ roomId: room.id, authorId: 'codex', content: 'exploring B', type: 'exploring' });
-
-    expect(messageEvents).toHaveLength(1);
-    expect(memoryEvents).toEqual([{ roomId: room.id, messageId: first.message.id }]);
-    expect(resetStuckCount).toHaveBeenCalledWith(room.id, 'codex');
+  it('turns core validation failures into MCP tool errors', () => {
+    const { room, goal, postMessage } = setup();
+    const base = { roomId: room.id, authorId: 'codex', content: 'candidate', type: 'hypothesis' as const };
+    expect(() => postMessage(base)).toThrow(McpToolError);
+    expect(() => postMessage(base)).toThrow('targetMessageId');
+    expect(postMessage({ ...base, targetMessageId: goal.id }).messageId).toBeGreaterThan(goal.id);
+    expect(() => postMessage({ roomId: room.id, authorId: 'codex', content: 'x', type: 'challenge', targetMessageId: 999 })).toThrow(McpToolError);
   });
 
   it('rejects a reserved authorId', () => {
@@ -56,49 +57,8 @@ describe('createPostMessageHandler', () => {
   });
 
   it('rejects when the agent is not currently running', () => {
-    const { room, postMessage } = setup();
+    const { room, submit, postMessage } = setup();
     expect(() => postMessage({ roomId: room.id, authorId: 'claude', content: 'x' })).toThrow(McpToolError);
-  });
-
-  it('requires targetMessageId for reaction types', () => {
-    const { room, postMessage } = setup();
-    expect(() => postMessage({ roomId: room.id, authorId: 'codex', content: 'x', type: 'endorse' })).toThrow(McpToolError);
-  });
-
-  it('accepts referencedMessageIds for any typed message', () => {
-    const { db, room, session, postMessage } = setup();
-    const fact = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'a fact', type: 'fact' });
-    expect(() =>
-      postMessage({
-        roomId: room.id, authorId: 'codex', content: 'x', type: 'fact',
-        referencedMessageIds: [fact.message.id],
-      }),
-    ).not.toThrow();
-  });
-
-  it('requires a question target for a new hypothesis through the write handler', () => {
-    const { db, room, session, postMessage } = setup();
-    const question = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'question', type: 'open_question' }).message;
-    const base = { roomId: room.id, authorId: 'codex', content: 'candidate', type: 'hypothesis' as const };
-    expect(() => postMessage(base)).toThrow('targetMessageId');
-    expect(postMessage({ ...base, targetMessageId: question.id }).messageId).toBeGreaterThan(question.id);
-    expect(() => postMessage({ ...base, targetMessageId: question.id + 1 })).toThrow('open_question');
-  });
-
-  it('accepts a chain message with valid referencedMessageIds', () => {
-    const { db, room, session, postMessage } = setup();
-    const fact = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'a fact', type: 'fact' });
-    const result = postMessage({
-      roomId: room.id, authorId: 'codex', content: 'end to end plan', type: 'chain',
-      referencedMessageIds: [fact.message.id],
-    });
-    expect(result.messageId).toBeGreaterThan(0);
-  });
-
-  it('rejects a targetMessageId that does not exist in the room', () => {
-    const { room, postMessage } = setup();
-    expect(() =>
-      postMessage({ roomId: room.id, authorId: 'codex', content: 'x', type: 'endorse', targetMessageId: 999 }),
-    ).toThrow(McpToolError);
+    expect(submit).not.toHaveBeenCalled();
   });
 });

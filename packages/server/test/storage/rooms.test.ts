@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { createTestDb } from '../../src/storage/db';
 import {
-  createRoom, getRoom, listRooms, setRoomStatus, recordCompletion, increaseMaxSessions, getRoomAgents,
-  setAgentState, deleteRoom, assignInstanceIds,
+  createRoom, getRoom, listRooms, setRoomStatus, increaseMaxSessions, getRoomAgents,
+  setAgentState, deleteRoom, assignInstanceIds, setDispatchPending, setDirectedPending,
 } from '../../src/storage/rooms';
 import { createSession, listSessions } from '../../src/storage/sessions';
-import { insertMessage, getMessagesByType, getAnnotations } from '../../src/storage/messages';
+import { insertMessage, getMessagesByType, getRoomMessages } from '../../src/storage/messages';
 
 describe('rooms', () => {
   it('createRoom sets defaults and getRoom reads them back', () => {
@@ -59,32 +59,6 @@ describe('rooms', () => {
     expect(getRoom(db, room.id)!.status).toBe('paused_manual');
   });
 
-  it('createRoom defaults autoConfirmOnSilence to false and honors an explicit true', () => {
-    const db = createTestDb();
-    const withoutFlag = createRoom(db, 'a', ['codex'], 'sequential');
-    expect(withoutFlag.autoConfirmOnSilence).toBe(false);
-    const withFlag = createRoom(db, 'b', ['codex'], 'sequential', { autoConfirmOnSilence: true });
-    expect(withFlag.autoConfirmOnSilence).toBe(true);
-  });
-
-  it('a fresh room has no completionReason until it is completed', () => {
-    const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    expect(room.completionReason).toBeNull();
-    expect(room.completionReferenceMessageId).toBeNull();
-  });
-
-  it('recordCompletion sets status, reason and the optional reference message id', () => {
-    const db = createTestDb();
-    const manual = createRoom(db, 'a', ['codex'], 'sequential');
-    recordCompletion(db, manual.id, 'manual');
-    expect(getRoom(db, manual.id)).toMatchObject({ status: 'completed', completionReason: 'manual', completionReferenceMessageId: null });
-
-    const auto = createRoom(db, 'b', ['codex'], 'sequential', { autoConfirmOnSilence: true });
-    recordCompletion(db, auto.id, 'auto_silence', 7);
-    expect(getRoom(db, auto.id)).toMatchObject({ status: 'completed', completionReason: 'auto_silence', completionReferenceMessageId: 7 });
-  });
-
   it('increaseMaxSessions adds to the existing limit', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
@@ -118,6 +92,32 @@ describe('rooms', () => {
       { agentId: 'claude', registryKey: 'claude' },
     ]);
   });
+
+  it('a new room starts with no pending flags', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    expect(room).toMatchObject({ dispatchPending: false, pendingAuthorId: null });
+    expect(getRoomAgents(db, room.id)[0].directedPending).toBe(false);
+  });
+
+  it('setDispatchPending records the latest author while set and clears both columns when unset', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    setDispatchPending(db, room.id, true, 'human');
+    setDispatchPending(db, room.id, true, 'codex');
+    expect(getRoom(db, room.id)).toMatchObject({ dispatchPending: true, pendingAuthorId: 'codex' });
+    setDispatchPending(db, room.id, false);
+    expect(getRoom(db, room.id)).toMatchObject({ dispatchPending: false, pendingAuthorId: null });
+  });
+
+  it('setDirectedPending only touches the given agent', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    setDirectedPending(db, room.id, 'claude', true);
+    expect(getRoomAgents(db, room.id).map((a) => a.directedPending)).toEqual([false, true]);
+    setDirectedPending(db, room.id, 'claude', false);
+    expect(getRoomAgents(db, room.id).map((a) => a.directedPending)).toEqual([false, false]);
+  });
 });
 
 describe('assignInstanceIds', () => {
@@ -140,12 +140,12 @@ describe('deleteRoom', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const session = createSession(db, room.id, 'codex');
-    const first = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'fact', type: 'fact' }).message;
+    const first = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'fact', type: 'fact' });
     const chain = insertMessage(db, {
       roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'chain', type: 'chain',
       referencedMessageIds: [first.id],
-    }).message;
-    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'reaction', type: 'endorse', targetMessageId: first.id });
+    });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'reaction', type: 'challenge', targetMessageId: first.id });
 
     deleteRoom(db, room.id);
 
@@ -153,7 +153,7 @@ describe('deleteRoom', () => {
     expect(listSessions(db, room.id)).toHaveLength(0);
     expect(getMessagesByType(db, room.id, 'fact')).toHaveLength(0);
     expect(getRoomAgents(db, room.id)).toHaveLength(0);
-    expect(getAnnotations(db, first.id)).toHaveLength(0);
+    expect(getRoomMessages(db, room.id)).toHaveLength(0);
     expect(chain.id).toBeGreaterThan(first.id);
   });
 });

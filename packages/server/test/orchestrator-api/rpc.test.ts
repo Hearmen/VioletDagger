@@ -6,9 +6,10 @@ import path from 'node:path';
 import { createTestDb } from '../../src/storage/db';
 import { createRoom, setAgentState, setAgentEnabled, getRoomAgents } from '../../src/storage/rooms';
 import { createSession, finishSession, getSession } from '../../src/storage/sessions';
-import { insertMessage } from '../../src/storage/messages';
+import { insertMessage, getMessageById } from '../../src/storage/messages';
 import { createStuckCounter, createFailureCounter } from '../../src/orchestrator-core';
 import { createRpcHandlers } from '../../src/orchestrator-api/rpc';
+import { roomEvents as realRoomEvents } from '../../src/events';
 
 function setup() {
   const db = createTestDb();
@@ -34,40 +35,38 @@ describe('createRpcHandlers', () => {
     expect(result.messages).toHaveLength(1);
   });
 
-  it('postHumanMessage inserts with authorId "human" and no sessionSeq, emits message, and triggers dispatch', () => {
-    const { room, roomEvents, startSession, handlers } = setup();
+  it('postHumanMessage writes the first message as the open_question goal, emits message, and triggers dispatch', () => {
+    const { room, startSession, handlers } = setup();
     const messageEvents: any[] = [];
-    roomEvents.on('message', (e) => messageEvents.push(e));
-
-    const result: any = handlers.postHumanMessage({ content: 'the goal' });
-
-    expect(result.messageId).toBeGreaterThan(0);
-    expect(messageEvents[0].message.authorId).toBe('human');
-    expect(messageEvents[0].message.sessionSeq).toBeNull();
-    expect(startSession).toHaveBeenCalledWith({ roomId: room.id, seq: 1, agentId: 'codex', registryKey: 'codex' });
+    const listener = (e: any) => messageEvents.push(e);
+    realRoomEvents.on('message', listener);
+    try {
+      const result: any = handlers.postHumanMessage({ content: 'the goal', type: 'fact' });
+      expect(result.messageId).toBe(1);
+      expect(messageEvents[0].message).toMatchObject({ authorId: 'human', sessionSeq: null, type: 'open_question', questionStatus: 'OPEN' });
+      expect(startSession).toHaveBeenCalledWith({ roomId: room.id, seq: 1, agentId: 'codex', registryKey: 'codex' });
+    } finally {
+      realRoomEvents.off('message', listener);
+    }
   });
 
-  it('postHumanMessage emits memoryUpdate with the superseded exploring message id', () => {
-    const { room, roomEvents, handlers } = setup();
-    const memoryUpdateEvents: any[] = [];
-    roomEvents.on('memoryUpdate', (e) => memoryUpdateEvents.push(e));
-
-    const first: any = handlers.postHumanMessage({ content: 'first exploring', type: 'exploring' });
-    const second: any = handlers.postHumanMessage({ content: 'second exploring', type: 'exploring' });
-
-    expect(memoryUpdateEvents).toHaveLength(1);
-    expect(memoryUpdateEvents[0]).toEqual({ roomId: room.id, messageId: first.messageId });
-    expect(second.messageId).toBeGreaterThan(first.messageId);
+  it('postHumanMessage passes verify fields to the core, which transitions the target', () => {
+    const { db, room, handlers } = setup();
+    const goal: any = handlers.postHumanMessage({ content: 'goal' });
+    const h: any = handlers.postHumanMessage({ content: 'guess', type: 'hypothesis', targetMessageId: goal.messageId });
+    handlers.postHumanMessage({ content: 'checked', type: 'verify', targetMessageId: h.messageId, verifyVerdict: true });
+    expect(getMessageById(db, room.id, h.messageId)!.type).toBe('fact');
   });
 
-  it('postHumanMessage rejects a targetMessageId that belongs to another room', () => {
+  it('postHumanMessage turns core validation errors into 400 ApiErrors', () => {
     const { db, handlers } = setup();
+    handlers.postHumanMessage({ content: 'goal' });
     const other = createRoom(db, 'other', ['codex'], 'sequential');
     const otherMessage = insertMessage(db, { roomId: other.id, sessionSeq: null, authorId: 'human', content: 'x', type: 'fact' });
 
     expect(() =>
-      handlers.postHumanMessage({ content: 'endorse', type: 'endorse', targetMessageId: otherMessage.message.id }),
-    ).toThrow(/not found in room/);
+      handlers.postHumanMessage({ content: 'doubt', type: 'challenge', targetMessageId: otherMessage.id + 5 }),
+    ).toThrow(expect.objectContaining({ status: 400, message: expect.stringMatching(/not found in room/) }));
   });
 
   // @ 定向消息（需求 3.3.2，人类专属）。用假时钟保证 createSession 与 postHumanMessage 的
@@ -76,18 +75,20 @@ describe('createRpcHandlers', () => {
     vi.useFakeTimers();
     try {
       const { db, room, startSession, handlers } = setup();
-      // consume the initial dispatch opportunity so codex isn't picked by broadcast rules.
-      createSession(db, room.id, 'codex');
+      handlers.postHumanMessage({ content: 'goal' });
+      // consume the goal's dispatch opportunity for both agents so neither is picked by broadcast rules.
+      setAgentState(db, room.id, 'codex', 'idle');
       createSession(db, room.id, 'claude');
       startSession.mockClear();
       vi.advanceTimersByTime(5);
 
-      const result: any = handlers.postHumanMessage({ content: 'just for you', targetAgentId: 'claude' });
+      const result: any = handlers.postHumanMessage({ content: 'just for you', type: 'open_question', targetAgentId: 'claude' });
 
       expect(db.prepare('SELECT target_agent_id FROM messages WHERE room_id = ? AND id = ?').get(room.id, result.messageId))
         .toEqual({ target_agent_id: 'claude' });
       // startSession（agent 视角）不携带 dispatchScope——定向和广播对 agent 来说完全一样；
       // 真正的"这次是定向派发"只落在 sessions.dispatch_scope，供调度层自己用（见需求 3.3.2）。
+      expect(startSession).toHaveBeenCalledTimes(1);
       expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'claude' }));
       const seq = startSession.mock.calls[0][0].seq;
       expect(getSession(db, room.id, seq)!.dispatchScope).toBe('directed');
@@ -98,6 +99,7 @@ describe('createRpcHandlers', () => {
 
   it('postHumanMessage rejects a targetAgentId that is not an agent in this room', () => {
     const { handlers } = setup();
+    handlers.postHumanMessage({ content: 'goal' });
 
     expect(() => handlers.postHumanMessage({ content: 'hi', targetAgentId: 'nonexistent' })).toThrow(/not an agent in this room/);
   });
@@ -130,57 +132,37 @@ describe('createRpcHandlers', () => {
     expect(codexStatus.failureCount).toBe(0);
   });
 
-  it('caughtUp is true for an idle agent with no pending trigger, false once a trigger is unconsumed', () => {
-    const { db, room, handlers } = setup();
-    let status: any = handlers.getRoomStatus();
-    expect(status.agents.find((a: any) => a.agentId === 'codex').caughtUp).toBe(true);
-
-    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'claude', content: 'x', type: 'fact' });
-    status = handlers.getRoomStatus();
-    expect(status.agents.find((a: any) => a.agentId === 'codex').caughtUp).toBe(false);
-  });
-
-  it('caughtUp is false for a running or stopping agent regardless of triggers', () => {
-    const { db, room, handlers } = setup();
-    const s1 = createSession(db, room.id, 'codex');
-    setAgentState(db, room.id, 'codex', 'running', s1.seq);
-    const status: any = handlers.getRoomStatus();
-    expect(status.agents.find((a: any) => a.agentId === 'codex').caughtUp).toBe(false);
-  });
-
-  it('allCaughtUp is false for a brand new room even though every agent is trivially caught up', () => {
+  it('getRoomStatus carries no completion reason or caught-up hints', () => {
     const { handlers } = setup();
+    handlers.confirmCompletion({});
     const status: any = handlers.getRoomStatus();
-    expect(status.allCaughtUp).toBe(false);
+    expect(status.status).toBe('completed');
+    expect(status).not.toHaveProperty('completionReason');
+    expect(status).not.toHaveProperty('allCaughtUp');
+    expect(status.agents[0]).not.toHaveProperty('caughtUp');
   });
 
-  it('allCaughtUp is true once every enabled agent is idle+caughtUp and at least one session has run', () => {
+  it('getRoomStatus reports dispatchIdle and the number of disabled agents', () => {
     const { db, room, handlers } = setup();
-    const s1 = createSession(db, room.id, 'codex');
-    finishSession(db, room.id, s1.seq, 'passed');
-    const status: any = handlers.getRoomStatus();
-    expect(status.allCaughtUp).toBe(true);
-  });
-
-  it('allCaughtUp ignores a disabled agent that is still running and not caught up', () => {
-    const { db, room, handlers } = setup();
-    const codexSession = createSession(db, room.id, 'codex');
-    finishSession(db, room.id, codexSession.seq, 'passed');
-    const claudeSession = createSession(db, room.id, 'claude');
-    setAgentState(db, room.id, 'claude', 'running', claudeSession.seq);
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'chat' });
     setAgentEnabled(db, room.id, 'claude', false);
     const status: any = handlers.getRoomStatus();
-    expect(status.allCaughtUp).toBe(true);
+    expect(status.dispatchIdle).toBe(true);
+    expect(status.disabledAgentCount).toBe(1);
   });
 
-  it('allCaughtUp is false when there are no enabled agents at all', () => {
+  it('postHumanMessage rejects exploring', () => {
+    const { handlers } = setup();
+    const goal: any = handlers.postHumanMessage({ content: 'goal' });
+    expect(() => handlers.postHumanMessage({ content: 'e', type: 'exploring', targetMessageId: goal.messageId }))
+      .toThrow(expect.objectContaining({ status: 400 }));
+  });
+
+  it('currentSessionCount counts error sessions too', () => {
     const { db, room, handlers } = setup();
     const s1 = createSession(db, room.id, 'codex');
-    finishSession(db, room.id, s1.seq, 'passed');
-    setAgentEnabled(db, room.id, 'codex', false);
-    setAgentEnabled(db, room.id, 'claude', false);
-    const status: any = handlers.getRoomStatus();
-    expect(status.allCaughtUp).toBe(false);
+    finishSession(db, room.id, s1.seq, 'error');
+    expect((handlers.getRoomStatus() as any).currentSessionCount).toBe(1);
   });
 
   it('setAgentEnabled disables an agent and returns ok', () => {
@@ -264,18 +246,5 @@ describe('createRpcHandlers', () => {
     expect(handlers.pauseRoom({})).toEqual({ ok: true });
     expect(handlers.resumeRoom({})).toEqual({ ok: true });
     expect(handlers.confirmCompletion({})).toEqual({ ok: true });
-  });
-
-  it('getRoomStatus omits completionReason for an active room and reports it once completed', () => {
-    const { handlers } = setup();
-    const beforeStatus: any = handlers.getRoomStatus();
-    expect(beforeStatus.completionReason).toBeUndefined();
-    expect(beforeStatus.completionReferenceMessageId).toBeUndefined();
-
-    handlers.confirmCompletion({});
-
-    const afterStatus: any = handlers.getRoomStatus();
-    expect(afterStatus.completionReason).toBe('manual');
-    expect(afterStatus.completionReferenceMessageId).toBeUndefined();
   });
 });

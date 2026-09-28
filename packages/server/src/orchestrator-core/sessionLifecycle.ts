@@ -1,13 +1,13 @@
 import type Database from 'better-sqlite3';
 import {
   getSession, finishSession, setAgentState, getMessagesBySession, insertMessage, getRoomAgents,
-  getActiveExploring, completeExploring, markSessionTerminating, markSessionCleanupStarted, appendSessionEvent,
-  setAgentEnabled,
+  getActiveExploringByAuthor, completeExploring, markSessionTerminating, markSessionCleanupStarted, appendSessionEvent,
+  setAgentEnabled, setDispatchPending, setDirectedPending,
 } from '../storage';
 import { roomEvents } from '../events';
 import type { SessionExitEvent, StopResult } from '../agent-invocation';
 import { checkAndDispatch, type StartSession } from './dispatch';
-import type { StuckCounter } from './stuckCounter';
+import { resetStuckCount, type StuckCounter } from './stuckCounter';
 import { FAILURE_THRESHOLD, type FailureCounter } from './failureCounter';
 
 export type StopSessionProcess = (roomId: number, seq: number) => Promise<StopResult>;
@@ -48,11 +48,11 @@ function writeOutcomePlaceholder(
 ): void {
   const content =
     outcome === 'passed'
-      ? `Agent ${agentId} 的 session #${seq} 未发出任何实质消息`
+      ? `Agent ${agentId} 的 session #${seq} 未发出任何带类型的消息`
       : outcome === 'error'
         ? `Agent ${agentId} 的 session #${seq} 异常退出`
         : `Agent ${agentId} 的 session #${seq} 被人工终止`;
-  const { message } = insertMessage(db, { roomId, sessionSeq: seq, authorId: agentId, content });
+  const message = insertMessage(db, { roomId, sessionSeq: seq, authorId: agentId, content });
   roomEvents.emit('message', { roomId, message });
 }
 
@@ -78,11 +78,19 @@ export function onSessionEnded(
     outcome = 'error';
   }
 
-  finishSession(db, event.roomId, event.seq, outcome, event.rawLogPath || undefined, {
-    exitCode: event.exitCode,
-    signal: event.signal,
-    exitCause: event.exitCause,
-  }, event.usage);
+  db.transaction(() => {
+    finishSession(db, event.roomId, event.seq, outcome, event.rawLogPath || undefined, {
+      exitCode: event.exitCode,
+      signal: event.signal,
+      exitCause: event.exitCause,
+    }, event.usage);
+    // error 结束时恢复这次 session 消耗的标记（03 §1.2"置位"第 2 条）：广播派发的恢复房间标记，
+    // 标记作者记为失败的 agent，下一次优先派给其他 agent；定向派发的恢复它自己的定向标记。
+    if (outcome === 'error') {
+      if (session.dispatchScope === 'directed') setDirectedPending(db, event.roomId, event.agentId, true);
+      else setDispatchPending(db, event.roomId, true, event.agentId);
+    }
+  })();
   appendSessionEvent(db, event.roomId, event.seq, 'process_exited', undefined, event.cleanupAttemptId);
   if (terminated) {
     appendSessionEvent(db, event.roomId, event.seq, 'terminated', undefined, event.cleanupAttemptId);
@@ -157,10 +165,10 @@ export async function terminateAgentSession(
   }
 
   // 人类强制完成该 agent 当前 active 的 exploring（03 §3 第 3 步）。
-  const activeExploring = getActiveExploring(db, roomId).find((m) => m.authorId === session.agentId);
+  const activeExploring = getActiveExploringByAuthor(db, roomId, session.agentId);
   if (activeExploring) {
-    completeExploring(db, roomId, activeExploring.id, '人类强制终止');
-    stuckCounter.reset(roomId, session.agentId);
+    completeExploring(db, roomId, activeExploring.id, { reason: 'human_terminated', note: '人类强制终止' });
+    resetStuckCount(stuckCounter, roomId, session.agentId);
     roomEvents.emit('memoryUpdate', { roomId, messageId: activeExploring.id });
   }
 

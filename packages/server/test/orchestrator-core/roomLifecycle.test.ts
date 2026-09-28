@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createTestDb } from '../../src/storage/db';
-import { createRoom, getRoom, getRoomAgents, setRoomStatus, setAgentState } from '../../src/storage/rooms';
+import { createRoom, getRoom, getRoomAgents, setRoomStatus, setAgentState, setDispatchPending } from '../../src/storage/rooms';
 import { createSession, getSession, listSessions } from '../../src/storage/sessions';
 import { insertMessage, getMessagesByType } from '../../src/storage/messages';
 import { createStuckCounter } from '../../src/orchestrator-core/stuckCounter';
@@ -45,7 +45,8 @@ describe('room lifecycle', () => {
   it('resumeRoom from paused_manual reactivates and dispatches without requiring additionalSessions', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal' });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
+    setDispatchPending(db, room.id, true, 'human');
     pauseRoom(db, room.id);
     const startSession = vi.fn();
 
@@ -67,12 +68,12 @@ describe('room lifecycle', () => {
     expect(getRoom(db, room.id)!.maxSessions).toBe(25);
   });
 
-  it('confirmCompletion sets status to completed with reason manual and no reference message', () => {
+  it('confirmCompletion sets status to completed', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     confirmCompletion(db, room.id);
     expect(getRoom(db, room.id)).toMatchObject({
-      status: 'completed', completionReason: 'manual', completionReferenceMessageId: null,
+      status: 'completed',
     });
   });
 });

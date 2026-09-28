@@ -7,7 +7,7 @@ import {
   createFailureCounter,
   onSessionEnded as orchestratorOnSessionEnded,
   onSessionExitProgress as orchestratorOnSessionExitProgress,
-  onSubstantiveMessagePosted,
+  submitMessage,
   resetStuckCount,
   deleteRoom as orchestratorDeleteRoom,
   roomEvents,
@@ -82,9 +82,7 @@ export function composeApp(config: AppConfig): App {
   const mcpServer = createMcpServer({
     db,
     roomEvents,
-    onSubstantiveMessagePosted: (roomId) => {
-      onSubstantiveMessagePosted(db, roomId, startSession, stuckCounter);
-    },
+    submitMessage: (input) => submitMessage(db, input, startSession, stuckCounter),
     resetStuckCount: (roomId, agentId) => {
       resetStuckCount(stuckCounter, roomId, agentId);
     },

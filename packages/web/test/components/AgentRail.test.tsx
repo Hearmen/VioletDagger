@@ -6,7 +6,7 @@ import type { RoomStatusPayload, UsageTotals } from '../../src/api/types';
 const noop = () => {};
 
 function makeAgent(overrides: Partial<RoomStatusPayload['agents'][number]> = {}): RoomStatusPayload['agents'][number] {
-  return { agentId: 'codex', state: 'idle', caughtUp: false, enabled: true, failureCount: 0, ...overrides };
+  return { agentId: 'codex', state: 'idle', enabled: true, failureCount: 0, ...overrides };
 }
 
 function makeUsage(overrides: Partial<UsageTotals> = {}): UsageTotals {
@@ -75,20 +75,9 @@ describe('AgentRail', () => {
     expect(onOpenSession).toHaveBeenCalledWith(7);
   });
 
-  it('shows "completed" instead of "idle" when the agent is idle and caught up', () => {
-    renderRail([makeAgent({ state: 'idle', caughtUp: true })]);
-    expect(screen.getByTestId('agent-codex')).toHaveTextContent('completed');
-    expect(screen.getByTestId('agent-codex')).not.toHaveTextContent('idle');
-  });
-
-  it('shows plain "idle" when the agent is idle but still owed a dispatch (queued behind another agent)', () => {
-    renderRail([makeAgent({ state: 'idle', caughtUp: false })]);
+  it('shows the raw agent state (idle/running) without any derived "completed" label', () => {
+    renderRail([makeAgent({ state: 'idle' })]);
     expect(screen.getByTestId('agent-codex')).toHaveTextContent('idle');
-  });
-
-  it('never shows "completed" for a running agent even if caughtUp were somehow true', () => {
-    renderRail([makeAgent({ state: 'running', caughtUp: true, sessionId: 1, sessionStartedAt: new Date().toISOString() })]);
-    expect(screen.getByTestId('agent-codex')).toHaveTextContent('running');
     expect(screen.getByTestId('agent-codex')).not.toHaveTextContent('completed');
   });
 

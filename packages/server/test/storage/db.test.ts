@@ -3,65 +3,54 @@ import { createTestDb, createDb } from '../../src/storage/db';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRoom, getRoom, recordCompletion } from '../../src/storage/rooms';
+import { createRoom, getRoom, listRooms } from '../../src/storage/rooms';
 import { insertMessage, getMessageById } from '../../src/storage/messages';
 
 describe('createTestDb', () => {
-  it('adds exploration fields to existing databases without changing historical messages', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'violet-memory-migration-'));
+  it('keeps data across reopen when the schema is current', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'violet-schema-current-'));
     const file = join(dir, 'test.db');
     try {
       const first = createDb(file);
-      const room = createRoom(first, 'old', ['codex'], 'sequential');
-      const { message } = insertMessage(first, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'legacy hypothesis', type: 'hypothesis' });
-      first.exec('ALTER TABLE messages DROP COLUMN exploring_end_reason');
-      first.exec('ALTER TABLE messages DROP COLUMN exploring_result_summary');
-      first.exec('ALTER TABLE messages DROP COLUMN exploring_result_message_ids');
+      const room = createRoom(first, 'current', ['codex'], 'sequential');
+      const message = insertMessage(first, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
       first.close();
-      const migrated = createDb(file);
-      const stored = getMessageById(migrated, room.id, message.id)!;
-      expect(stored.content).toBe('legacy hypothesis');
-      expect(stored.targetMessageId).toBeNull();
-      expect(stored.exploringEndReason).toBeNull();
-      expect(stored.exploringResultMessageIds).toEqual([]);
-      migrated.close();
       const reopened = createDb(file);
-      expect(getMessageById(reopened, room.id, message.id)).toEqual(stored);
+      expect(getRoom(reopened, room.id)!.name).toBe('current');
+      expect(getMessageById(reopened, room.id, message.id)).toEqual(message);
       reopened.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
-  it('backfills auto_confirm_on_silence/completion_reason on legacy rooms without a manual migration', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'violet-completion-migration-'));
+
+  it.each([
+    ['a knowledge-state column is missing', (db: ReturnType<typeof createDb>) => db.exec('ALTER TABLE messages DROP COLUMN chain_resolution')],
+    ['the state_transition_log table is missing', (db: ReturnType<typeof createDb>) => db.exec('DROP TABLE state_transition_log')],
+    ['the room flag columns are missing', (db: ReturnType<typeof createDb>) => db.exec('ALTER TABLE rooms DROP COLUMN pending_author_id')],
+    ['the directed flag column is missing', (db: ReturnType<typeof createDb>) => db.exec('ALTER TABLE room_agents DROP COLUMN directed_pending')],
+  ])('rebuilds the whole database when %s', (_label, corrupt) => {
+    const dir = mkdtempSync(join(tmpdir(), 'violet-schema-rebuild-'));
     const file = join(dir, 'test.db');
     try {
       const first = createDb(file);
-      const active = createRoom(first, 'still active', ['codex'], 'sequential');
-      const completed = createRoom(first, 'already done', ['codex'], 'sequential');
-      recordCompletion(first, completed.id, 'manual');
-      first.exec('ALTER TABLE rooms DROP COLUMN auto_confirm_on_silence');
-      first.exec('ALTER TABLE rooms DROP COLUMN completion_reason');
-      first.exec('ALTER TABLE rooms DROP COLUMN completion_reference_message_id');
+      createRoom(first, 'old', ['codex'], 'sequential');
+      corrupt(first);
       first.close();
-
-      const migrated = createDb(file);
-      // 老库一律按"从未开启过"补齐（见 01-storage.md §5.6）。
-      expect(getRoom(migrated, active.id)).toMatchObject({ autoConfirmOnSilence: false, completionReason: null });
-      // 老库里已经 completed 的房间在这个功能存在之前只可能是人工确认的，回填为 'manual'，不留空白。
-      expect(getRoom(migrated, completed.id)).toMatchObject({
-        status: 'completed', autoConfirmOnSilence: false, completionReason: 'manual', completionReferenceMessageId: null,
-      });
-      migrated.close();
+      const rebuilt = createDb(file);
+      expect(listRooms(rebuilt)).toEqual([]);
+      const columns = (rebuilt.prepare('PRAGMA table_info(messages)').all() as { name: string }[]).map((c) => c.name);
+      expect(columns).toEqual(expect.arrayContaining(['question_status', 'chain_status', 'chain_resolution', 'question_closed_by']));
+      rebuilt.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it('creates all tables including session_events', () => {
+  it('creates all tables including session_events and state_transition_log', () => {
     const db = createTestDb();
     const tables = db
       .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
       .all()
       .map((r: any) => r.name);
     expect(tables).toEqual([
-      'message_references', 'messages', 'room_agents', 'rooms', 'session_events', 'sessions',
+      'message_references', 'messages', 'room_agents', 'rooms', 'session_events', 'sessions', 'state_transition_log',
     ]);
   });
 });

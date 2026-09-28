@@ -24,7 +24,8 @@ vi.mock('../../src/components/SessionLogView', () => ({
 }));
 
 const emptyMemory: MemoryViewPayload = {
-  facts: [], boundaries: [], openQuestions: [], chains: [], hypotheses: [], exploring: [],
+  goalMessageId: null, openQuestions: [], hypotheses: [], facts: [], boundaries: [], chains: [],
+  exploring: [], completionProposals: [], challenges: [], verifies: [], transitions: {},
 };
 
 const emptyUsageTotals: UsageTotals = {
@@ -35,8 +36,11 @@ const emptyUsageTotals: UsageTotals = {
 function makeMessage(overrides: Partial<Message> = {}): Message {
   return {
     id: 1, roomId: 1, sessionSeq: null, authorId: 'human', type: null, content: 'hi',
-    summary: 'hi', targetMessageId: null, referencedMessageIds: [], exploringStatus: null,
-    exploringNote: null, createdAt: 'now', ...overrides,
+    summary: 'hi', targetMessageId: null, targetAgentId: null, referencedMessageIds: [],
+    questionStatus: null, questionCloseReason: null, questionClosedBy: null,
+    chainStatus: null, closesQuestion: false, chainResolution: null, verifyVerdict: null,
+    exploringStatus: null, exploringNote: null, exploringEndReason: null,
+    exploringResultSummary: null, exploringResultMessageIds: [], createdAt: 'now', ...overrides,
   };
 }
 
@@ -61,7 +65,7 @@ describe('RoomDashboardPage', () => {
 
   function defaultCall(method: string) {
     if (method === 'getRoomStatus') {
-      return Promise.resolve<RoomStatusPayload>({ currentSessionCount: 1, status: 'active', allCaughtUp: false, agents: [] });
+      return Promise.resolve<RoomStatusPayload>({ currentSessionCount: 1, status: 'active', dispatchIdle: false, disabledAgentCount: 0, agents: [] });
     }
     if (method === 'listMessages') return Promise.resolve({ messages: [], nextCursor: null });
     if (method === 'getMemoryView') return Promise.resolve(emptyMemory);
@@ -73,8 +77,7 @@ describe('RoomDashboardPage', () => {
   beforeEach(() => {
     vi.mocked(rest.fetchRoom).mockResolvedValue({
       id: 1, name: 'room a', schedulingMode: 'sequential', status: 'active',
-      completionReason: null, completionReferenceMessageId: null,
-      maxSessions: 20, workdir: '/tmp/work', autoConfirmOnSilence: false, createdAt: 'now',
+      maxSessions: 20, workdir: '/tmp/work', createdAt: 'now',
     });
     call.mockReset();
     call.mockImplementation(defaultCall);
@@ -113,6 +116,32 @@ describe('RoomDashboardPage', () => {
     );
   });
 
+  it('shows the first-message hint while the room is empty', async () => {
+    renderPage();
+    expect(await screen.findByText('第一条消息就是任务目标')).toBeInTheDocument();
+  });
+
+  it('replaces a loaded message with its latest version on memoryUpdate', async () => {
+    const hypothesis = makeMessage({ id: 2, type: 'hypothesis', content: 'a guess', targetMessageId: 1 });
+    const goal = makeMessage({ id: 1, type: 'open_question', questionStatus: 'OPEN', content: 'goal' });
+    let memory: MemoryViewPayload = { ...emptyMemory, goalMessageId: 1, openQuestions: [goal], hypotheses: [hypothesis] };
+    call.mockImplementation((method: string) => {
+      if (method === 'listMessages') return Promise.resolve({ messages: [goal, hypothesis], nextCursor: null });
+      if (method === 'getMemoryView') return Promise.resolve(memory);
+      return defaultCall(method);
+    });
+    renderPage();
+    await waitFor(() => expect(document.querySelector('[data-message-id="2"] .type-badge')).toHaveTextContent('hypothesis'));
+
+    memory = { ...memory, hypotheses: [], facts: [{ ...hypothesis, type: 'fact' }] };
+    handlers.memoryUpdate({ messageId: 2 });
+
+    await waitFor(() => {
+      const row = document.querySelector('[data-message-id="2"]')!;
+      expect(row.querySelector('.type-badge')).toHaveTextContent('fact');
+    });
+  });
+
   it('shows a toast when postHumanMessage fails', async () => {
     call.mockImplementation((method: string) =>
       method === 'postHumanMessage' ? Promise.reject(new Error('rpc failed')) : defaultCall(method),
@@ -147,10 +176,9 @@ describe('RoomDashboardPage', () => {
     call.mockImplementation((method: string) => {
       if (method === 'getRoomStatus') {
         return Promise.resolve<RoomStatusPayload>({
-          currentSessionCount: 1,
+          currentSessionCount: 1, dispatchIdle: false, disabledAgentCount: 0,
           status: 'completed',
-          allCaughtUp: false,
-          agents: [{ agentId: 'claude', state: 'running', caughtUp: false, sessionId: 3, sessionStartedAt: new Date().toISOString() }],
+          agents: [{ agentId: 'claude', state: 'running', sessionId: 3, sessionStartedAt: new Date().toISOString() }],
         });
       }
       return defaultCall(method);
@@ -169,10 +197,9 @@ describe('RoomDashboardPage', () => {
     call.mockImplementation((method: string) => {
       if (method === 'getRoomStatus') {
         return Promise.resolve<RoomStatusPayload>({
-          currentSessionCount: 1,
+          currentSessionCount: 1, dispatchIdle: false, disabledAgentCount: 0,
           status: 'active',
-          allCaughtUp: false,
-          agents: [{ agentId: 'claude', state: 'running', caughtUp: false, sessionId: 7, sessionStartedAt: now }],
+          agents: [{ agentId: 'claude', state: 'running', sessionId: 7, sessionStartedAt: now }],
         });
       }
       if (method === 'getSessionDetail') {
@@ -226,7 +253,7 @@ describe('RoomDashboardPage', () => {
     renderPage();
     await screen.findByText('room a');
 
-    fireEvent.click(await screen.findByText('codex #4 · passed'));
+    fireEvent.click(await screen.findByText('codex #4 · passed · 00:00'));
 
     await waitFor(() => expect(call).toHaveBeenCalledWith('getSessionDetail', { sessionId: 4 }));
     expect(await screen.findByRole('dialog', { name: 'session detail' })).toBeInTheDocument();

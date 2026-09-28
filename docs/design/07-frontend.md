@@ -100,6 +100,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - `completed`：pause/resume/confirm 控制隐藏，顶栏显示"已结束 · 只读"，并保留一个 `Delete Room` 按钮（`--danger` 描边 + 二次确认弹窗）——只有 completed 房间可删；删除成功后跳回 `/`。
 - 连接状态：`disconnected` 时顶栏下方压一条 `--danger` 且不可关闭的提示条"连接已断开，正在重连…"；`connecting` 时右侧一个呼吸圆点。
 - **`propose_completion` 提醒**：已加载消息中存在 `propose_completion` 且房间未 `completed` 时，顶栏下方再压一条可关闭的 `role="alert"` 提醒条"有 agent 提议完成这个房间"，并提供跳转到该消息的锚点。用户关闭后，直到下一条新的 `propose_completion` 到达前不再出现。该提醒由前端从已加载消息流派生，不需要额外接口或状态管理；消息流分页导致更早的提议不在窗口内时不显示，这是可接受的降级。
+- **无任务派发提醒**：`getRoomStatus().dispatchIdle === true` 时，在顶栏下方显示一条可关闭的 `role="alert"` 提醒条"当前没有任务可派发：所有 agent 均空闲，且没有待处理的触发型消息"。`disabledAgentCount > 0` 时追加"（N 个 agent 已停用派发）"。关闭后，要等 `dispatchIdle` 先变回 false、再重新变为 true 时才再次出现。
 
 ## 5. AgentRail
 
@@ -151,7 +152,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - **首条消息**：房间还没有任何消息时，Composer 顶部显示提示"第一条消息就是任务目标"，类型固定为 `open_question`（类型选择器和 @ 候选都不显示），发送时不带 `type`，由服务端强制写为 `open_question`（`03-orchestrator-core.md` §1.4）。
 - **默认即纯聊天**：之后初始只有文本框 + 发送按钮，发出的消息 `type` 为空；无 type 的消息不触发调度（需求 3.3）。
 - **类型选择器按需展开**：文本框左侧一个不显眼的"＋ 类型"按钮，点击展开；选中后按钮显示该类型徽标，可一键清除回到纯聊天。
-- **不需要目标的类型**：`open_question`、`fact`、`boundary`（fact/boundary 未选目标时即为不挂在问题下的知识）。
+- **不需要目标的类型**：`open_question`、`fact`、`boundary`、`propose_completion`（fact/boundary 未选目标时即为不挂在问题下的知识）。
 - **需要目标的类型**：点选一条消息（§6"目标选择"）后，按目标的当前 type 与状态追加可选类型，规则与服务端校验一致（`03-orchestrator-core.md` §1.4）：
   - 目标为 `OPEN` 或 `CLOSED` 的 `open_question`：`hypothesis`、`fact`、`boundary`、`chain`。
   - 目标为 `fact`/`boundary`：`challenge`。
@@ -159,7 +160,18 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
   - 目标为 `chain`：`CANDIDATE` 时 `verify`、`challenge`；`VERIFIED`/`REJECT` 时 `challenge`；`CHALLENGED` 时 `verify`。
   - 取消目标（再点该消息或点 ✕）时移除这些选项，已选中的依赖目标的类型一并清空。
 - **附加字段**：选 `verify` 时显示二选一开关（目标为 hypothesis："成立 → fact / 不成立 → boundary"；目标为 chain："通过 / 驳回"），未选不可提交；选 `chain` 时显示"关闭该问题"勾选框，勾选后必须再选"已解决 / 无法解决"（`chainResolution`）。
-- `exploring`、`propose_completion` 不提供入口；`06-orchestrator-api.md` 的 `postHumanMessage` 仍接受全部 type，仅前端不给入口。
+- 人类可以发送除 `exploring` 外的全部 type（需求 3.5）；`exploring` 不提供入口。
+- **发送要求提示**：选中类型后，在 Composer 顶部显示一行 `--text-muted` 的"发送要求"，帮助人类按与 agent 相同的消息原则书写（需求 3.5）。文案取自 `04-agent-invocation.md` §2.1 记忆类型表的"发送要求"列，把字段名改成界面用语：
+  - `open_question`：应描述一个具体、可继续探索的问题
+  - `hypothesis`：针对所选问题的候选答案；存在依据但仍需验证的判断写成 hypothesis
+  - `fact`：必须有明确证据；直接回答某个问题时请先选中该问题
+  - `boundary`：必须说明为什么不可行、成立的条件和范围；单次尝试失败不能写成 boundary
+  - `chain`：一条从输入到输出的完整链路或答案；只有新路径或实质变化才发新 chain；认为足以关闭问题时勾选"关闭该问题"
+  - `challenge`：写明质疑点和依据
+  - `verify`：必须采用独立且有实质差异的方法，并给出结论
+  - `propose_completion`：只有 goal 已得到充分回答、且没有明显其他方向时发送
+
+  这些要求只做提示，不阻止发送。结构性约束由服务端校验，失败时 toast 展示错误并保留输入。
 - **@ 定向某个 agent**（需求 3.3.2，人类专属）：文本框内输入 `@` 弹出内联候选列表，按 `joinOrder` 列出当前房间的 agent 实例（颜色复用 `colorForAgent`），方向键/点击选中后插入 `@agentId ` 文本 token 并把 `targetAgentId` 记入组件状态；选中后 Composer 顶部追加一个"发送给 @agentId ✕"提示 chip（与"正在回复 #id ✕"chip 并列显示，可同时存在）；点 ✕ 或删除输入框里的 token 都清除该状态。未选类型或所选类型不是触发型时，chip 旁显示一行 `--text-muted` 提示"这条消息不会唤醒 @agentId"（触发型判定见 `03-orchestrator-core.md` §1.1），不阻止发送。房间没有 agent 时 `@` 不弹出候选。
 - `content` 用自适应高度 `textarea`（最多 8 行后内部滚动）；`Ctrl/Cmd + Enter` 发送。
 - 调用 `postHumanMessage({ content, type?, targetMessageId?, verifyVerdict?, closesQuestion?, chainResolution?, targetAgentId? })`（`referencedMessageIds`、`summary` 人类 UI 不产生，接口仍接受）；服务端校验失败时按 §15 toast 展示错误并保留输入；成功后由 `newMessage` 推送自然带回，**本地不做乐观插入**。发送成功后清空输入与选择状态。
@@ -192,7 +204,8 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - **消息节点**：类型徽标 + 作者（身份色）+ `HH:mm:ss` + 内容摘要，仅包含 `messages` 表里的正式房间消息（不含原始日志行）。
 - **session 标签**：agent 消息额外带一个 `agentId #seq` 标签（`sessionId` 见需求 4.2）；running/stopping 时只显示 `agentId #seq`，到达终态后从 `getEventTree().sessions` 按 `(agentId, seq)` 查到 outcome 追加显示。**展示文案与底层 `outcome` 值不是同一个词**——`outcome === 'completed'` 显示为 `done`，例如 `codex #1 · done`、`kimi #2 · passed`、`kimi #3 · error`；这是刻意的改写，房间级 `status === 'completed'`（房间头部状态徽标、房间列表卡片，见 §4/§11）在事件树里满屏都是 session 标签的情况下太容易和"这次 session 正常结束、发过实质消息"混成一回事，改用 `done` 避免视觉/语义撞车，底层数据和 API 字段名不变。点击这个标签 → `getSessionDetail({ sessionId })` 打开 `SessionDetailModal`（**复盘视图**，元数据 + 消息列表 + 只读日志回放；running session 也走这里，只是日志为当前快照，见 §10.2）。注意与 AgentRail 的 `LiveSessionModal`（§10.1，实时只读日志）是**两个不同的入口、两种不同的内容**。**人类消息没有这个标签**（没有 `sessionId`），用 human 色 + "人类"标签代替，与 agent 消息在样式上明显区分（需求 3.5）。
 - outcome 展示文案与配色：`completed`→`done`/`--ok`、`passed`→`passed`/`--warn`、`error`→`error`/`--danger`、`terminated`→`terminated`/`--accent`、`running`→身份色呼吸、`stopping`→等待色。
-- **用量后缀**：outcome 之后，`getEventTree().sessions` 里这条 session 的 `inputTokens`/`outputTokens` 都非 null 时追加 `· 12.3k tok`（两者之和的紧凑数字）；只要有一个是 null（如 kimi）就什么都不追加，不摆占位符。费用不放进这个标签（太挤），要看费用和 cache read/write 拆分点进 `SessionDetailModal`（见 §10.2）。
+- **运行时长后缀**：session 到达终态（`endedAt` 非 null）后，在 outcome 之后追加 `· 03:25`，值为 `getEventTree().sessions` 里这条 session 的 `endedAt − startedAt`，用 `formatDuration` 格式化（不足 1 小时显示 `mm:ss`，否则 `h:mm:ss`）。running/stopping 时不显示——正在运行的 session 的实时时长只在 AgentRail 的"已运行 HH:mm:ss"里展示（§5），事件树不每秒 tick。任一时间戳无法解析时不追加，不摆占位符。例如 `codex #1 · done · 03:25 · 12.3k tok`。
+- **用量后缀**：跟在运行时长之后，`getEventTree().sessions` 里这条 session 的 `inputTokens`/`outputTokens` 都非 null 时追加 `· 12.3k tok`（两者之和的紧凑数字）；只要有一个是 null（如 kimi）就什么都不追加，不摆占位符。费用不放进这个标签（太挤），要看费用和 cache read/write 拆分点进 `SessionDetailModal`（见 §10.2）。
 - `passed`/报错/人工终止且此前没有实质消息的情况，由编排器核心补写的系统占位消息（见需求 3.5、`03-orchestrator-core.md` §2）会作为一条普通消息节点出现在时间线上，旁边的 session 标签同样按上面规则显示 `· passed`/`· error`/`· terminated`——不需要额外的展示逻辑。
 - **关联线**：每个消息节点带 `data-message-id`；反应类消息（`challenge`/`verify`）和带 `referencedMessageIds` 的 `chain`，在节点旁用一层绝对定位的 SVG（贝塞尔曲线）连到目标节点；目标不在当前时间线内（未加载）时跳过。连线颜色取源消息类型徽标色，选中目标时高亮。主轴就是真实时间，源节点和目标节点通常本就相邻，连线不再需要跨越远距离的容器。
 - 空态：没有任何消息时显示"还没有任何事件"。

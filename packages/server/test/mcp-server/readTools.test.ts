@@ -11,10 +11,18 @@ describe('createGetOverviewHandler', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const s1 = createSession(db, room.id, 'codex');
-    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'human', content: 'the goal' });
+    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'human', content: 'the goal', type: 'open_question' });
 
     const getOverview = createGetOverviewHandler(db);
-    expect(getOverview({ roomId: room.id }).goal).toBe('the goal');
+    expect(getOverview({ roomId: room.id }).goal.question.summary).toBe('the goal');
+  });
+
+  it('returns a business error when the room has no goal yet', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const getOverview = createGetOverviewHandler(db);
+    expect(() => getOverview({ roomId: room.id })).toThrow(McpToolError);
+    expect(() => getOverview({ roomId: room.id })).toThrow('room has no goal yet');
   });
 
   it('rejects a missing room', () => {
@@ -29,7 +37,7 @@ describe('createGetDetailHandler', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
     const s1 = createSession(db, room.id, 'codex');
-    const { message } = insertMessage(db, {
+    const message = insertMessage(db, {
       roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'a fact', type: 'fact',
     });
 

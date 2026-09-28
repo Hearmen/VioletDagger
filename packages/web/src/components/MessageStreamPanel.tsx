@@ -1,25 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Message, MessageType } from '../api/types';
+import type { HumanMessageParams, Message, MessageType } from '../api/types';
 import { MessageTypeBadge } from './MessageTypeBadge';
-import { Composer } from './Composer';
+import { MessageStatusBadge } from './MessageStatusBadge';
+import { Composer, TARGET_ONLY_TYPES } from './Composer';
 import { Panel } from './Panel';
 import { authorInitial, authorLabel, colorForAgent, formatClock } from '../utils/format';
 
 const NEAR_BOTTOM_PX = 80;
-const REACTION_TYPES: MessageType[] = ['endorse', 'challenge', 'verify'];
 
 export function MessageStreamPanel(props: {
   messages: Message[];
   nextCursor: number | null;
   loadingEarlier?: boolean;
   onLoadEarlier: () => void;
-  onSend: (params: {
-    content: string;
-    type?: MessageType;
-    targetMessageId?: number;
-    targetAgentId?: string;
-  }) => void;
+  onSend: (params: HumanMessageParams) => Promise<unknown> | void;
   readOnly: boolean;
+  // 房间首条消息 id（goal），带"goal"标签（07-frontend.md §6）。
+  goalMessageId?: number | null;
+  // 房间还没有任何消息：Composer 进入"第一条消息就是任务目标"模式。
+  isFirstMessage?: boolean;
   jumpToMessageId?: number | null;
   onJumpHandled?: () => void;
   // 房间内可 @ 的 agent 实例标识，按 joinOrder（需求 3.2、3.3.2），转交给 Composer 渲染 @ 候选。
@@ -92,18 +91,17 @@ export function MessageStreamPanel(props: {
     }
   }
 
-  function clearReactionType() {
-    setType((current) => (REACTION_TYPES.includes(current as MessageType) ? '' : current));
+  // 取消或更换目标时，依赖目标的类型一并清空（07-frontend.md §7）。
+  function clearTargetDependentType() {
+    setType((current) => (TARGET_ONLY_TYPES.includes(current as MessageType) ? '' : current));
   }
 
   function toggleTarget(messageId: number) {
-    if (targetMessageId === messageId) {
-      setTargetMessageId(undefined);
-      clearReactionType();
-    } else {
-      setTargetMessageId(messageId);
-    }
+    clearTargetDependentType();
+    setTargetMessageId(targetMessageId === messageId ? undefined : messageId);
   }
+
+  const byId = new Map(props.messages.map((message) => [message.id, message]));
 
   function avatarClass(message: Message): string {
     if (message.authorId === 'human') return 'message__avatar--human';
@@ -154,6 +152,11 @@ export function MessageStreamPanel(props: {
                     {authorLabel(message.authorId)}
                   </span>
                   {message.type && <MessageTypeBadge type={message.type} />}
+                  <MessageStatusBadge
+                    message={message}
+                    targetType={message.targetMessageId != null ? byId.get(message.targetMessageId)?.type : undefined}
+                  />
+                  {props.goalMessageId === message.id && <span className="goal-tag">goal</span>}
                   {message.targetAgentId != null && (
                     <span className="ref-chip mono" style={{ color: colorForAgent(message.targetAgentId) }}>
                       → @{message.targetAgentId}
@@ -204,19 +207,18 @@ export function MessageStreamPanel(props: {
 
       <Composer
         readOnly={props.readOnly}
+        isFirstMessage={props.isFirstMessage ?? false}
         type={type}
         onTypeChange={setType}
-        targetMessageId={targetMessageId}
-        targetMessageType={props.messages.find(message => message.id === targetMessageId)?.type}
+        target={targetMessageId != null ? byId.get(targetMessageId) : undefined}
         onClearTarget={() => {
           setTargetMessageId(undefined);
-          clearReactionType();
+          clearTargetDependentType();
         }}
         agentIds={props.agentIds}
-        onSend={(params) => {
-          props.onSend(params);
-          setTargetMessageId(undefined);
-        }}
+        onSend={(params) =>
+          Promise.resolve(props.onSend(params)).then(() => setTargetMessageId(undefined))
+        }
       />
     </Panel>
   );

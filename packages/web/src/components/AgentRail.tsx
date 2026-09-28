@@ -58,9 +58,7 @@ export function AgentRail(props: {
             <div className="agent-card__top">
               <span className={`agent-card__dot ${agent.state === 'idle' ? 'agent-card__dot--idle' : ''}`} />
               <span className="agent-card__name">{agent.agentId}</span>
-              <span className="agent-card__state">
-                {agent.state === 'idle' && agent.caughtUp ? 'completed' : agent.state}
-              </span>
+              <span className="agent-card__state">{agent.state}</span>
               {agent.stuck && (
                 <span className="stuck-flag" title="这个 agent 可能卡住了，要不要看看">⚠</span>
               )}

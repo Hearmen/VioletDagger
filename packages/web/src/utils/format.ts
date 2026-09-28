@@ -73,13 +73,18 @@ const TYPE_LABELS: Record<MessageType, string> = {
   chain: 'chain',
   exploring: 'exploring',
   propose_completion: '提议完成',
-  endorse: 'endorse',
   challenge: 'challenge',
   verify: 'verify',
 };
 
 export function typeLabel(type: MessageType): string {
   return TYPE_LABELS[type] ?? type;
+}
+
+// 当前属于触发型的人类新消息类型（03-orchestrator-core.md §1.1）：新写入的 open_question 为 OPEN、
+// chain 为 CANDIDATE，所以只看 type 即可。供 Composer 提示"这条消息不会唤醒 @agentId"。
+export function isTriggeringNewMessageType(type: MessageType | '' | undefined): boolean {
+  return type === 'open_question' || type === 'hypothesis' || type === 'chain' || type === 'challenge';
 }
 
 export function truncate(text: string, max = 120): string {

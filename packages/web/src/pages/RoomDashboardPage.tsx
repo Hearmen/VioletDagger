@@ -14,9 +14,22 @@ import { SessionDetailModal } from '../components/SessionDetailModal';
 import { LiveSessionModal, type LiveSessionSnapshot, type LiveSessionTarget } from '../components/LiveSessionModal';
 import { ToastStack } from '../components/ToastStack';
 import type {
-  Room, RoomStatusPayload, Message, MessageType, MemoryViewPayload, EventTreePayload,
-  SessionDetailPayload, UsageSummaryPayload,
+  Room, RoomStatusPayload, Message, MemoryViewPayload, EventTreePayload,
+  SessionDetailPayload, UsageSummaryPayload, HumanMessageParams,
 } from '../api/types';
+
+// memoryUpdate 表示某条已有消息的 type 或状态变了：从新的记忆视图里找回它的最新版本。
+function findInMemory(view: MemoryViewPayload, messageId: number): Message | undefined {
+  const groups = [
+    view.openQuestions, view.hypotheses, view.facts, view.boundaries, view.chains,
+    view.exploring, view.completionProposals, view.challenges, view.verifies,
+  ];
+  for (const group of groups) {
+    const found = group.find((message) => message.id === messageId);
+    if (found) return found;
+  }
+  return undefined;
+}
 
 interface MessagesPage {
   messages: Message[];
@@ -84,8 +97,16 @@ export function RoomDashboardPage() {
         refreshEventTree();
       }
     });
-    const unsubMemory = socket.subscribe('memoryUpdate', () => {
-      refreshMemory();
+    // 重拉记忆视图；若该消息在已加载的消息流中，用新版本替换它，使消息流与事件树的徽标同步更新（07 §13）。
+    const unsubMemory = socket.subscribe('memoryUpdate', ({ messageId }: { messageId: number }) => {
+      socket
+        .call<MemoryViewPayload>('getMemoryView')
+        .then((view) => {
+          setMemory(view);
+          const updated = findInMemory(view, messageId);
+          if (updated) setMessages((prev) => prev.map((message) => (message.id === messageId ? updated : message)));
+        })
+        .catch(reportLoadError);
     });
     const unsubStatus = socket.subscribe('roomStatus', () => {
       refreshStatus();
@@ -270,13 +291,16 @@ export function RoomDashboardPage() {
           nextCursor={nextCursor}
           loadingEarlier={loadingEarlier}
           onLoadEarlier={handleLoadEarlier}
-          onSend={(params: {
-            content: string;
-            type?: MessageType;
-            targetMessageId?: number;
-            targetAgentId?: string;
-          }) => socket.call('postHumanMessage', params).catch(reportActionError)}
+          onSend={(params: HumanMessageParams) =>
+            socket.call('postHumanMessage', params).catch((err) => {
+              // 服务端校验失败：toast 展示错误，并让 Composer 保留输入（07 §7、§15）。
+              reportActionError(err);
+              throw err;
+            })
+          }
           readOnly={readOnly}
+          goalMessageId={memory?.goalMessageId ?? null}
+          isFirstMessage={memory != null && memory.goalMessageId == null && messages.length === 0}
           jumpToMessageId={jumpToMessageId}
           onJumpHandled={() => setJumpToMessageId(null)}
           agentIds={status?.agents.map((agent) => agent.agentId) ?? []}

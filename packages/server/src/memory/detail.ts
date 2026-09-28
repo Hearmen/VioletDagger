@@ -1,8 +1,9 @@
 import type Database from 'better-sqlite3';
-import { getRoomMessages } from '../storage/messages';
-import { projectMemory } from './memoryView';
+import type { Message } from '../storage/types';
+import { buildRoomIndex } from './roomIndex';
 import type { DetailParams, DetailPage, MessageWithAnnotations } from './types';
 
+// 三种模式互斥：单条 / 按类型全量 / 分页浏览（见 02-memory-management.md §4）。挂载内容只展开一层。
 export function buildDetail(db: Database.Database, roomId: number, params: DetailParams): MessageWithAnnotations | MessageWithAnnotations[] | DetailPage {
   const hasId = params.messageId != null;
   const paged = params.list === true;
@@ -13,20 +14,21 @@ export function buildDetail(db: Database.Database, roomId: number, params: Detai
   }
   const limit = params.limit ?? 30;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('limit must be between 1 and 100');
-  const messages = getRoomMessages(db, roomId);
-  const byId = new Map(messages.map(m => [m.id, m]));
-  const { relations } = projectMemory(messages);
-  const expand = (m: typeof messages[number]): MessageWithAnnotations => ({
-    ...m, annotations: relations[m.id].annotationIds.map(id => byId.get(id)!),
-    answers: relations[m.id].answerIds.map(id => byId.get(id)!),
-    referencedByIds: relations[m.id].referencedByIds,
+
+  const index = buildRoomIndex(db, roomId);
+  const expand = (m: Message): MessageWithAnnotations => ({
+    ...m,
+    annotations: index.reactionsByTarget.get(m.id) ?? [],
+    answers: m.type === 'open_question' ? index.answersByQuestion.get(m.id) ?? [] : [],
+    referencedByIds: index.referencedBy.get(m.id) ?? [],
+    transitions: index.transitionsByMessage.get(m.id) ?? [],
   });
   if (hasId) {
-    const message = byId.get(params.messageId!);
+    const message = index.byId.get(params.messageId!);
     if (!message) throw new Error(`Message ${params.messageId} not found in room ${roomId}`);
     return expand(message);
   }
-  let matches = messages.filter(m => (params.type == null || m.type === params.type) &&
+  let matches = index.messages.filter(m => (params.type == null || m.type === params.type) &&
     (params.targetMessageId == null || m.targetMessageId === params.targetMessageId) &&
     (params.beforeId == null || m.id < params.beforeId));
   if (!paged) return matches.map(expand);

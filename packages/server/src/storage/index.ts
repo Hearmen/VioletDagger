@@ -1,16 +1,17 @@
 export * from './types';
 export { createDb, createTestDb } from './db';
 export {
-  createRoom, getRoom, listRooms, setRoomStatus, recordCompletion, increaseMaxSessions, deleteRoom, assignInstanceIds,
-  getRoomAgents, setAgentState, setAgentEnabled,
+  createRoom, getRoom, listRooms, setRoomStatus, increaseMaxSessions, deleteRoom, assignInstanceIds,
+  getRoomAgents, setAgentState, setAgentEnabled, setDispatchPending, setDirectedPending,
 } from './rooms';
 export {
   createSession, setSessionPgid, setSessionRawLogPath, finishSession, getSession, listSessions, countSessions,
   markSessionTerminating, markSessionCleanupStarted, appendSessionEvent, listSessionEvents,
-  getLatestSessionStartedAt, getUsageTotals,
+  getUsageTotals,
 } from './sessions';
 export {
-  insertMessage, getMessageById, getFirstMessage, getMessagesBySession, listMessages,
-  getMessagesByType, getActiveExploring, getRecentRawMessages, getAnnotations, completeExploring,
-  getLatestDispatchTriggerAt, getLatestMessageByTypes, getLatestDirectedMessage,
+  runInTransaction, insertMessage, getMessageById, getFirstMessage, countMessages, getMessagesBySession, listMessages,
+  getMessagesByType, getRoomMessages, getRecentRawMessages, getActiveExploring, getActiveExploringByAuthor,
+  completeExploring, setMessageType, setQuestionStatus, setChainStatus, getStateTransitions, getRoomStateTransitions,
+  type CompleteExploringEnd,
 } from './messages';

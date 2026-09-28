@@ -41,7 +41,9 @@ export function createCompleteExploringHandler(deps: CompleteExploringDeps) {
     for (const id of params.resultMessageIds ?? []) {
       if (!Number.isInteger(id) || id <= 0 || !getMessageById(db, params.roomId, id)) throw new McpToolError(`result message ${id} not found`);
     }
-    markExploringCompleted(db, params.roomId, params.messageId, undefined, params);
+    markExploringCompleted(db, params.roomId, params.messageId, {
+      reason: 'explicit', resultSummary: params.resultSummary, resultMessageIds: params.resultMessageIds,
+    });
     roomEvents.emit('memoryUpdate', { roomId: params.roomId, messageId: params.messageId });
     resetStuckCount(params.roomId, params.authorId);
 

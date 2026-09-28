@@ -167,19 +167,10 @@ export function listSessions(db: Database.Database, roomId: number): Session[] {
   return rows.map(mapSessionRow);
 }
 
-// 该 agent 在本 room 最近一次 session 的开始时间；从没跑过返回 null（见 03 §1.2 派发判定）。
-export function getLatestSessionStartedAt(db: Database.Database, roomId: number, agentId: string): string | null {
-  const row = db.prepare(
-    `SELECT MAX(started_at) AS latest FROM sessions WHERE room_id = ? AND agent_id = ?`,
-  ).get(roomId, agentId) as { latest: string | null } | undefined;
-  return row?.latest ?? null;
-}
-
-// 计入 maxSessions 上限的 session 数 = outcome != 'error' 的数量（error 不占配额）。
-// session 的 seq 仍由 createSession 内部 MAX(seq)+1 生成，与本函数无关。
+// 计入 maxSessions 上限的 session 数 = 本 room 的 session 总数（不区分 outcome，error 同样计入，需求 3.3）。
 export function countSessions(db: Database.Database, roomId: number): number {
   const row = db
-    .prepare(`SELECT COUNT(*) AS count FROM sessions WHERE room_id = ? AND outcome != 'error'`)
+    .prepare(`SELECT COUNT(*) AS count FROM sessions WHERE room_id = ?`)
     .get(roomId) as { count: number };
   return row.count;
 }

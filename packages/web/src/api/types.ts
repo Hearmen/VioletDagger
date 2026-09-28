@@ -1,6 +1,24 @@
 export type MessageType =
   | 'fact' | 'hypothesis' | 'boundary' | 'open_question' | 'chain'
-  | 'exploring' | 'propose_completion' | 'endorse' | 'challenge' | 'verify';
+  | 'exploring' | 'propose_completion' | 'challenge' | 'verify';
+
+export type QuestionStatus = 'OPEN' | 'CLOSED';
+export type CloseReason = 'RESOLVED' | 'UNRESOLVED';
+export type ChainStatus = 'CANDIDATE' | 'VERIFIED' | 'CHALLENGED' | 'REJECT';
+
+// Scheduler 对已有消息 type/状态的一次转换记录（见 01-storage.md state_transition_log）。
+export interface StateTransition {
+  id: number;
+  roomId: number;
+  messageId: number;
+  fromType: MessageType | null;
+  toType: MessageType | null;
+  fromStatus: string | null;
+  toStatus: string | null;
+  triggerMessageId: number;
+  reason: string | null;
+  createdAt: string;
+}
 
 export interface Message {
   id: number;
@@ -13,9 +31,16 @@ export interface Message {
   targetMessageId: number | null;
   targetAgentId: string | null;
   referencedMessageIds: number[];
+  questionStatus: QuestionStatus | null;
+  questionCloseReason: CloseReason | null;
+  questionClosedBy: number | null;
+  chainStatus: ChainStatus | null;
+  closesQuestion: boolean;
+  chainResolution: CloseReason | null;
+  verifyVerdict: boolean | null;
   exploringStatus: 'active' | 'completed' | null;
   exploringNote: string | null;
-  exploringEndReason: 'explicit' | 'superseded' | 'human_terminated' | null;
+  exploringEndReason: 'explicit' | 'human_terminated' | null;
   exploringResultSummary: string | null;
   exploringResultMessageIds: number[];
   createdAt: string;
@@ -67,11 +92,8 @@ export interface Room {
   name: string;
   schedulingMode: 'sequential';
   status: RoomStatus;
-  completionReason: 'manual' | 'auto_silence' | null;
-  completionReferenceMessageId: number | null;
   maxSessions: number;
   workdir: string;
-  autoConfirmOnSilence: boolean;
   createdAt: string;
 }
 
@@ -82,29 +104,29 @@ export interface RoomSummary {
   createdAt: string;
 }
 
+// 见 02-memory-management.md §5：按当前 type 分组的全文，每条只出现在一组。
 export interface MemoryViewPayload {
+  goalMessageId: number | null;
+  openQuestions: Message[];
+  hypotheses: Message[];
   facts: Message[];
   boundaries: Message[];
-  openQuestions: Message[];
   chains: Message[];
-  hypotheses: Message[];
   exploring: Message[];
   completionProposals: Message[];
-  reactions: Message[];
-  contextMessages: Message[];
-  relations: Record<number, { annotationIds: number[]; answerIds: number[]; referencedByIds: number[] }>;
+  challenges: Message[];
+  verifies: Message[];
+  transitions: Record<number, StateTransition[]>;
 }
 
 export interface RoomStatusPayload {
   currentSessionCount: number;
   status: RoomStatus;
-  completionReason?: 'manual' | 'auto_silence';
-  completionReferenceMessageId?: number;
-  allCaughtUp: boolean;
+  dispatchIdle: boolean;        // 无任务派发提醒（06 §4、03 §1.6）
+  disabledAgentCount: number;
   agents: {
     agentId: string;
     state: 'idle' | 'running' | 'stopping';
-    caughtUp: boolean;
     sessionId?: number;
     sessionStartedAt?: string;
     stopIntent?: 'terminate';
@@ -171,4 +193,15 @@ export interface UsageTotals {
 export interface UsageSummaryPayload {
   byAgent: Record<string, UsageTotals>;
   room: UsageTotals;
+}
+
+// postHumanMessage 的请求体（见 06-orchestrator-api.md §4）；referencedMessageIds/summary 人类 UI 不产生。
+export interface HumanMessageParams {
+  content: string;
+  type?: MessageType;
+  targetMessageId?: number;
+  verifyVerdict?: boolean;
+  closesQuestion?: boolean;
+  chainResolution?: CloseReason;
+  targetAgentId?: string;
 }

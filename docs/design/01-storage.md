@@ -16,6 +16,8 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 | status | TEXT NOT NULL DEFAULT 'active' | `active` / `paused_limit`（触及上限自动暂停） / `paused_manual`（人类主动暂停） / `completed` |
 | max_sessions | INTEGER NOT NULL | 创建时写入，缺省 **20**（见 §5.1），触及上限后 `resumeRoom(additionalSessions)` 会增加此值 |
 | workdir | TEXT NOT NULL DEFAULT '' | 该 room 的工作目录（创建时解析而成的**绝对路径**）。空串表示"按服务端默认目录"解析（`VIOLETDAGGER_WORKDIR` 或 server 进程 cwd）——只为历史数据/缺省兜底，新建 room 一律写入具体路径 |
+| dispatch_pending | INTEGER NOT NULL DEFAULT 0 | 房间标记（需求 3.3）。`1` 表示有待分发的触发型消息，`0` 表示没有。由核心在触发型消息写入、session 以 error 结束时置位，派发时清除（`03-orchestrator-core.md` §1.2） |
+| pending_author_id | TEXT | 标记作者：最近一次置位房间标记的消息作者（agent 实例标识，或 `"human"`）；session 以 error 结束恢复标记时为失败的 agent。房间标记为 0 时为 NULL |
 | created_at | TEXT NOT NULL | ISO8601 |
 
 ### room_agents
@@ -29,6 +31,7 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 | state | TEXT NOT NULL DEFAULT 'idle' | `idle` / `running` / `stopping`。`passed`/`errored` 不是持久状态，只是某次 session 的 outcome（见下），该 session 结束后 agent 状态直接回 `idle` |
 | current_session_seq | INTEGER | `running`/`stopping` 时必须非空，指向 `sessions.seq`（room 内），供 `terminateAgentSession` 和详情查看定位 |
 | dispatch_enabled | INTEGER NOT NULL DEFAULT 1 | 是否参与派发。`1`=启用（默认），`0`=停用——人类手动停用，或连续失败达到阈值后由核心自动停用（见 `03-orchestrator-core.md` §6）。停用只阻止后续派发，不终止正在运行的 session，也不自动恢复 |
+| directed_pending | INTEGER NOT NULL DEFAULT 0 | 定向标记（需求 3.3.2）。`1` 表示有定向给该 agent 的触发型人类消息待分发。停用派发不清除它 |
 
 主键：`(room_id, agent_id)`
 
@@ -56,7 +59,7 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 | cache_read_tokens | INTEGER | 同上 |
 | cache_write_tokens | INTEGER | 同上 |
 | cost_usd | REAL | 同上；只信任 agent CLI 自己报出的美元费用，不做任何定价表估算（如 codex 只有 token 没有费用字段，这里就是 NULL） |
-| dispatch_scope | TEXT NOT NULL DEFAULT 'broadcast' | `'broadcast'`（因广播触发型消息派发）/ `'directed'`（因定向给它的触发型 @ 消息派发，见需求 3.3.2）；`createSession` 时由核心按本次派发依据写入，不可事后修改。`directed` session 产出的所有消息都不是触发型（见 `03-orchestrator-core.md` §1.1） |
+| dispatch_scope | TEXT NOT NULL DEFAULT 'broadcast' | `'broadcast'`（因房间标记派发）/ `'directed'`（因定向标记派发，见需求 3.3.2）；`createSession` 时由核心写入，不可事后修改。`directed` session 产出的消息不置位任何标记（见 `03-orchestrator-core.md` §1.1）；session 以 error 结束时，核心按它恢复对应的标记 |
 
 主键：`(room_id, seq)`。`messages.session_seq` 通过 `(room_id, session_seq)` 复合外键引用本表。
 
@@ -140,8 +143,6 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 - `messages(room_id, type)`——`get_overview`/`get_detail` 按类型查
 - `messages(room_id, session_seq)`——`getMessagesBySession` 取某个 session 的消息（SessionDetailModal 详情视图与编排器核心判断该 session 是否产出过实质消息用）
 - `messages(room_id, target_message_id)`——查某条消息挂载的 challenge/verify 及回答某个问题的消息
-- `messages(room_id, target_agent_id)`——定向触发判定用（`getLatestTriggerAt`，见 `03-orchestrator-core.md` §1.2）
-
 ## 2. 不变量（在存储层函数内部强制，不暴露裸的 UPDATE 接口）
 
 - **内容只追加、type/状态经专用函数转换**：`content` 一旦写入永不修改；`type`、`question_status`、`chain_status` 只能通过 `setMessageType`/`setQuestionStatus`/`setChainStatus` 修改，这三个函数都在同一事务内追加一条 `state_transition_log`，不提供裸 UPDATE 接口。
@@ -151,7 +152,7 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 - **`sessionId` 由调用方（编排器核心）显式传入 `insertMessage`**，存储层本身不做绑定推断（推断逻辑属于 MCP Server，见 `05-mcp-server.md`）；人类消息传 `sessionSeq = null`。
 - 所有返回 `Message`/`Message[]` 的读取函数都会联表 `message_references` 填充 `referencedMessageIds`，并读出本节全部状态列；不需要单独的 `getMessageReferences` 函数。
 - **引用同一性由调用方的 room 内查找保证**：消息 id 是 room 内编号，调用方只能用 `getMessageById(roomId, id)` 解析 `targetMessageId`/`referencedMessageIds`——跨 room 的 id 在这个 room 内查不到，天然被拒。存储层不做跨 room 校验，也不加自引用复合外键（原因见本文开头）。
-- **定向 session 的产出不参与派发判定**：`dispatch_scope='directed'` 的 session 里产出的消息正常写入 `messages`、正常进入记忆与事件树，但 `getLatestTriggerAt` 在计算时排除这些消息（需求 3.3.2）。
+- **标记只经专用函数修改**：`dispatch_pending`/`pending_author_id` 只能通过 `setDispatchPending` 修改，`directed_pending` 只能通过 `setDirectedPending` 修改。存储层不判断什么时候该置位或清除，这由核心决定（`03-orchestrator-core.md` §1.2）。
 
 ## 3. 类型定义（TypeScript）
 
@@ -163,6 +164,8 @@ interface Room {
   status: 'active' | 'paused_limit' | 'paused_manual' | 'completed';
   maxSessions: number;
   workdir: string;   // 绝对路径；空串表示按服务端默认目录解析（历史数据）
+  dispatchPending: boolean;       // 房间标记（见 rooms.dispatch_pending）
+  pendingAuthorId: string | null; // 标记作者（见 rooms.pending_author_id）
   createdAt: string;
 }
 
@@ -181,6 +184,7 @@ interface RoomAgentState {
   state: 'idle' | 'running' | 'stopping';
   currentSessionSeq: number | null;
   dispatchEnabled: boolean; // 是否参与派发（见 room_agents.dispatch_enabled）
+  directedPending: boolean; // 定向标记（见 room_agents.directed_pending）
 }
 
 interface Session {
@@ -324,6 +328,10 @@ function deleteRoom(roomId: number): void;
 function getRoomAgents(roomId: number): RoomAgentState[];
 function setAgentState(roomId: number, agentId: string, state: 'idle' | 'running' | 'stopping', sessionSeq?: number): void;
 function setAgentEnabled(roomId: number, agentId: string, enabled: boolean): void; // 只改 dispatch_enabled
+function setDispatchPending(roomId: number, pending: true, authorId: string): void;
+function setDispatchPending(roomId: number, pending: false): void;
+// true：dispatch_pending=1，pending_author_id=authorId（已经为 1 时只更新作者）；false：两列清为 0 / NULL
+function setDirectedPending(roomId: number, agentId: string, pending: boolean): void; // 只改 directed_pending
 
 // Session
 function createSession(roomId: number, agentId: string, dispatchScope: 'broadcast' | 'directed'): Session; // seq 在此自增；dispatchScope 由调用方（checkAndDispatch）按 03 §1.2 的判定结果传入
@@ -343,7 +351,6 @@ function appendSessionEvent(roomId: number, seq: number, kind: SessionEvent['kin
 function listSessionEvents(roomId: number, seq: number): SessionEvent[];
 function getSession(roomId: number, seq: number): Session | null;
 function listSessions(roomId: number): Session[]; // 按 seq 升序，供事件树给每条消息的 session 标签查出 outcome/起止时间（见 07-frontend.md §9）
-function getLatestSessionStartedAt(roomId: number, agentId: string): string | null; // 该 agent 最近一次 session 的 started_at，供核心判定"待派发"（03 §1.2）；从没跑过为 null
 function countSessions(roomId: number): number; // 计入 maxSessions 上限的 session 数 = 本 room 的 session 总数（不区分 outcome，error 同样计入；等于当前最大 seq）
 function getUsageTotals(roomId: number): { byAgent: Record<string, UsageTotals>; room: UsageTotals };
 // 只统计已结束的 session（outcome 非 running/stopping）——还在跑的 session 用量没定，不计入，也不算"缺数据"。
@@ -377,14 +384,6 @@ function setQuestionStatus(roomId: number, messageId: number,
 function setChainStatus(roomId: number, messageId: number, toStatus: ChainStatus, triggerMessageId: number, reason?: string): void;
 function getStateTransitions(roomId: number, messageId: number): StateTransition[]; // 按 id 升序
 function getRoomStateTransitions(roomId: number): StateTransition[];               // 批量读取，供记忆投影
-
-// 派发判定
-function getLatestTriggerAt(roomId: number, agentId: string): { broadcastAt: string | null; directedAt: string | null };
-// 在"当前仍属于触发型"的消息中（open_question 且 question_status='OPEN'、hypothesis、chain 且 chain_status='CANDIDATE'、challenge），
-// 排除 author_id = agentId 的消息、排除归属 dispatch_scope='directed' session 的消息，分别求：
-//   broadcastAt：target_agent_id IS NULL 的最新 created_at；
-//   directedAt：target_agent_id = agentId 的最新 created_at。
-// target_agent_id 指向其他 agent 的消息两者都不计入。供核心判定"待派发"（03 §1.2）
 ```
 
 ## 5. 开放决策
@@ -415,4 +414,4 @@ room 创建时可指定 `workdir`——该房**所有 agent CLI 的 spawn cwd**�
 
 ### 5.6 schema 不兼容时重建数据库
 
-建连接时检查 schema：`messages` 缺少 `(room_id, id)` 复合主键、缺少 `question_status`/`chain_status`/`chain_resolution`/`question_closed_by` 列，或不存在 `state_transition_log` 表，任一情况都视为不兼容的旧 schema，**直接重建整个数据库**——删除全部表与数据，按 §1 重新建表。旧数据不迁移、不保留。本地单机工具，接受这一取舍。
+建连接时检查 schema：`messages` 缺少 `(room_id, id)` 复合主键、缺少 `question_status`/`chain_status`/`chain_resolution`/`question_closed_by` 列，`rooms` 缺少 `dispatch_pending`/`pending_author_id` 列，`room_agents` 缺少 `directed_pending` 列，或不存在 `state_transition_log` 表，任一情况都视为不兼容的旧 schema，**直接重建整个数据库**——删除全部表与数据，按 §1 重新建表。旧数据不迁移、不保留。本地单机工具，接受这一取舍。

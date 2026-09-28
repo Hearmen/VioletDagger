@@ -6,9 +6,9 @@
 
 ### 1.1 触发型消息（需求 3.3）
 
-一条消息是否"触发型"，按它的**当前** type 与状态判定：
+一条消息是否"触发型"，按它**写入时刻**的 type 与状态判定：
 
-| 当前 type / 状态 | 触发型 |
+| 写入时刻的 type / 状态 | 触发型 |
 |---|---|
 | `open_question` 且 `questionStatus === 'OPEN'` | 是 |
 | `hypothesis` | 是 |
@@ -16,43 +16,56 @@
 | `challenge` | 是（没有状态，写入即触发一次派发） |
 | `fact`、`boundary`、`CLOSED` 的 `open_question`、`VERIFIED`/`CHALLENGED`/`REJECT` 的 `chain`、`verify`、`exploring`、`propose_completion`、无 type 消息、系统占位 | 否 |
 
-另有两条排除规则，优先于上表：
+另有两条规则，优先于上表：
 
-- **定向 session 的产出**：归属 `dispatch_scope === 'directed'` 的 session 的消息一律不是触发型（需求 3.3.2），但照常进入消息流、记忆和事件树，其中的 verify/challenge 照常转换目标状态。
-- **定向给其他 agent 的消息**：`targetAgentId` 非空时，这条消息只对 `targetAgentId` 那个 agent 构成触发，对其余 agent 不计入。
+- **定向 session 的产出**：归属 `dispatch_scope === 'directed'` 的 session 的消息不置位任何标记（需求 3.3.2），但照常进入消息流、记忆和事件树，其中的 verify/challenge 照常转换目标状态。
+- **定向消息**：`targetAgentId` 非空的触发型人类消息只置位该 agent 的定向标记，不置位房间标记。
 
-人类消息与 agent 消息使用同一套判定，没有特权。判定完全由存储层 `getLatestTriggerAt` 的 SQL 条件表达（`01-storage.md` §4），核心不在内存里维护触发集合。
+人类消息与 agent 消息使用同一套判定，没有特权。判定只在写入时做一次，结果体现为标记置位（§1.2），核心不在内存里维护触发集合。
 
-"当前"的含义：hypothesis 被 verify 成 fact 之后就不再是触发型，还没被派发到的 agent 不会再因为它被派发；fact 被 challenge 转回 hypothesis 时，它的 `createdAt` 仍是原写入时间，通常早于各 agent 上次 session 的开始时间，因此不会重新唤醒 agent——唤醒由那条 challenge 自身完成。
+判定只看写入时刻：一条消息写入后被 verify、被 challenge 等状态变化，都不会重新置位或清除标记。fact 被 challenge 转回 hypothesis 时，置位标记的是那条 challenge 自身，不是这条 hypothesis。
 
-### 1.2 `checkAndDispatch(roomId)` 与并发正确性
+### 1.2 待分发标记与 `checkAndDispatch(roomId)`
 
-**触发源**（需求 3.3）：以下两种情况各调用一次 `checkAndDispatch`，它只是"检查一次"，是否真正派发由待派发判定决定：
+**标记**（需求 3.3）：房间标记 `room.dispatchPending` 及标记作者 `room.pendingAuthorId`，每个 agent 的定向标记 `agent.directedPending`，都持久化在存储层（`01-storage.md` §1）。
 
-1. `submitMessage`（§1.4）写入的新消息在写入时刻属于触发型（按 §1.1，含定向排除规则）。
+**置位**：
+
+1. `submitMessage`（§1.4）写入的消息在写入时刻属于触发型（§1.1），且不属于 `directed` session：`targetAgentId` 为空时 `setDispatchPending(roomId, true, authorId)`；非空时 `setDirectedPending(roomId, targetAgentId, true)`。与消息插入在同一事务内完成。
+2. `onSessionEnded` 结算为 `error`（§2）：`dispatchScope === 'broadcast'` 时 `setDispatchPending(roomId, true, agentId)`；`'directed'` 时 `setDirectedPending(roomId, agentId, true)`。
+
+**检查时机**：以下情况各调用一次 `checkAndDispatch`：
+
+1. `submitMessage` 置位了标记（§1.4 第 7 步）。
 2. 某个 session 结算完成、agent 变回空闲（§2、§3）。
+3. `resumeRoom`（§4）。
+4. `setAgentEnabled` 启用 agent（§6）。
 
 `checkAndDispatch` 是一个**纯同步函数**（内部只有 SQLite 同步读写，没有 `await`）：
 
 1. 读 room；若 `status !== 'active'`，直接返回。
-2. 若 `countSessions(roomId) >= room.maxSessions`，把 room 置为 `paused_limit`，`roomEvents.emit('roomStatus', { roomId })`，返回（不派发）。
-3. 按 `joinOrder` 顺序扫描 `getRoomAgents(roomId)`：
-   - `dispatchEnabled === false` 的 agent：跳过，继续扫描后面的（§6）。
-   - 忙碌（`running` 或 `stopping`）且当前带 active `exploring` 的 agent：内存 `stuckCount + 1`（§5），继续扫描。
-   - 忙碌但没有 active `exploring` 的 agent：跳过，继续扫描。
-   - `idle` 且**待派发**的 agent：记为 `dispatchTarget`，停止扫描。
-   - `idle` 但不待派发的 agent：跳过，继续扫描。
-4. 若没有 `dispatchTarget`：`emit('roomStatus')`（扫描可能改了 `stuckCount`），返回。
-5. 确定 `dispatchScope`：如果存在严格晚于该 agent 上次 session 开始时间的 `broadcastAt`，设为 `'broadcast'`；否则，如果 `directedAt` 严格晚于该时间，设为 `'directed'`。因此，广播与定向都满足待派发条件时，本次按广播派发，session 产出可继续触发其他 agent；只有定向消息满足待派发条件时，才按定向派发。排队中的广播消息不会因定向派发而消失，之后仍会按待派发规则评估。
-6. `createSession(roomId, agentId, dispatchScope)` + `setAgentState(roomId, agentId, 'running', seq)`，与上面的扫描在同一个同步调用栈内完成。
-7. 调用 `agentInvocation.startSession({ roomId, seq, agentId, registryKey })`（fire-and-forget）。`dispatchScope` **不传给** `startSession`（§1.5）。必须用 try/catch 包住这次调用：返回的 Promise 已用 `.catch` 兜住，但同步阶段也可能抛错（如建目录失败），而 `checkAndDispatch` 会被进程退出等回调直接调用，同步抛出会变成未捕获异常——任何同步抛出都降级为"记录日志、这次派发失败"。
-8. `emit('roomStatus')`。
+2. 读 `getRoomAgents(roomId)`。若 `room.dispatchPending` 为 false，且没有 `dispatchEnabled && directedPending` 的 agent，直接返回：不扫描，不推送。
+3. **定向阶段**：按 `joinOrder` 顺序，对每个 `dispatchEnabled`、`idle`、`directedPending` 的 agent，执行"派发"（见下），`scope = 'directed'`，并 `setDirectedPending(roomId, agentId, false)`。
+4. **房间阶段**（仅当 `room.dispatchPending` 为 true）：按 `joinOrder` 顺序扫描：
+   - `dispatchEnabled === false`：跳过（§6）。
+   - 忙碌（`running`/`stopping`，包括第 3 步刚派发的）且当前带 active `exploring`：内存 `stuckCount + 1`（§5），继续。
+   - 忙碌但没有 active `exploring`：跳过。
+   - `idle` 但 `directedPending`（只可能在第 3 步因上限中断时出现）：跳过。
+   - `idle` 且 `agentId === room.pendingAuthorId`：记为 `fallback`，继续。
+   - 其他 `idle` agent：记为 `dispatchTarget`，停止扫描。
 
-**待派发**：`isDispatchOwed(roomId, agentId)` 读取 `getLatestTriggerAt(roomId, agentId)` 得到 `{ broadcastAt, directedAt }`，取二者中较晚的非空值，与 `getLatestSessionStartedAt(roomId, agentId)` 比较：从没跑过视为满足；严格晚于才满足，同一毫秒并列视为已消费。
+   没有 `dispatchTarget` 时取 `fallback`。选出后执行"派发"，`scope = 'broadcast'`，并 `setDispatchPending(roomId, false)`；选不出则保留标记。
+5. `emit('roomStatus')`：派发了 session、改了 `stuckCount` 或触及上限，都需要推送。
 
-**停止**：没有任何 agent 待派发时，派发自然停止。不存在 `OPEN` 的 open_question、hypothesis、`CANDIDATE` chain，也没有新的 challenge，是停止的必要条件；核心不单独检查这个条件，它由待派发判定自然蕴含。
+**派发**（第 3、4 步共用）：
 
-**不需要显式加锁/互斥**：`better-sqlite3` 是同步 API，Node.js 单线程执行模型保证"扫描 agent → 写 session/state"这段代码不会被另一次 `checkAndDispatch` 打断。两个触发事件即使"同时"发生，也会被事件循环序列化为先后两次独立调用，第二次调用一定能看到第一次已经提交的状态。
+1. 若 `countSessions(roomId) >= room.maxSessions`：把 room 置为 `paused_limit`，`emit('roomStatus')`，结束本次 `checkAndDispatch`，尚未处理的标记保持原样。
+2. `createSession(roomId, agentId, scope)` + `setAgentState(roomId, agentId, 'running', seq)`，并清除对应标记，与扫描在同一个同步调用栈内完成。
+3. 调用 `agentInvocation.startSession({ roomId, seq, agentId, registryKey })`（fire-and-forget）。`scope` **不传给** `startSession`（§1.5）。必须用 try/catch 包住这次调用：返回的 Promise 已用 `.catch` 兜住，但同步阶段也可能抛错（如建目录失败），而 `checkAndDispatch` 会被进程退出等回调直接调用，同步抛出会变成未捕获异常——任何同步抛出都降级为"记录日志、这次派发失败"。
+
+**停止**：房间标记与所有启用 agent 的定向标记都为 false 时，`checkAndDispatch` 在第 2 步直接返回，派发自然停止。
+
+**不需要显式加锁/互斥**：`better-sqlite3` 是同步 API，Node.js 单线程执行模型保证"读标记 → 扫描 agent → 写 session/state/标记"这段代码不会被另一次 `checkAndDispatch` 打断。两个触发事件即使"同时"发生，也会被事件循环序列化为先后两次独立调用，第二次调用一定能看到第一次已经提交的状态。
 
 ### 1.3 知识状态转换（需求 4.5）
 
@@ -108,9 +121,10 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 2. **校验**（下文"写入校验"），失败抛 `SubmitMessageError`。
 3. `storage.insertMessage(...)`：`authorId` 为 `'human'` 或 `author.agentId`，`sessionSeq` 为 `null` 或 `author.sessionSeq`。
 4. 按 §1.3 执行状态转换，得到 `changedMessageIds`。
+4a. 按 §1.2"置位"第 1 条置位标记。
 5. 事务提交后：`emit('message', { roomId, message })`；对每个 `changedMessageIds` emit `memoryUpdate`。
 6. 若新消息是 `exploring`：`resetStuckCount(roomId, authorId)`（该 agent 的 active exploring 发生了变化，§5）。
-7. 若新消息在写入时刻属于触发型（§1.1，含定向 session 排除）：`checkAndDispatch(roomId)`。
+7. 若第 4a 步置位了标记：`checkAndDispatch(roomId)`。
 8. 返回 `{ message, changedMessageIds }`。
 
 **写入校验**（需求 4.2/4.3；`T` 指 `getMessageById(roomId, targetMessageId)`，不存在即拒绝）：
@@ -122,7 +136,7 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 | `hypothesis` | 必填，T 为 `open_question` | — |
 | `fact` / `boundary` | 可选，提供时 T 为 `open_question` | — |
 | `chain` | 必填，T 为 `open_question` | `closesQuestion` 可选；为 true 时 `chainResolution` 必填，否则不允许 `chainResolution` |
-| `exploring` | 必填，T 的当前 type 为 `open_question` 或 `hypothesis` | 同一作者已有 active exploring 时拒绝（`getActiveExploringByAuthor`，需求 4.6） |
+| `exploring` | 必填，T 的当前 type 为 `open_question` 或 `hypothesis` | 只允许 agent 作者，`author.kind === 'human'` 时拒绝（需求 3.5）；同一作者已有 active exploring 时拒绝（`getActiveExploringByAuthor`，需求 4.6） |
 | `propose_completion` | 不允许 | — |
 | `challenge` | 必填，T 为 `fact`/`boundary`，或状态为 `CANDIDATE`/`VERIFIED`/`REJECT` 的 `chain` | — |
 | `verify` | 必填，T 为 `hypothesis`，或状态为 `CANDIDATE`/`CHALLENGED` 的 `chain` | `verifyVerdict` 必填；agent 作者时 `T.sessionSeq !== author.sessionSeq`（同一 session 不能 verify 本 session 的产出；同一 agent 的后续 session 可以；人类不受限） |
@@ -134,6 +148,7 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 - `targetAgentId` 只允许人类提供，且必须是 `getRoomAgents(roomId)` 中存在的实例标识。
 - 状态约束按目标的**当前**状态校验。两次写入即使"同时"到达也会被事件循环序列化，后到的那次在事务内读到的已是新状态，按新状态重新校验，因此同一状态上不会出现两个相互矛盾的 verify（需求 4.5）。
 - 未知 type、字段类型错误一律拒绝。
+- 人类与 agent 使用同一张校验表，没有放宽或收紧，唯一差异是两处按作者区分的规则：exploring 仅限 agent；同 session 不能 verify 仅约束 agent（需求 3.5）。
 
 ### 1.5 派发的 agent 拿到什么
 
@@ -142,7 +157,18 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 1. **房间协议说明**——固定的规则性内容（消息类型含义、写入约束、知识状态转换、`exploring` 规则、调度触发条件、人类消息权重、可用工具等），每次完整给出，直接写死在 prompt 模板里（`04-agent-invocation.md` §2）。
 2. **当前房间状态**——`startSession` 内部调用记忆管理层的 `buildOverview(roomId)`（`02-memory-management.md` §3），预渲染进 prompt。这是派发那一刻的快照；之后 agent 可以随时调用 MCP 的 `get_overview` 刷新，两处共用同一个 `buildOverview`。
 
-两者一起构成这次 session 的完整输入，**跟 `dispatchScope` 无关**——广播和定向派发拿到的 prompt 逐字节一致（需求 3.3.2）。`dispatchScope` 只是记在 session 上的元数据，用于 §1.1 排除定向 session 的产出，不会以任何形式传给 `startSession`/`buildPromptText`。
+两者一起构成这次 session 的完整输入，**跟 `dispatchScope` 无关**——广播和定向派发拿到的 prompt 逐字节一致（需求 3.3.2）。`dispatchScope` 只是记在 session 上的元数据，用于 §1.1 排除定向 session 的产出，以及 §2 失败时恢复对应的标记，不会以任何形式传给 `startSession`/`buildPromptText`。
+
+### 1.6 派发空闲判定 `isDispatchIdle(roomId)`
+
+供 `getRoomStatus` 计算无任务派发提醒（需求 3.1）。只读，不改变任何状态。以下条件全部满足时返回 true：
+
+1. `room.status === 'active'`；
+2. `countMessages(roomId) > 0`，空房间由 Composer 的首条消息提示负责；
+3. 没有 agent 处于 `running`/`stopping`；
+4. 没有 `dispatchEnabled && directedPending` 的 agent，并且 `room.dispatchPending` 为 false 或没有任何 `dispatchEnabled` 的 agent。停用的 agent 不参与判定。
+
+这个值的变化总是伴随着已有的 `roomStatus` 推送（session 结算、`checkAndDispatch` 找不到派发目标、`setAgentEnabled`、房间状态变更），不需要新增事件。
 
 ## 2. 自然结束与最终结算
 
@@ -159,7 +185,7 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 
 没有自动运行时长/无输出超时；卡住时人类可暂停房间、查看日志并终止。MCP 消息可在调用期间持续产生，CLI stdout/stderr 不参与结果判定、不转为 fact——用量统计是唯一从日志内容提取并落盘的数据（`04-agent-invocation.md` §7），它不影响这张结算表，只随 `finishSession` 多写几列数字。正常结束不自动完成 active exploring，不结束 room。
 
-只处理 running/stopping。事务内写 outcome、endedAt、退出元数据、用量统计（`event.usage`）及 process_exited，且仅在 currentSessionSeq 等于本 seq 时释放 agent。撤销凭据，更新连续失败计数（§6），emit `roomStatus` 并执行一次 `checkAndDispatch`。outcome 为 completed 之外的结果时（passed/error/terminated），额外用 `storage.insertMessage` 写一条无 type 的系统占位消息（`authorId` 为该 session 的 agentId、`sessionSeq` 为本次 seq），并 emit `message`——内容按结果分别说明"未发出任何带类型的消息"（passed）、报错原因（error）、"人工终止"（terminated）。事件树（`07-frontend.md` §9）靠这条消息本身留痕，不需要单独的 session 节点。
+只处理 running/stopping。事务内写 outcome、endedAt、退出元数据、用量统计（`event.usage`）及 process_exited，且仅在 currentSessionSeq 等于本 seq 时释放 agent。撤销凭据；outcome 为 error 时按 §1.2"置位"第 2 条恢复标记（与结算同一事务）；更新连续失败计数（§6）；emit `roomStatus` 并执行一次 `checkAndDispatch`。outcome 为 completed 之外的结果时（passed/error/terminated），额外用 `storage.insertMessage` 写一条无 type 的系统占位消息（`authorId` 为该 session 的 agentId、`sessionSeq` 为本次 seq），并 emit `message`——内容按结果分别说明"未发出任何带类型的消息"（passed）、报错原因（error）、"人工终止"（terminated）。事件树（`07-frontend.md` §9）靠这条消息本身留痕，不需要单独的 session 节点。
 
 ## 3. `terminateAgentSession(roomId, seq)`
 
@@ -206,7 +232,7 @@ async function deleteRoom(roomId: number): Promise<void>;
 
 ## 5. "卡住提醒"计数（需求 4.6 / 3.1）
 
-计数发生在 `checkAndDispatch` 每次顺序扫描 agent 列表的过程中（§1.2 第 3 步）：扫描沿途每遇到一个 `running`/`stopping` 且当前带 active `exploring` 的 agent，就给它的内存计数 `stuckCount + 1`，直到遇到第一个可派发（`idle` 且待派发）的 agent 为止（派给它，扫描停止，排在它后面的 agent 这一次不会被计数）；`idle` 但不待派发的 agent 只被跳过，不终止扫描。计数器不落盘，进程重启后归零，属于 UI 提示性质。
+计数只发生在 `checkAndDispatch` 的房间阶段扫描中（§1.2 第 4 步），也就是只在房间标记为 true 的检查里：扫描沿途每遇到一个 `running`/`stopping` 且当前带 active `exploring` 的 agent，就给它的内存计数 `stuckCount + 1`，直到选出 `dispatchTarget` 为止（派给它，扫描停止，排在它后面的 agent 这一次不会被计数）。标记为 false 的检查不扫描，不计数。计数器不落盘，进程重启后归零，属于 UI 提示性质。
 
 **清零时机**：该 agent 的 active `exploring` 状态发生变化时归零，统一调用 `resetStuckCount(roomId, agentId)`：
 
@@ -216,7 +242,7 @@ async function deleteRoom(roomId: number): Promise<void>;
 
 **展示**：`stuckCount >= N` 且该 agent 当前有 active `exploring` 时，`getRoomStatus` 里对应 agent 标记"疑似卡住"，前端展示提醒，不自动处理；没有 active `exploring` 时不展示（无论计数是多少）。默认 `N = 3`，可通过服务端配置调整（需求第 9 节）。
 
-只要一次 session 还在跑、还是同一条 exploring，房间里每有一次派发扫描经过它就计一次；跑得越久、房间里其他 agent 越活跃，累积得越快。
+只要一次 session 还在跑、还是同一条 exploring，房间里每有一次房间阶段扫描经过它就计一次；跑得越久、房间里其他 agent 越活跃，累积得越快。
 
 **已知限制**：房间里只有一个 agent 时，扫描不会反复经过它，计数很难累积，这套机制基本不起作用，人类靠 `getRoomStatus` 的"已运行 X 秒"自己判断（需求 4.6）。不额外设计备用机制。
 
@@ -225,8 +251,8 @@ async function deleteRoom(roomId: number): Promise<void>;
 每个 agent 一个**内存** `failureCount`（roomId+agentId，重启归零，与 `stuckCount` 同类，不落盘）：
 
 - **结算更新**：`onSessionEnded` 结算为 `error` 时 `failureCount + 1`；结算为其他终态（`completed`/`passed`/`terminated`）时清零。
-- **自动停用**：`failureCount` 达到阈值（默认 3，服务端配置可调）时，调用 `storage.setAgentEnabled(roomId, agentId, false)`，清零计数，`emit('roomStatus')`。停用状态持久化在 `room_agents.dispatch_enabled`，重启后仍生效。
-- **派发跳过**：`checkAndDispatch` 扫描时跳过 `dispatchEnabled === false` 的 agent（§1.2 第 3 步），继续看后面的；停用不终止正在运行的 session。即使有定向给它的消息，也要等人类重新启用后才会被派发。
+- **自动停用**：`failureCount` 达到阈值（默认 3，服务端配置可调）时，调用 `storage.setAgentEnabled(roomId, agentId, false)`，清零计数，`emit('roomStatus')`。停用状态持久化在 `room_agents.dispatch_enabled`，重启后仍生效。停用发生在 §2 恢复标记之后：被停用 agent 的 broadcast session 失败所恢复的房间标记，会在紧接着的 `checkAndDispatch` 里派给其他 agent。
+- **派发跳过**：`checkAndDispatch` 扫描时跳过 `dispatchEnabled === false` 的 agent（§1.2 第 3、4 步），继续看后面的；停用不终止正在运行的 session。它的定向标记保留，要等人类重新启用后才会被派发。
 - **人工启停**：`setAgentEnabled(roomId, agentId, enabled)` 是人类显式操作。启用时清零 `failureCount`、`emit('roomStatus')` 并调用一次 `checkAndDispatch`；停用只 `emit('roomStatus')`。系统不自动恢复。
 - **展示**：`getRoomStatus` 暴露每个 agent 的 `enabled` 与 `failureCount`，前端展示"连续失败，已停用派发"并提供启用/停用控件（`07-frontend.md` §5）。
 
@@ -248,6 +274,7 @@ function getStuckAgents(roomId: number): { agentId: string; stuckCount: number }
 function resetStuckCount(roomId: number, agentId: string): void;
 function getAgentFailures(roomId: number): { agentId: string; failureCount: number }[];
 function setAgentEnabled(roomId: number, agentId: string, enabled: boolean): void;
+function isDispatchIdle(roomId: number): boolean; // §1.6
 ```
 
 ## 8. 对外依赖
@@ -255,9 +282,9 @@ function setAgentEnabled(roomId: number, agentId: string, enabled: boolean): voi
 ```typescript
 // 存储层（见 01-storage.md）
 getRoom, setRoomStatus, increaseMaxSessions, deleteRoom,
-getRoomAgents, setAgentState, setAgentEnabled,
+getRoomAgents, setAgentState, setAgentEnabled, setDispatchPending, setDirectedPending,
 createSession, finishSession, markSessionTerminating, appendSessionEvent, getSession,
-getLatestSessionStartedAt, countSessions, getLatestTriggerAt,
+countSessions,
 runInTransaction, insertMessage, getMessageById, countMessages, getMessagesBySession,
 getActiveExploring, getActiveExploringByAuthor, completeExploring,
 setMessageType, setQuestionStatus, setChainStatus

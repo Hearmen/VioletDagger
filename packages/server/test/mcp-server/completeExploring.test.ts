@@ -21,7 +21,7 @@ function setup() {
 describe('createCompleteExploringHandler', () => {
   it('rejects missing results and invalid result references without ending exploration', () => {
     const { db, room, session, completeExploring } = setup();
-    const { message } = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'investigation', type: 'exploring' });
+    const message = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'investigation', type: 'exploring' });
     const params = { roomId: room.id, authorId: 'codex', messageId: message.id };
     expect(() => completeExploring({ ...params, resultSummary: ' ' })).toThrow('resultSummary');
     expect(() => completeExploring({ ...params, resultSummary: 'done', resultMessageIds: [999] })).toThrow('not found');
@@ -33,7 +33,7 @@ describe('createCompleteExploringHandler', () => {
   });
   it('marks the active exploring message completed, emits memoryUpdate, and resets stuck count', () => {
     const { db, room, session, roomEvents, resetStuckCount, completeExploring } = setup();
-    const { message } = insertMessage(db, {
+    const message = insertMessage(db, {
       roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'exploring X', type: 'exploring',
     });
     const memoryEvents: any[] = [];
@@ -60,7 +60,7 @@ describe('createCompleteExploringHandler', () => {
 
   it('rejects a message that is not an active exploring record', () => {
     const { db, room, session, completeExploring } = setup();
-    const { message } = insertMessage(db, {
+    const message = insertMessage(db, {
       roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'a fact', type: 'fact',
     });
     expect(() => completeExploring({ roomId: room.id, authorId: 'codex', messageId: message.id })).toThrow(McpToolError);
@@ -70,7 +70,7 @@ describe('createCompleteExploringHandler', () => {
     const { db, room, completeExploring } = setup();
     const s2 = createSession(db, room.id, 'claude');
     setAgentState(db, room.id, 'claude', 'running', s2.seq);
-    const { message } = insertMessage(db, {
+    const message = insertMessage(db, {
       roomId: room.id, sessionSeq: s2.seq, authorId: 'claude', content: 'exploring Y', type: 'exploring',
     });
     expect(() => completeExploring({ roomId: room.id, authorId: 'codex', messageId: message.id })).toThrow(McpToolError);

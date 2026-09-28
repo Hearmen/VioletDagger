@@ -117,6 +117,49 @@ describe('EventTreePanel', () => {
     expect(screen.getByText('codex #1 · done · 12.3k tok')).toBeInTheDocument();
   });
 
+  it('appends the total run time of an ended session between the outcome and the token count', () => {
+    const messages = [makeMessage({ id: 1, sessionSeq: 1, authorId: 'codex' })];
+    render(
+      <EventTreePanel
+        sessions={[makeSession({
+          seq: 1, agentId: 'codex', outcome: 'completed',
+          startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T00:03:25.000Z',
+          inputTokens: 8000, outputTokens: 4345,
+        })]}
+        messages={messages}
+        onOpenSession={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('codex #1 · done · 03:25 · 12.3k tok')).toBeInTheDocument();
+  });
+
+  it('formats run times over an hour as h:mm:ss', () => {
+    const messages = [makeMessage({ id: 1, sessionSeq: 1, authorId: 'codex' })];
+    render(
+      <EventTreePanel
+        sessions={[makeSession({
+          seq: 1, agentId: 'codex', outcome: 'error',
+          startedAt: '2026-01-01T00:00:00.000Z', endedAt: '2026-01-01T01:02:03.000Z',
+        })]}
+        messages={messages}
+        onOpenSession={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('codex #1 · error · 1:02:03')).toBeInTheDocument();
+  });
+
+  it('shows no run time while the session is still running', () => {
+    const messages = [makeMessage({ id: 1, sessionSeq: 1, authorId: 'codex' })];
+    render(
+      <EventTreePanel
+        sessions={[makeSession({ seq: 1, agentId: 'codex', outcome: 'running', startedAt: '2026-01-01T00:00:00.000Z', endedAt: null })]}
+        messages={messages}
+        onOpenSession={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('codex #1')).toBeInTheDocument();
+  });
+
   it('omits the token suffix when the agent does not report token usage', () => {
     const messages = [makeMessage({ id: 1, sessionSeq: 3, authorId: 'kimi' })];
     render(

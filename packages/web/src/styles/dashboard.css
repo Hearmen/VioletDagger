@@ -560,9 +560,37 @@ body.is-resizing-y {
 .type-badge--chain { color: var(--accent); }
 .type-badge--exploring { color: #39c5cf; }
 .type-badge--propose_completion { color: #56d364; }
-.type-badge--endorse { color: var(--ok); }
 .type-badge--challenge { color: var(--danger); }
 .type-badge--verify { color: var(--info); }
+
+/* ---- status badge（紧跟类型徽标，只用于有状态的类型，见 07-frontend.md §2）---- */
+.status-badge {
+  font-size: 10px;
+  font-family: var(--mono);
+  padding: 0 6px;
+  border-radius: 10px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+
+.status-badge--question-open { color: var(--warn); }
+.status-badge--question-resolved { color: var(--ok); }
+.status-badge--question-unresolved { color: var(--text-muted); }
+.status-badge--chain-candidate { color: var(--text-muted); }
+.status-badge--chain-verified { color: var(--ok); }
+.status-badge--chain-challenged { color: var(--warn); }
+.status-badge--chain-reject { color: var(--danger); }
+.status-badge--verify-true { color: var(--ok); }
+.status-badge--verify-false { color: var(--danger); }
+
+.goal-tag {
+  font-size: 10px;
+  font-family: var(--mono);
+  padding: 0 6px;
+  border-radius: 10px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
 
 /* ---- composer ---- */
 .composer {
@@ -681,6 +709,23 @@ body.is-resizing-y {
 
 .composer__type-option:hover {
   border-color: var(--accent);
+}
+
+.composer__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--warn);
+}
+
+.composer__requirement {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.composer__note {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .composer__readonly {

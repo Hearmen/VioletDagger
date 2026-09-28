@@ -1,11 +1,8 @@
-import { validateMessageRelations } from '../storage/messages';
 import { readFileSync } from 'node:fs';
 import type { EventEmitter } from 'node:events';
 import type Database from 'better-sqlite3';
 import {
   listMessages as storageListMessages,
-  insertMessage,
-  getMessageById,
   countSessions,
   listSessions,
   getMessagesBySession,
@@ -16,17 +13,18 @@ import {
   listSessionEvents,
   getUsageTotals,
 } from '../storage';
-import type { MessageType } from '../storage';
+import type { CloseReason, MessageType } from '../storage';
 import { buildMemoryView } from '../memory';
 import {
-  onSubstantiveMessagePosted,
+  submitMessage,
+  SubmitMessageError,
   pauseRoom as orchestratorPauseRoom,
   resumeRoom as orchestratorResumeRoom,
   confirmCompletion as orchestratorConfirmCompletion,
   terminateAgentSession as orchestratorTerminateAgentSession,
   setAgentEnabled as orchestratorSetAgentEnabled,
   getStuckAgents,
-  isDispatchOwed,
+  isDispatchIdle,
   type StopSessionProcess,
   type FailureCounter,
 } from '../orchestrator-core';
@@ -44,44 +42,45 @@ export interface RpcDeps {
 }
 
 export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) => unknown> {
-  const { db, roomId, roomEvents, startSession, stopSessionProcess, stuckCounter, failureCounter } = deps;
+  const { db, roomId, startSession, stopSessionProcess, stuckCounter, failureCounter } = deps;
 
   return {
     listMessages(params?: { cursor?: number; limit?: number }) {
       return storageListMessages(db, roomId, params?.cursor, params?.limit);
     },
 
+    // 直接交给核心 submitMessage（见 06-orchestrator-api.md §4、03-orchestrator-core.md §1.4）：
+    // authorId 固定为 "human"，校验、首条消息规则、状态转换、派发全部在核心完成，这里不做任何特判。
     postHumanMessage(params: {
       content: string;
       type?: MessageType;
       targetMessageId?: number;
       referencedMessageIds?: number[];
+      verifyVerdict?: boolean;
+      closesQuestion?: boolean;
+      chainResolution?: CloseReason;
+      summary?: string;
       targetAgentId?: string;
     }) {
-      try { validateMessageRelations(db, roomId, params); }
-      catch (err) { throw new ApiError((err as Error).message, 400); }
-
-      // @ 定向消息（需求 3.3.2，人类专属）：targetAgentId 必须是本房间已存在的 agent 实例标识。
-      if (params.targetAgentId != null && !getRoomAgents(db, roomId).some((agent) => agent.agentId === params.targetAgentId)) {
-        throw new ApiError(`targetAgentId "${params.targetAgentId}" is not an agent in this room`, 400);
+      try {
+        const { message } = submitMessage(db, {
+          roomId,
+          author: { kind: 'human' },
+          content: params?.content,
+          type: params?.type,
+          targetMessageId: params?.targetMessageId,
+          referencedMessageIds: params?.referencedMessageIds,
+          verifyVerdict: params?.verifyVerdict,
+          closesQuestion: params?.closesQuestion,
+          chainResolution: params?.chainResolution,
+          summary: params?.summary,
+          targetAgentId: params?.targetAgentId,
+        }, startSession, stuckCounter);
+        return { messageId: message.id };
+      } catch (err) {
+        if (err instanceof SubmitMessageError) throw new ApiError(err.message, 400);
+        throw err;
       }
-
-      const { message, supersededExploringId } = insertMessage(db, {
-        roomId,
-        sessionSeq: null,
-        authorId: 'human',
-        content: params.content,
-        type: params.type,
-        targetMessageId: params.targetMessageId,
-        targetAgentId: params.targetAgentId,
-        referencedMessageIds: params.referencedMessageIds,
-      });
-      roomEvents.emit('message', { roomId, message });
-      if (supersededExploringId != null) {
-        roomEvents.emit('memoryUpdate', { roomId, messageId: supersededExploringId });
-      }
-      onSubstantiveMessagePosted(db, roomId, startSession, stuckCounter);
-      return { messageId: message.id };
     },
 
     getMemoryView() {
@@ -95,27 +94,11 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
       const activeExploring = getActiveExploring(db, roomId);
       const roomAgents = getRoomAgents(db, roomId);
 
-      // 派发收敛提示（纯展示，见 06-orchestrator-api.md §4）：caughtUp 复用 dispatch.ts 的 isDispatchOwed，
-      // 不重新实现一遍；allCaughtUp 只看 dispatchEnabled 的 agent，且要求房间至少跑过一次 session，
-      // 避免刚建好、一条消息都没有的空房间被误判成"已收敛"。
-      const enabledAgents = roomAgents.filter((agent) => agent.dispatchEnabled);
-      const caughtUpById = new Map(
-        roomAgents.map((agent) => [
-          agent.agentId,
-          agent.state === 'idle' && !isDispatchOwed(db, roomId, agent.agentId),
-        ]),
-      );
-      const allCaughtUp =
-        enabledAgents.length > 0 &&
-        countSessions(db, roomId) > 0 &&
-        enabledAgents.every((agent) => caughtUpById.get(agent.agentId));
-
       return {
         currentSessionCount: countSessions(db, roomId),
         status: room.status,
-        completionReason: room.completionReason ?? undefined,
-        completionReferenceMessageId: room.completionReferenceMessageId ?? undefined,
-        allCaughtUp,
+        dispatchIdle: isDispatchIdle(db, roomId),
+        disabledAgentCount: roomAgents.filter((agent) => !agent.dispatchEnabled).length,
         agents: roomAgents.map((agent) => {
           const active = agent.state === 'running' || agent.state === 'stopping';
           const session =
@@ -131,7 +114,6 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
           return {
             agentId: agent.agentId,
             state: agent.state,
-            caughtUp: caughtUpById.get(agent.agentId) ?? false,
             sessionId: active ? agent.currentSessionSeq ?? undefined : undefined,
             sessionStartedAt: session?.startedAt,
             stopIntent: session?.stopIntent ?? undefined,

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import type Database from 'better-sqlite3';
-import { getRoom, setRoomStatus, setSessionPgid, setSessionRawLogPath, insertMessage } from '../storage';
+import { getRoom, setRoomStatus, setSessionPgid, setSessionRawLogPath, insertMessage, getFirstMessage } from '../storage';
 import { roomEvents } from '../events';
 import { buildOverview } from '../memory';
 import { buildPromptText, writePromptFile } from './prompt';
@@ -241,13 +241,15 @@ export function createAgentInvocation(deps: {
     const roomCwd = getRoom(db, roomId)?.workdir?.trim() || process.env.VIOLETDAGGER_WORKDIR || process.cwd();
 
     const overview = buildOverview(db, roomId);
-    const promptText = buildPromptText({ roomId, agentId, overview });
+    // goal 的完整正文（概览里只有摘要，任务描述必须完整给出，见 04-agent-invocation.md §2.1）。
+    const goalContent = getFirstMessage(db, roomId)?.content ?? '';
+    const promptText = buildPromptText({ roomId, agentId, goalContent, overview });
     const promptLimit = Number(process.env.VIOLETDAGGER_MAX_PROMPT_BYTES ?? 128 * 1024);
     if (!Number.isInteger(promptLimit) || promptLimit <= 0 || Buffer.byteLength(promptText, 'utf8') > promptLimit) {
       setRoomStatus(db, roomId, 'paused_manual');
       const content = `完整记忆输入超过预算（${promptLimit} bytes）或预算配置无效，房间已暂停；历史未截断。请调整 VIOLETDAGGER_MAX_PROMPT_BYTES 后再恢复。`;
       console.error(`Room ${roomId}: ${content}`);
-      const { message } = insertMessage(db, { roomId, sessionSeq: seq, authorId: 'system', content });
+      const message = insertMessage(db, { roomId, sessionSeq: seq, authorId: 'system', content });
       roomEvents.emit('message', { roomId, message });
       roomEvents.emit('roomStatus', { roomId });
       onSessionEnded({ roomId, seq, agentId, exitCode: null, signal: null, exitCause: 'spawn-failed', rawLogPath });

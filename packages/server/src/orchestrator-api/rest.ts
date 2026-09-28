@@ -55,7 +55,7 @@ export function listAgentsHandler(
 export function createRoomHandler(
   db: Database.Database,
   registry: AgentRegistry,
-  body: { name: string; agentIds: string[]; schedulingMode: string; maxSessions?: number; workdir?: string; autoConfirmOnSilence?: boolean },
+  body: { name: string; agentIds: string[]; schedulingMode: string; maxSessions?: number; workdir?: string },
 ): Room {
   if (typeof body.name !== 'string' || body.name.length === 0) {
     throw new ApiError('name must be a non-empty string');
@@ -77,13 +77,10 @@ export function createRoomHandler(
   if (body.workdir != null && typeof body.workdir !== 'string') {
     throw new ApiError('workdir must be a string');
   }
-  if (body.autoConfirmOnSilence != null && typeof body.autoConfirmOnSilence !== 'boolean') {
-    throw new ApiError('autoConfirmOnSilence must be a boolean');
-  }
   const workdir = resolveWorkdir(body.workdir);
   try {
     return createRoom(db, body.name, body.agentIds, 'sequential', {
-      maxSessions: body.maxSessions, workdir, autoConfirmOnSilence: body.autoConfirmOnSilence,
+      maxSessions: body.maxSessions, workdir,
     });
   } catch (err) {
     throw new ApiError(err instanceof Error ? err.message : 'failed to create room');

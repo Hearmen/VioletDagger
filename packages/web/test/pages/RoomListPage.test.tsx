@@ -56,8 +56,7 @@ describe('RoomListPage', () => {
   it('submits the form via createRoom with agentIds', async () => {
     vi.mocked(rest.createRoom).mockResolvedValue({
       id: 9, name: 'new room', schedulingMode: 'sequential', status: 'active',
-      completionReason: null, completionReferenceMessageId: null,
-      maxSessions: 20, workdir: '/tmp/work', autoConfirmOnSilence: false, createdAt: 'now',
+      maxSessions: 20, workdir: '/tmp/work', createdAt: 'now',
     });
     render(<MemoryRouter><RoomListPage /></MemoryRouter>);
     await screen.findByLabelText('add codex');
@@ -74,8 +73,7 @@ describe('RoomListPage', () => {
   it('passes an optional maxSessions through when filled', async () => {
     vi.mocked(rest.createRoom).mockResolvedValue({
       id: 9, name: 'new room', schedulingMode: 'sequential', status: 'active',
-      completionReason: null, completionReferenceMessageId: null,
-      maxSessions: 9, workdir: '/tmp/work', autoConfirmOnSilence: false, createdAt: 'now',
+      maxSessions: 9, workdir: '/tmp/work', createdAt: 'now',
     });
     render(<MemoryRouter><RoomListPage /></MemoryRouter>);
     await screen.findByLabelText('add codex');
@@ -95,8 +93,7 @@ describe('RoomListPage', () => {
   it('passes an optional workdir through when filled', async () => {
     vi.mocked(rest.createRoom).mockResolvedValue({
       id: 9, name: 'new room', schedulingMode: 'sequential', status: 'active',
-      completionReason: null, completionReferenceMessageId: null,
-      maxSessions: 20, workdir: '/tmp/room-w', autoConfirmOnSilence: false, createdAt: 'now',
+      maxSessions: 20, workdir: '/tmp/room-w', createdAt: 'now',
     });
     render(<MemoryRouter><RoomListPage /></MemoryRouter>);
     await screen.findByLabelText('add codex');

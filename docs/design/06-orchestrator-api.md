@@ -79,6 +79,7 @@ postHumanMessage(params: {
 // authorId 固定为 "human"，不从客户端传入。除 targetAgentId 外，参数含义与校验规则与 post_message（05-mcp-server.md §4）完全一致，
 // 校验由核心统一完成；SubmitMessageError 转为 RPC error，文案原样返回。
 // 房间首条消息的 type 由核心强制设为 open_question（需求 3.1），且首条消息不能带 targetAgentId。
+// type: 'exploring' 由核心拒绝（人类不发送 exploring，需求 3.5）。
 // targetAgentId 必须是本房间的 agent 实例标识（需求 3.3.2）。是否派发、按广播还是定向处理，全部在核心的 checkAndDispatch 中决定，这里不做任何特判。
 
 // 记忆视图（全文，不是摘要）
@@ -90,6 +91,8 @@ getMemoryView(): MemoryViewPayload;
 getRoomStatus(): {
   currentSessionCount: number; // countSessions(roomId)：本 room 的 session 总数，error 同样计入（见 01-storage.md）
   status: RoomStatus;
+  dispatchIdle: boolean;        // orchestratorCore.isDispatchIdle(roomId)，见 03 §1.6
+  disabledAgentCount: number;   // dispatchEnabled === false 的 agent 数，供提醒文案使用
   agents: {
     agentId: string;               // agent 实例标识（见 00-overview.md），非注册表 key
     state: 'idle' | 'running' | 'stopping';

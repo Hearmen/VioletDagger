@@ -4,7 +4,10 @@ export {
   createFailureCounter, getAgentFailures, FAILURE_THRESHOLD, type FailureCounter,
 } from './failureCounter';
 export { setAgentEnabled } from './agentControl';
-export { checkAndDispatch, onSubstantiveMessagePosted, isDispatchOwed, type StartSession } from './dispatch';
+export { checkAndDispatch, isDispatchIdle, type StartSession } from './dispatch';
+export {
+  submitMessage, SubmitMessageError, type SubmitMessageInput, type MessageAuthor,
+} from './submitMessage';
 export {
   onSessionEnded, terminateAgentSession, onSessionExitProgress, type StopSessionProcess,
 } from './sessionLifecycle';
