@@ -1,4 +1,6 @@
-import type { MessageType } from '../api/types';
+import type { EventTreePayload, MessageType } from '../api/types';
+
+type SessionMeta = EventTreePayload['sessions'][number];
 
 const AGENT_COLORS: Record<string, string> = {};
 
@@ -102,4 +104,36 @@ export function formatTokens(n: number): string {
 export function formatCostUsd(n: number): string {
   if (n === 0) return '$0';
   return n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
+}
+
+// session 结果未揭晓（running/stopping）时标签只显示 agentId #seq；到达终态后追加结果
+// （见需求 3.5、07-frontend.md §9.2）。展示文案与底层 outcome 值不是同一个词：'completed' 显示为
+// 'done'，避免和房间级 status === 'completed'（房间头部状态徽标、房间列表卡片）撞语义。
+const OUTCOME_LABELS: Partial<Record<SessionMeta['outcome'], string>> = {
+  completed: 'done',
+};
+
+// 运行时长后缀（07-frontend.md §9.2）：只对已结束（endedAt 非 null）的 session 显示 endedAt − startedAt；
+// 任一时间戳无法解析时不追加。running 的实时时长只在 AgentRail 展示。
+function sessionDuration(meta: SessionMeta): string | null {
+  if (meta.endedAt == null) return null;
+  const start = Date.parse(meta.startedAt);
+  const end = Date.parse(meta.endedAt);
+  if (Number.isNaN(start) || Number.isNaN(end)) return null;
+  return formatDuration((end - start) / 1000);
+}
+
+// 用量后缀（07-frontend.md §9.2）：时间线页的 session 标签与 Session 页的列头（§9.3）共用本函数。
+// inputTokens/outputTokens 都非 null 才追加，只要有一个是 null
+// （如 kimi）就什么都不追加，不摆占位符；费用不放进这个标签，太挤，见 SessionDetailModal。
+export function sessionTagLabel(meta: SessionMeta | undefined, agentId: string, seq: number): string {
+  const base = `${agentId} #${seq}`;
+  if (!meta || meta.outcome === 'running' || meta.outcome === 'stopping') return base;
+  const parts = [base, OUTCOME_LABELS[meta.outcome] ?? meta.outcome];
+  const duration = sessionDuration(meta);
+  if (duration != null) parts.push(duration);
+  if (meta.inputTokens != null && meta.outputTokens != null) {
+    parts.push(formatTokens(meta.inputTokens + meta.outputTokens));
+  }
+  return parts.join(' · ');
 }

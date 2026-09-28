@@ -11,7 +11,7 @@ React + Vite。只消费 `06-orchestrator-api.md` 的 REST + WebSocket 接口，
 - `/`：RoomListPage——房间列表 + 新建房间。
 - `/rooms/:roomId`：RoomDashboardPage——单个房间的完整工作视图。
 
-房间视图是**单屏多面板看板**：agent 状态、消息流、记忆视图、事件树四个面板同屏常驻，页面本身不滚动，每个面板各自内部滚动。**不设标签页**——需求 3.1 要求"实时看着这一切发生"，切走一个面板就会漏掉实时更新，所以四个面板必须同时可见（狭窄屏幕下退化为纵向堆叠，见第 3 节）。
+房间视图是**单屏多面板看板**：agent 状态、消息流、记忆视图、事件树四个面板同屏常驻，页面本身不滚动，每个面板各自内部滚动。**不设标签页**——需求 3.1 要求"实时看着这一切发生"，切走一个面板就会漏掉实时更新，所以四个面板必须同时可见（狭窄屏幕下退化为纵向堆叠，见第 3 节）。这条约束针对的是面板之间：面板**内部**可以用标签页切换同一份数据的不同呈现方式（如 EventTreePanel 的"时间线 / Session"，见第 9 节），因为切到哪一页都同样实时更新，不会漏掉任何东西。
 
 ## 2. 视觉体系（深色技术仪表盘）
 
@@ -199,7 +199,18 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 
 ## 9. EventTreePanel
 
-右栏，独占一列全高（`grid-area: events`）。时间线上不存在独立的 session 节点——每一行对应一条消息（agent 在 session 里发的，或人类发的），直接复用 MessageStreamPanel 已持有的那份 `messages` 状态，按 `createdAt` 升序排成一条**竖直时间线**（新在下），默认贴底；`newMessage` 推送追加后自动同步。`listMessages` 是分页的，时间线只覆盖已加载窗口内的历史。
+右栏，独占一列全高（`grid-area: events`）。面板内有两个标签页，呈现同一份数据：**时间线**（§9.2，默认）与 **Session**（§9.3）。
+
+### 9.1 标签页
+
+- 标签放在面板标题栏的 `actions` 位（`Panel` 的 `actions` 插槽），`role="tablist"`，两个 `role="tab"` 按钮"时间线"/"Session"，`aria-selected` 标出当前页；选中态用 `--accent` 下边框 + `--accent-soft` 背景。
+- 两页的数据源完全相同：MessageStreamPanel 持有的 `messages` 状态 + `getEventTree().sessions`，实时更新规则（§13）不变，切换标签页不重新拉取。标题栏计数 `count` 两页都是已加载的消息条数。
+- 当前选中的标签页写入 `localStorage`（key `vd.eventTree.tab`，值 `timeline` / `sessions`），刷新后沿用；读不到或值非法时回到 `timeline`。读写包在 try/catch 里，失败时只是不记忆，不影响渲染。
+- 未选中的那一页不渲染（不是 `display:none` 隐藏），切回时重新挂载并贴底。
+
+### 9.2 时间线页
+
+时间线上不存在独立的 session 节点——每一行对应一条消息（agent 在 session 里发的，或人类发的），直接复用 MessageStreamPanel 已持有的那份 `messages` 状态，按 `createdAt` 升序排成一条**竖直时间线**（新在下），默认贴底；`newMessage` 推送追加后自动同步。`listMessages` 是分页的，时间线只覆盖已加载窗口内的历史。
 
 - **消息节点**：类型徽标 + 作者（身份色）+ `HH:mm:ss` + 内容摘要，仅包含 `messages` 表里的正式房间消息（不含原始日志行）。
 - **session 标签**：agent 消息额外带一个 `agentId #seq` 标签（`sessionId` 见需求 4.2）；running/stopping 时只显示 `agentId #seq`，到达终态后从 `getEventTree().sessions` 按 `(agentId, seq)` 查到 outcome 追加显示。**展示文案与底层 `outcome` 值不是同一个词**——`outcome === 'completed'` 显示为 `done`，例如 `codex #1 · done`、`kimi #2 · passed`、`kimi #3 · error`；这是刻意的改写，房间级 `status === 'completed'`（房间头部状态徽标、房间列表卡片，见 §4/§11）在事件树里满屏都是 session 标签的情况下太容易和"这次 session 正常结束、发过实质消息"混成一回事，改用 `done` 避免视觉/语义撞车，底层数据和 API 字段名不变。点击这个标签 → `getSessionDetail({ sessionId })` 打开 `SessionDetailModal`（**复盘视图**，元数据 + 消息列表 + 只读日志回放；running session 也走这里，只是日志为当前快照，见 §10.2）。注意与 AgentRail 的 `LiveSessionModal`（§10.1，实时只读日志）是**两个不同的入口、两种不同的内容**。**人类消息没有这个标签**（没有 `sessionId`），用 human 色 + "人类"标签代替，与 agent 消息在样式上明显区分（需求 3.5）。
@@ -209,6 +220,25 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - `passed`/报错/人工终止且此前没有实质消息的情况，由编排器核心补写的系统占位消息（见需求 3.5、`03-orchestrator-core.md` §2）会作为一条普通消息节点出现在时间线上，旁边的 session 标签同样按上面规则显示 `· passed`/`· error`/`· terminated`——不需要额外的展示逻辑。
 - **关联线**：每个消息节点带 `data-message-id`；反应类消息（`challenge`/`verify`）和带 `referencedMessageIds` 的 `chain`，在节点旁用一层绝对定位的 SVG（贝塞尔曲线）连到目标节点；目标不在当前时间线内（未加载）时跳过。连线颜色取源消息类型徽标色，选中目标时高亮。主轴就是真实时间，源节点和目标节点通常本就相邻，连线不再需要跨越远距离的容器。
 - 空态：没有任何消息时显示"还没有任何事件"。
+
+### 9.3 Session 页（泳道视图）
+
+横向排列 session、纵向按时间排列事件的泳道图，只标出"哪个 session 在什么时候产出了什么类型的事件"，**不显示消息内容**。
+
+- **事件**：只包括 `messages` 里的消息（与时间线页的条目完全相同，不含生命周期记录和原始日志行），一条消息就是一个事件。
+- **列**：
+  - 最左是固定的时间列（`HH:mm:ss`，`--text-faint`、`--mono`），横向滚动时 `position: sticky; left: 0` 固定不动。
+  - 然后是"人类"列：已加载的消息里至少有一条人类消息（`sessionSeq == null`）时才出现，放所有人类消息。
+  - 然后每个 session 一列，按 `seq` 升序从左到右排列。出现的 session 是以下两部分的并集：已加载消息里 `sessionSeq` 出现过的 session，以及 `getEventTree().sessions` 里 `outcome` 为 `running`/`stopping` 的 session（刚启动、还没发消息的 session 也会立刻出现一个空列）。已加载窗口之外、在窗口内没有任何消息的历史 session 不占列。
+  - 列宽固定 120px，超出面板宽度时面板 body 横向滚动（纵向与横向滚动条都常显，同 §3）。
+- **列头**（`position: sticky; top: 0`，`--panel-head` 背景）：
+  - session 列：按钮，身份色（`colorForAgent(agentId)`）描边，文案与 §9.2 的 session 标签完全一致（`codex #1 · done · 03:25 · 12.3k tok`，outcome 文案/配色、时长后缀、用量后缀规则都相同，同一个函数生成）；列宽放不下时省略号截断，`title` 显示完整文案。点击 → 打开 `SessionDetailModal`（与 §9.2 的 session 标签是同一个入口）。
+  - 人类列：静态文字"人类"，human 色，不可点击。
+- **行**：所有事件按与 §9.2 相同的排序（`createdAt` 升序，相同时按 `id` 升序）每条占一个全局行，这条事件的块只出现在它所属的那一列，同一行的其他列留空——各列共用同一条时间轴，并发的 session 在纵向上如实交错。行高固定、紧凑（22px），行与行之间用 `--border` 细线分隔。
+- **事件块**：`MessageTypeBadge`（无 type 的消息用中性灰"消息"徽标）+ `#N`（`--mono`、`--text-muted`）。不显示内容、作者、状态徽标、@ 定向徽标。块左侧 2px 竖条取所在列的颜色（session 列用身份色，人类列用 human 色）。点击 → `onJumpToMessage(message.id)`，在消息流中定位并高亮（与 §9.2 点击时间/内容的行为一致）。
+- **不画关联线**：泳道视图里源和目标常常跨列，贝塞尔连线会横穿整张表、干扰阅读；要看引用关系就切回时间线页。
+- **贴底**：同 §9.2，默认滚到最底部（最新事件）；用户往上滚动后，新事件到来时不强制拉回底部；滚回底部附近（距底 ≤ 24px）后恢复自动贴底。
+- 空态：没有任何消息时显示"还没有任何事件"（与 §9.2 相同）。
 
 ## 10. Session 视图
 
@@ -311,6 +341,7 @@ src/
 ├── styles/theme.css             # 设计令牌（第 2 节）
 ├── styles/dashboard.css         # 布局与面板样式（第 3 节）
 ├── utils/ansi.ts                # 日志 ANSI/控制字符显示清理
+├── utils/format.ts              # 格式化工具；含 sessionTagLabel（session 标签文案，第 9.2 与 9.3 节共用）
 ├── pages/RoomListPage.tsx
 ├── pages/RoomDashboardPage.tsx  # 取代原 RoomPage
 ├── components/
@@ -320,7 +351,8 @@ src/
 │   ├── MessageStreamPanel.tsx   # 取代 MessageStreamTab（含 MessageRow）
 │   ├── Composer.tsx             # 从 MessageStream 拆出的发送框
 │   ├── MemoryPanel.tsx          # 取代 MemoryPanelTab（总线 + 逐级下钻）
-│   ├── EventTreePanel.tsx       # 取代 EventTreeTab（含关联线）
+│   ├── EventTreePanel.tsx       # 取代 EventTreeTab：标签页外壳 + 时间线页（含关联线）（第 9.1/9.2 节）
+│   ├── SessionLanes.tsx         # 事件树 Session 页：按 session 的泳道视图（第 9.3 节）
 │   ├── LiveSessionModal.tsx     # AgentRail 入口：实时只读日志（第 10.1 节）
 │   ├── SessionDetailModal.tsx   # 事件树入口：元数据 + 消息列表 + 只读回放（第 10.2 节）
 │   ├── SessionLogView.tsx        # 纯文本日志，两个 modal 共用
@@ -332,7 +364,7 @@ src/
 └── api/{rest.ts,types.ts}
 ```
 
-`*Tab` 后缀组件统一改名为 `*Panel`；`test/` 下对应测试同步更新，并新增布局、Composer 目标/类型选择、EventTree 人类消息穿插与关联线、MemoryPanel 总线/逐级下钻、LiveSessionModal 实时日志（`mode=live` 只读）、SessionDetailModal 复盘视图（`mode=replay` 只读回放、running 也走 replay）、删除房间、多实例建房间、agent 派发启停的测试。
+`*Tab` 后缀组件统一改名为 `*Panel`；`test/` 下对应测试同步更新，并新增布局、Composer 目标/类型选择、EventTree 人类消息穿插与关联线、事件树标签页切换与记忆、Session 泳道（列的组成与顺序、全局行对齐、列头打开详情、事件块定位消息）、MemoryPanel 总线/逐级下钻、LiveSessionModal 实时日志（`mode=live` 只读）、SessionDetailModal 复盘视图（`mode=replay` 只读回放、running 也走 replay）、删除房间、多实例建房间、agent 派发启停的测试。
 
 ## 17. Agent 可用性与停用
 

@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, within, cleanup } from '@testing-library/react';
 import { EventTreePanel } from '../../src/components/EventTreePanel';
 import { SessionDetailModal } from '../../src/components/SessionDetailModal';
 import type { EventTreePayload, Message, SessionDetailPayload } from '../../src/api/types';
@@ -242,5 +242,91 @@ describe('SessionDetailModal', () => {
     render(<SessionDetailModal roomId={1} detail={makeDetail()} onClose={onClose} />);
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe('EventTreePanel tabs and session lanes', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  const sessions = [
+    makeSession({ seq: 1, agentId: 'codex', outcome: 'completed' }),
+    makeSession({ seq: 2, agentId: 'kimi', outcome: 'passed' }),
+    makeSession({ seq: 3, agentId: 'claude', outcome: 'running', endedAt: null }),
+    makeSession({ seq: 4, agentId: 'opencode', outcome: 'completed' }),
+  ];
+  const messages: Message[] = [
+    makeMessage({ id: 3, sessionSeq: 2, authorId: 'kimi', type: 'hypothesis', content: 'kimi hyp', createdAt: 't3' }),
+    makeMessage({ id: 1, sessionSeq: null, authorId: 'human', type: null, content: 'the goal', createdAt: 't1' }),
+    makeMessage({ id: 2, sessionSeq: 1, authorId: 'codex', type: 'fact', content: 'codex fact', createdAt: 't2' }),
+    makeMessage({ id: 4, sessionSeq: 1, authorId: 'codex', type: 'chain', content: 'codex chain', createdAt: 't4' }),
+  ];
+
+  function renderPanel(overrides: Partial<Parameters<typeof EventTreePanel>[0]> = {}) {
+    return render(
+      <EventTreePanel sessions={sessions} messages={messages} onOpenSession={vi.fn()} {...overrides} />,
+    );
+  }
+
+  it('defaults to the timeline tab and switches to the session lanes', () => {
+    renderPanel();
+    expect(screen.getByRole('tab', { name: '时间线' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('codex fact')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Session' }));
+    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true');
+    // 泳道只标出事件，不显示内容。
+    expect(screen.queryByText('codex fact')).not.toBeInTheDocument();
+    expect(screen.getByText('#2')).toBeInTheDocument();
+    expect(window.localStorage.getItem('vd.eventTree.tab')).toBe('sessions');
+  });
+
+  it('restores the remembered tab and falls back to the timeline for invalid values', () => {
+    window.localStorage.setItem('vd.eventTree.tab', 'sessions');
+    renderPanel();
+    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true');
+    cleanup();
+
+    window.localStorage.setItem('vd.eventTree.tab', 'bogus');
+    renderPanel();
+    expect(screen.getByRole('tab', { name: '时间线' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('builds lanes: human first, then loaded or running sessions by seq', () => {
+    window.localStorage.setItem('vd.eventTree.tab', 'sessions');
+    const { container } = renderPanel();
+    const heads = [...container.querySelectorAll('.lane-head')].map((el) => el.textContent);
+    // seq 4 既没有已加载的消息也不在运行，不占列；seq 3 在运行，即使没有消息也占列。
+    expect(heads).toEqual(['人类', 'codex #1 · done', 'kimi #2 · passed', 'claude #3']);
+  });
+
+  it('puts every event on its own global row, in its session column, ordered by time', () => {
+    window.localStorage.setItem('vd.eventTree.tab', 'sessions');
+    const { container } = renderPanel();
+    const rows = [...container.querySelectorAll<HTMLElement>('[data-lane-message-id]')];
+    expect(rows.map((row) => row.dataset.laneMessageId)).toEqual(['1', '2', '3', '4']);
+    const columns = rows.map((row) => (row.querySelector('.lane-event') as HTMLElement).style.gridColumn);
+    // 时间列占第 1 列，人类第 2 列，codex #1 第 3 列，kimi #2 第 4 列。
+    expect(columns).toEqual(['2', '3', '4', '3']);
+    expect(within(rows[0]).getByText('消息')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('#2')).toBeInTheDocument();
+  });
+
+  it('opens session detail from a lane header and jumps to the message from an event', () => {
+    window.localStorage.setItem('vd.eventTree.tab', 'sessions');
+    const onOpenSession = vi.fn();
+    const onJumpToMessage = vi.fn();
+    renderPanel({ onOpenSession, onJumpToMessage });
+    fireEvent.click(screen.getByRole('button', { name: 'kimi #2 · passed' }));
+    expect(onOpenSession).toHaveBeenCalledWith(2);
+    fireEvent.click(screen.getByText('#3'));
+    expect(onJumpToMessage).toHaveBeenCalledWith(3);
+  });
+
+  it('shows the empty state when there are no events', () => {
+    window.localStorage.setItem('vd.eventTree.tab', 'sessions');
+    renderPanel({ sessions: [], messages: [] });
+    expect(screen.getByText('还没有任何事件')).toBeInTheDocument();
   });
 });

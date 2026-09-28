@@ -131,23 +131,27 @@ body.is-resizing-y {
    @supports (-moz-appearance: none) 包住；不要用 @supports not selector(::-webkit-scrollbar)
    ——Chromium 对该条件判定为真，会误加 scrollbar-width，正是记忆面板没有滚动条的成因。 */
 @supports (-moz-appearance: none) {
-  .panel__body {
+  .panel__body,
+  .session-lanes {
     scrollbar-width: thin;
     scrollbar-color: var(--border-strong) transparent;
   }
 }
 
-.panel__body::-webkit-scrollbar {
+.panel__body::-webkit-scrollbar,
+.session-lanes::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
-.panel__body::-webkit-scrollbar-thumb {
+.panel__body::-webkit-scrollbar-thumb,
+.session-lanes::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border-radius: 4px;
 }
 
-.panel__body::-webkit-scrollbar-track {
+.panel__body::-webkit-scrollbar-track,
+.session-lanes::-webkit-scrollbar-track {
   background: transparent;
 }
 
@@ -553,6 +557,7 @@ body.is-resizing-y {
   white-space: nowrap;
 }
 
+.type-badge--none { color: var(--text-muted); }
 .type-badge--fact { color: var(--ok); }
 .type-badge--hypothesis { color: var(--info); }
 .type-badge--boundary { color: #e3794d; }
@@ -997,6 +1002,129 @@ body.is-resizing-y {
 .tree-row__content {
   color: var(--text-muted);
   cursor: pointer;
+}
+
+/* ---- event tree tabs（07-frontend.md §9.1） ---- */
+.panel-tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.panel-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 2px 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.panel-tab:hover:not(:disabled) {
+  color: var(--text);
+  background: none;
+  border-color: transparent;
+}
+
+.panel-tab--active,
+.panel-tab--active:hover:not(:disabled) {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ---- session lanes（07-frontend.md §9.3） ---- */
+.session-lanes-body {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-lanes {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.session-lanes__grid {
+  width: max-content;
+  min-width: 100%;
+}
+
+.lane-row {
+  display: grid;
+  grid-template-columns: var(--lane-cols);
+  align-items: center;
+  height: 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.lane-row--head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  height: 28px;
+  background: var(--panel-head);
+}
+
+.lane-time {
+  grid-column: 1;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  background: var(--panel);
+  color: var(--text-faint);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.lane-time--head {
+  background: var(--panel-head);
+}
+
+.lane-head {
+  min-width: 0;
+  padding: 0 4px;
+}
+
+.lane-head__tag {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lane-event {
+  --tree-color: var(--border-strong);
+  grid-row: 1;
+  justify-self: start;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 4px;
+  padding: 0 6px 0 4px;
+  background: none;
+  border: none;
+  border-left: 2px solid var(--tree-color);
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.lane-event:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: var(--tree-color);
+}
+
+.lane-event__id {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-family: var(--mono);
 }
 
 /* ---- modal ---- */

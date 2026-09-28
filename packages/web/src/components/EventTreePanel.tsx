@@ -2,7 +2,8 @@ import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { EventTreePayload, Message, MessageType } from '../api/types';
 import { Panel } from './Panel';
 import { MessageTypeBadge } from './MessageTypeBadge';
-import { colorForAgent, formatClock, formatDuration, formatTokens, truncate } from '../utils/format';
+import { SessionLanes } from './SessionLanes';
+import { colorForAgent, formatClock, sessionTagLabel, truncate } from '../utils/format';
 
 const EDGE_COLORS: Partial<Record<MessageType, string>> = {
   challenge: 'var(--danger)',
@@ -30,43 +31,96 @@ function edgeTargets(message: Message): number[] {
   return [];
 }
 
-// session 结果未揭晓（running/stopping）时标签只显示 agentId #seq；到达终态后追加结果
-// （见需求 3.5、07-frontend.md §9）。展示文案与底层 outcome 值不是同一个词：'completed' 显示为
-// 'done'，避免和房间级 status === 'completed'（房间头部状态徽标、房间列表卡片）撞语义。
-const OUTCOME_LABELS: Partial<Record<SessionMeta['outcome'], string>> = {
-  completed: 'done',
-};
+type EventTreeTab = 'timeline' | 'sessions';
 
-// 运行时长后缀（07-frontend.md §9）：只对已结束（endedAt 非 null）的 session 显示 endedAt − startedAt；
-// 任一时间戳无法解析时不追加。running 的实时时长只在 AgentRail 展示。
-function sessionDuration(meta: SessionMeta): string | null {
-  if (meta.endedAt == null) return null;
-  const start = Date.parse(meta.startedAt);
-  const end = Date.parse(meta.endedAt);
-  if (Number.isNaN(start) || Number.isNaN(end)) return null;
-  return formatDuration((end - start) / 1000);
-}
+// 当前标签页记在 localStorage（07-frontend.md §9.1），读写失败时只是不记忆，不影响渲染。
+const TAB_STORAGE_KEY = 'vd.eventTree.tab';
 
-// 用量后缀（07-frontend.md §9）：inputTokens/outputTokens 都非 null 才追加，只要有一个是 null
-// （如 kimi）就什么都不追加，不摆占位符；费用不放进这个标签，太挤，见 SessionDetailModal。
-function sessionTagLabel(meta: SessionMeta | undefined, agentId: string, seq: number): string {
-  const base = `${agentId} #${seq}`;
-  if (!meta || meta.outcome === 'running' || meta.outcome === 'stopping') return base;
-  const parts = [base, OUTCOME_LABELS[meta.outcome] ?? meta.outcome];
-  const duration = sessionDuration(meta);
-  if (duration != null) parts.push(duration);
-  if (meta.inputTokens != null && meta.outputTokens != null) {
-    parts.push(formatTokens(meta.inputTokens + meta.outputTokens));
+function readStoredTab(): EventTreeTab {
+  try {
+    return window.localStorage.getItem(TAB_STORAGE_KEY) === 'sessions' ? 'sessions' : 'timeline';
+  } catch {
+    return 'timeline';
   }
-  return parts.join(' · ');
 }
 
-export function EventTreePanel(props: {
+function storeTab(tab: EventTreeTab): void {
+  try {
+    window.localStorage.setItem(TAB_STORAGE_KEY, tab);
+  } catch {
+    // 不记忆即可。
+  }
+}
+
+const TABS: { id: EventTreeTab; label: string }[] = [
+  { id: 'timeline', label: '时间线' },
+  { id: 'sessions', label: 'Session' },
+];
+
+interface EventTreeProps {
   sessions: EventTreePayload['sessions'];
   messages: Message[];
   onOpenSession: (seq: number) => void;
   onJumpToMessage?: (messageId: number) => void;
-}) {
+}
+
+export function EventTreePanel(props: EventTreeProps) {
+  const [tab, setTab] = useState<EventTreeTab>(readStoredTab);
+
+  // 主轴就是真实发生时间：不存在独立的 session 节点，每条消息各自一行（见需求 3.5）。
+  // 两个标签页共用同一份排序（07-frontend.md §9.3）。
+  const items = useMemo(
+    () => [...props.messages].sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id - b.id)),
+    [props.messages],
+  );
+
+  function selectTab(next: EventTreeTab) {
+    setTab(next);
+    storeTab(next);
+  }
+
+  const tabs = (
+    <div className="panel-tabs" role="tablist" aria-label="事件树视图">
+      {TABS.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          role="tab"
+          aria-selected={tab === item.id}
+          className={`panel-tab${tab === item.id ? ' panel-tab--active' : ''}`}
+          onClick={() => selectTab(item.id)}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  // 未选中的那一页不渲染（07-frontend.md §9.1），切回时重新挂载。
+  return (
+    <Panel
+      title="事件树"
+      count={items.length}
+      actions={tabs}
+      className="event-tree-panel"
+      bodyClassName={tab === 'timeline' ? 'event-tree-body' : 'session-lanes-body'}
+    >
+      {tab === 'timeline' ? (
+        <EventTimeline {...props} items={items} />
+      ) : (
+        <SessionLanes
+          sessions={props.sessions}
+          items={items}
+          onOpenSession={props.onOpenSession}
+          onJumpToMessage={props.onJumpToMessage}
+        />
+      )}
+    </Panel>
+  );
+}
+
+function EventTimeline(props: EventTreeProps & { items: Message[] }) {
+  const { items } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState<Edge[]>([]);
 
@@ -75,12 +129,6 @@ export function EventTreePanel(props: {
     for (const session of props.sessions) map.set(session.seq, session);
     return map;
   }, [props.sessions]);
-
-  // 主轴就是真实发生时间：不存在独立的 session 节点，每条消息各自一行（见需求 3.5）。
-  const items = useMemo(
-    () => [...props.messages].sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id - b.id)),
-    [props.messages],
-  );
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -130,71 +178,69 @@ export function EventTreePanel(props: {
   }, [props.messages, props.sessions]);
 
   return (
-    <Panel title="事件树" count={items.length} className="event-tree-panel" bodyClassName="event-tree-body">
-      <div className="event-tree" ref={containerRef}>
-        <svg className="tree-connectors" aria-hidden="true">
-          {edges.map((edge) => (
-            <path
-              key={edge.key}
-              d={`M ${edge.x1} ${edge.y1} C ${edge.x1 - 32} ${edge.y1}, ${edge.x2 - 32} ${edge.y2}, ${edge.x2} ${edge.y2}`}
-              fill="none"
-              stroke={edge.color}
-              strokeWidth={1.5}
-              opacity={0.55}
-            />
-          ))}
-        </svg>
+    <div className="event-tree" ref={containerRef}>
+      <svg className="tree-connectors" aria-hidden="true">
+        {edges.map((edge) => (
+          <path
+            key={edge.key}
+            d={`M ${edge.x1} ${edge.y1} C ${edge.x1 - 32} ${edge.y1}, ${edge.x2 - 32} ${edge.y2}, ${edge.x2} ${edge.y2}`}
+            fill="none"
+            stroke={edge.color}
+            strokeWidth={1.5}
+            opacity={0.55}
+          />
+        ))}
+      </svg>
 
-        {items.length === 0 && <p className="placeholder">还没有任何事件</p>}
+      {items.length === 0 && <p className="placeholder">还没有任何事件</p>}
 
-        {items.map((message) => {
-          const isHuman = message.sessionSeq == null;
-          const meta = message.sessionSeq != null ? sessionBySeq.get(message.sessionSeq) : undefined;
-          const agentId = meta?.agentId ?? message.authorId;
-          return (
-            <div
-              key={message.id}
-              className={`tree-row${isHuman ? ' tree-row--human' : ''}`}
-              data-message-id={message.id}
-              data-edge-from={message.id}
-              data-edge-to={edgeTargets(message).join(',')}
-              data-edge-color={message.type ? EDGE_COLORS[message.type] : undefined}
-              style={!isHuman ? { ['--tree-color' as string]: colorForAgent(agentId) } : undefined}
+      {items.map((message) => {
+        const isHuman = message.sessionSeq == null;
+        const meta = message.sessionSeq != null ? sessionBySeq.get(message.sessionSeq) : undefined;
+        const agentId = meta?.agentId ?? message.authorId;
+        return (
+          <div
+            key={message.id}
+            className={`tree-row${isHuman ? ' tree-row--human' : ''}`}
+            data-message-id={message.id}
+            data-edge-from={message.id}
+            data-edge-to={edgeTargets(message).join(',')}
+            data-edge-color={message.type ? EDGE_COLORS[message.type] : undefined}
+            style={!isHuman ? { ['--tree-color' as string]: colorForAgent(agentId) } : undefined}
+          >
+            <button
+              type="button"
+              className="tree-row__time"
+              onClick={() => props.onJumpToMessage?.(message.id)}
+              title="定位到消息流"
             >
-              <button
-                type="button"
-                className="tree-row__time"
-                onClick={() => props.onJumpToMessage?.(message.id)}
-                title="定位到消息流"
-              >
-                {formatClock(message.createdAt)}
-              </button>
-              <div className="tree-row__body">
-                <div className="tree-row__top">
-                  {message.type && <MessageTypeBadge type={message.type} />}
-                  {isHuman ? (
-                    <span className="tree-tag tree-tag--human">人类</span>
-                  ) : (
-                    <button
-                      type="button"
-                      className={`tree-tag tree-tag--${meta?.outcome ?? 'running'}`}
-                      style={{ ['--tree-color' as string]: colorForAgent(agentId) }}
-                      onClick={() => props.onOpenSession(message.sessionSeq!)}
-                      title="打开 session 详情"
-                    >
-                      {sessionTagLabel(meta, agentId, message.sessionSeq!)}
-                    </button>
-                  )}
-                </div>
-                <div className="tree-row__content" onClick={() => props.onJumpToMessage?.(message.id)}>
-                  {truncate(message.content, 160)}
-                </div>
+              {formatClock(message.createdAt)}
+            </button>
+            <div className="tree-row__body">
+              <div className="tree-row__top">
+                {message.type && <MessageTypeBadge type={message.type} />}
+                {isHuman ? (
+                  <span className="tree-tag tree-tag--human">人类</span>
+                ) : (
+                  <button
+                    type="button"
+                    className={`tree-tag tree-tag--${meta?.outcome ?? 'running'}`}
+                    style={{ ['--tree-color' as string]: colorForAgent(agentId) }}
+                    onClick={() => props.onOpenSession(message.sessionSeq!)}
+                    title="打开 session 详情"
+                  >
+                    {sessionTagLabel(meta, agentId, message.sessionSeq!)}
+                  </button>
+                )}
+              </div>
+              <div className="tree-row__content" onClick={() => props.onJumpToMessage?.(message.id)}>
+                {truncate(message.content, 160)}
               </div>
             </div>
-          );
-        })}
-      </div>
-    </Panel>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
