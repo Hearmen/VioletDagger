@@ -1,5 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { EventTreePayload, Message, MessageType } from '../api/types';
+import type { EventTreePayload, Message, MessageType, StateTransition } from '../api/types';
 import { Panel } from './Panel';
 import { MessageTypeBadge } from './MessageTypeBadge';
 import { SessionLanes } from './SessionLanes';
@@ -60,18 +60,25 @@ const TABS: { id: EventTreeTab; label: string }[] = [
 // 时间轴上的条目（07-frontend.md §9）：消息，或 session 的开始/结束边界标记。
 export type TreeEntry =
   | { kind: 'message'; key: string; time: string; message: Message }
+  | { kind: 'transition'; key: string; time: string; transition: StateTransition }
   | { kind: 'start' | 'end'; key: string; time: string; seq: number; agentId: string; meta: SessionMeta };
 
 // 同一时刻：开始标记在前、消息居中、结束标记在后。
-const ENTRY_RANK: Record<TreeEntry['kind'], number> = { start: 0, message: 1, end: 2 };
+const ENTRY_RANK: Record<TreeEntry['kind'], number> = { start: 0, message: 1, transition: 2, end: 3 };
 
 function entryTieBreak(entry: TreeEntry): number {
-  return entry.kind === 'message' ? entry.message.id : entry.seq;
+  if (entry.kind === 'message') return entry.message.id;
+  if (entry.kind === 'transition') return entry.transition.id;
+  return entry.seq;
 }
 
 // 可见 session = 已加载消息里出现过的 session ∪ running/stopping session；只有可见 session 有边界标记。
 // 消息与标记合并成一条按时间升序的序列，两个标签页共用。
-function buildEntries(messages: Message[], sessions: SessionMeta[]): TreeEntry[] {
+function buildEntries(
+  messages: Message[],
+  sessions: SessionMeta[],
+  transitions: Record<number, StateTransition[]> = {},
+): TreeEntry[] {
   const visible = new Set<number>();
   for (const message of messages) if (message.sessionSeq != null) visible.add(message.sessionSeq);
   for (const session of sessions) {
@@ -81,6 +88,11 @@ function buildEntries(messages: Message[], sessions: SessionMeta[]): TreeEntry[]
   const entries: TreeEntry[] = messages.map((message) => ({
     kind: 'message', key: `m-${message.id}`, time: message.createdAt, message,
   }));
+  for (const history of Object.values(transitions)) {
+    for (const transition of history) {
+      entries.push({ kind: 'transition', key: `t-${transition.id}`, time: transition.createdAt, transition });
+    }
+  }
   for (const meta of sessions) {
     if (!visible.has(meta.seq)) continue;
     entries.push({ kind: 'start', key: `s-${meta.seq}`, time: meta.startedAt, seq: meta.seq, agentId: meta.agentId, meta });
@@ -104,6 +116,7 @@ export function endMarkerLabel(meta: SessionMeta, agentId: string, seq: number):
 interface EventTreeProps {
   sessions: EventTreePayload['sessions'];
   messages: Message[];
+  transitions?: Record<number, StateTransition[]>;
   onOpenSession: (seq: number) => void;
   onJumpToMessage?: (messageId: number) => void;
 }
@@ -112,7 +125,13 @@ export function EventTreePanel(props: EventTreeProps) {
   const [tab, setTab] = useState<EventTreeTab>(readStoredTab);
 
   // 主轴就是真实发生时间：每条消息各自一行，session 只以开始/结束标记出现（见需求 3.5）。
-  const entries = useMemo(() => buildEntries(props.messages, props.sessions), [props.messages, props.sessions]);
+  const entries = useMemo(
+    () => buildEntries(props.messages, props.sessions, props.transitions),
+    [props.messages, props.sessions, props.transitions],
+  );
+  const sessionEntries = entries.filter(
+    (entry): entry is Exclude<TreeEntry, { kind: 'transition' }> => entry.kind !== 'transition',
+  );
 
   function selectTab(next: EventTreeTab) {
     setTab(next);
@@ -149,7 +168,7 @@ export function EventTreePanel(props: EventTreeProps) {
         <EventTimeline {...props} entries={entries} />
       ) : (
         <SessionLanes
-          entries={entries}
+          entries={sessionEntries}
           onOpenSession={props.onOpenSession}
           onJumpToMessage={props.onJumpToMessage}
         />
@@ -214,7 +233,7 @@ function EventTimeline(props: EventTreeProps & { entries: TreeEntry[] }) {
       observer?.disconnect();
       window.removeEventListener('resize', measure);
     };
-  }, [props.messages, props.sessions]);
+  }, [props.messages, props.sessions, props.transitions]);
 
   return (
     <div className="event-tree" ref={containerRef}>
@@ -234,6 +253,9 @@ function EventTimeline(props: EventTreeProps & { entries: TreeEntry[] }) {
       {entries.length === 0 && <p className="placeholder">还没有任何事件</p>}
 
       {entries.map((entry) => {
+        if (entry.kind === 'transition') {
+          return <TransitionMarkerRow key={entry.key} entry={entry} onJumpToMessage={props.onJumpToMessage} />;
+        }
         if (entry.kind !== 'message') {
           return <BoundaryMarkerRow key={entry.key} entry={entry} onOpenSession={props.onOpenSession} />;
         }
@@ -283,6 +305,46 @@ function EventTimeline(props: EventTreeProps & { entries: TreeEntry[] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function TransitionMarkerRow(props: {
+  entry: Extract<TreeEntry, { kind: 'transition' }>;
+  onJumpToMessage?: (messageId: number) => void;
+}) {
+  const { transition } = props.entry;
+  const changes: string[] = [];
+  if (transition.fromType != null || transition.toType != null) {
+    changes.push(`类型 ${transition.fromType ?? '—'} → ${transition.toType ?? '—'}`);
+  }
+  if (transition.fromStatus != null || transition.toStatus != null) {
+    changes.push(`状态 ${transition.fromStatus ?? '—'} → ${transition.toStatus ?? '—'}`);
+  }
+  return (
+    <div className="tree-marker tree-marker--transition" data-transition-id={transition.id}>
+      <span className="tree-marker__time">{formatClock(props.entry.time)}</span>
+      <span className="tree-transition__label">状态转化</span>
+      <button
+        type="button"
+        className="tree-transition__link"
+        onClick={() => props.onJumpToMessage?.(transition.messageId)}
+        title="定位到状态发生变化的消息"
+      >
+        #{transition.messageId}
+      </button>
+      <span className="tree-transition__change">{changes.join('；')}</span>
+      <span className="tree-transition__trigger">
+        触发于{' '}
+        <button
+          type="button"
+          className="tree-transition__link"
+          onClick={() => props.onJumpToMessage?.(transition.triggerMessageId)}
+          title="定位到触发转换的消息"
+        >
+          #{transition.triggerMessageId}
+        </button>
+      </span>
     </div>
   );
 }

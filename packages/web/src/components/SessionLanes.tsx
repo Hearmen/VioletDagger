@@ -5,6 +5,7 @@ import { MessageTypeBadge } from './MessageTypeBadge';
 import { colorForAgent, formatClock, OUTCOME_LABELS, sessionTagLabel } from '../utils/format';
 
 type SessionMeta = EventTreePayload['sessions'][number];
+type SessionTreeEntry = Exclude<TreeEntry, { kind: 'transition' }>;
 
 // 距底这么近就算"在底部"，新事件到来时自动贴底（07-frontend.md §9.3）。
 const NEAR_BOTTOM_PX = 24;
@@ -26,7 +27,7 @@ interface Lane {
 
 // 列的组成（07-frontend.md §9.3）：有人类消息才出现人类列；session 列就是条目里出现过的 session
 // （即可见 session，见 EventTreePanel 的 buildEntries），按 seq 升序。
-function buildLanes(entries: TreeEntry[]): Lane[] {
+function buildLanes(entries: SessionTreeEntry[]): Lane[] {
   let hasHuman = false;
   const infoBySeq = new Map<number, { agentId: string; meta?: SessionMeta; start?: number; end?: number }>();
   entries.forEach((entry, row) => {
@@ -63,13 +64,13 @@ function buildLanes(entries: TreeEntry[]): Lane[] {
   return lanes;
 }
 
-function entrySeq(entry: TreeEntry): number | null {
+function entrySeq(entry: SessionTreeEntry): number | null {
   return entry.kind === 'message' ? entry.message.sessionSeq : entry.seq;
 }
 
 export function SessionLanes(props: {
   // 已按时间合并排好序的消息与边界标记（与时间线页同一份）。
-  entries: TreeEntry[];
+  entries: SessionTreeEntry[];
   onOpenSession: (seq: number) => void;
   onJumpToMessage?: (messageId: number) => void;
 }) {

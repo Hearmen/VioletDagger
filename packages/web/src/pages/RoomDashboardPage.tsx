@@ -309,6 +309,7 @@ export function RoomDashboardPage() {
           <EventTreePanel
             sessions={eventTree.sessions}
             messages={messages}
+            transitions={memory?.transitions}
             onOpenSession={(sessionId) =>
               socket.call<SessionDetailPayload>('getSessionDetail', { sessionId }).then(setSessionDetail).catch(reportActionError)
             }
