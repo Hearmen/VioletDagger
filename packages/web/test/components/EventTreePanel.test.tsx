@@ -330,3 +330,85 @@ describe('EventTreePanel tabs and session lanes', () => {
     expect(screen.getByText('还没有任何事件')).toBeInTheDocument();
   });
 });
+
+describe('EventTreePanel session boundary markers', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  const sessions = [
+    makeSession({ seq: 1, agentId: 'codex', outcome: 'completed', startedAt: 't2', endedAt: 't5' }),
+    makeSession({ seq: 2, agentId: 'kimi', outcome: 'running', startedAt: 't3', endedAt: null }),
+    // 已加载窗口之外、也不在运行：不可见，不出标记。
+    makeSession({ seq: 3, agentId: 'claude', outcome: 'completed', startedAt: 't0', endedAt: 't0' }),
+  ];
+  const messages: Message[] = [
+    makeMessage({ id: 1, sessionSeq: null, authorId: 'human', type: null, content: 'the goal', createdAt: 't1' }),
+    // 与 codex #1 开始同一时刻：开始标记应排在消息前面。
+    makeMessage({ id: 2, sessionSeq: 1, authorId: 'codex', type: 'fact', content: 'codex fact', createdAt: 't2' }),
+    makeMessage({ id: 3, sessionSeq: 1, authorId: 'codex', type: 'chain', content: 'codex chain', createdAt: 't4' }),
+  ];
+
+  function order(container: HTMLElement, selector: string, attr: string, markerAttr: string): string[] {
+    return [...container.querySelectorAll<HTMLElement>(selector)].map(
+      (el) => el.getAttribute(markerAttr) ?? `m${el.getAttribute(attr)}`,
+    );
+  }
+
+  it('merges start/end markers into the timeline by time, start before and end after same-time messages', () => {
+    const { container } = render(<EventTreePanel sessions={sessions} messages={messages} onOpenSession={vi.fn()} />);
+    expect(order(container, '.tree-row, .tree-marker', 'data-message-id', 'data-marker')).toEqual([
+      'm1', 'start-1', 'm2', 'start-2', 'm3', 'end-1',
+    ]);
+    expect(screen.getByText('▶ codex #1 开始')).toBeInTheDocument();
+    expect(screen.getByText('■ codex #1 结束 · done')).toBeInTheDocument();
+    // 运行中的 session 只有开始标记。
+    expect(screen.getByText('▶ kimi #2 开始')).toBeInTheDocument();
+    expect(screen.queryByText(/kimi #2 结束/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/claude #3/)).not.toBeInTheDocument();
+    // 标记不计入计数。
+    expect(container.querySelector('.panel__count')).toHaveTextContent('3');
+  });
+
+  it('opens session detail from a timeline marker', () => {
+    const onOpenSession = vi.fn();
+    render(<EventTreePanel sessions={sessions} messages={messages} onOpenSession={onOpenSession} />);
+    fireEvent.click(screen.getByText('■ codex #1 结束 · done'));
+    expect(onOpenSession).toHaveBeenCalledWith(1);
+  });
+
+  it('shows markers and running rails in the session lanes', () => {
+    window.localStorage.setItem('vd.eventTree.tab', 'sessions');
+    const onOpenSession = vi.fn();
+    const { container } = render(<EventTreePanel sessions={sessions} messages={messages} onOpenSession={onOpenSession} />);
+    const rows = [...container.querySelectorAll<HTMLElement>('.lane-row:not(.lane-row--head)')];
+    expect(rows.map((row) => row.dataset.laneMarker ?? `m${row.dataset.laneMessageId}`)).toEqual([
+      'm1', 'start-1', 'm2', 'start-2', 'm3', 'end-1',
+    ]);
+    // codex #1（第 3 列）的竖线从开始行（1）到结束行（5）；kimi #2（第 4 列）从开始行（3）延伸到最后一行。
+    const railRows = (column: string) =>
+      rows.flatMap((row, index) =>
+        [...row.querySelectorAll<HTMLElement>('.lane-rail')].some((rail) => rail.style.gridColumn === column) ? [index] : [],
+      );
+    expect(railRows('3')).toEqual([1, 2, 3, 4, 5]);
+    expect(railRows('4')).toEqual([3, 4, 5]);
+    expect(rows[1].querySelector('.lane-rail')).toHaveClass('lane-rail--start');
+    expect(within(rows[5]).getByText('■ done')).toHaveClass('outcome-text--completed');
+
+    fireEvent.click(within(rows[3]).getByText('▶ 开始'));
+    expect(onOpenSession).toHaveBeenCalledWith(2);
+  });
+
+  it('shows a running session start marker instead of the empty state', () => {
+    window.localStorage.setItem('vd.eventTree.tab', 'sessions');
+    render(
+      <EventTreePanel
+        sessions={[makeSession({ seq: 1, agentId: 'codex', outcome: 'running', startedAt: 't1', endedAt: null })]}
+        messages={[]}
+        onOpenSession={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('还没有任何事件')).not.toBeInTheDocument();
+    expect(screen.getByText('▶ 开始')).toBeInTheDocument();
+  });
+});

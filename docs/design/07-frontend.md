@@ -201,6 +201,13 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 
 右栏，独占一列全高（`grid-area: events`）。面板内有两个标签页，呈现同一份数据：**时间线**（§9.2，默认）与 **Session**（§9.3）。
 
+**session 边界标记**（两个标签页共用）：除消息外，时间轴上还有两种只标时间点的条目——**开始标记**（时间取 `startedAt`）和**结束标记**（时间取 `endedAt`，只有到达终态、`endedAt` 非 null 时才有；running/stopping 的 session 只有开始标记）。数据全部来自 `getEventTree().sessions`，不需要新接口：派发和结算都会推送 `roomStatus`，前端据此重拉 `getEventTree()`，标记实时出现（§13）。
+
+- **哪些 session 有标记**：只有"可见 session"才有，它们是已加载消息里 `sessionSeq` 出现过的 session 与 `outcome` 为 `running`/`stopping` 的 session 的并集（§9.3 的 session 列用的就是这个集合）。已加载窗口之外的历史 session 不显示标记；可见 session 的开始时间早于已加载的最早一条消息时，它的开始标记照样显示，位置在最顶部。
+- **排序**：消息与标记合并成一条序列，按时间升序排列；时间相同时开始标记在前、消息居中、结束标记在后；同一类型内再按消息 `id`、session `seq` 升序。
+- **结束标记的文案与配色**沿用 session 标签的 outcome 规则（`completed`→`done`/`--ok`、`passed`→`--warn`、`error`→`--danger`、`terminated`→`--accent`）。
+- 标记不是消息：不计入标题栏计数，不带 `data-message-id`，不参与关联线，也不会被定位到消息流。点击标记上的 session 文案打开 `SessionDetailModal`。
+
 ### 9.1 标签页
 
 - 标签放在面板标题栏的 `actions` 位（`Panel` 的 `actions` 插槽），`role="tablist"`，两个 `role="tab"` 按钮"时间线"/"Session"，`aria-selected` 标出当前页；选中态用 `--accent` 下边框 + `--accent-soft` 背景。
@@ -210,7 +217,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 
 ### 9.2 时间线页
 
-时间线上不存在独立的 session 节点——每一行对应一条消息（agent 在 session 里发的，或人类发的），直接复用 MessageStreamPanel 已持有的那份 `messages` 状态，按 `createdAt` 升序排成一条**竖直时间线**（新在下），默认贴底；`newMessage` 推送追加后自动同步。`listMessages` 是分页的，时间线只覆盖已加载窗口内的历史。
+时间线上不存在把消息收拢在其下的 session 节点——每条消息各占一行（agent 在 session 里发的，或人类发的），session 只以开始/结束两个边界标记出现在各自的时间点上；直接复用 MessageStreamPanel 已持有的那份 `messages` 状态，按 `createdAt` 升序排成一条**竖直时间线**（新在下），默认贴底；`newMessage` 推送追加后自动同步。`listMessages` 是分页的，时间线只覆盖已加载窗口内的历史。
 
 - **消息节点**：类型徽标 + 作者（身份色）+ `HH:mm:ss` + 内容摘要，仅包含 `messages` 表里的正式房间消息（不含原始日志行）。
 - **session 标签**：agent 消息额外带一个 `agentId #seq` 标签（`sessionId` 见需求 4.2）；running/stopping 时只显示 `agentId #seq`，到达终态后从 `getEventTree().sessions` 按 `(agentId, seq)` 查到 outcome 追加显示。**展示文案与底层 `outcome` 值不是同一个词**——`outcome === 'completed'` 显示为 `done`，例如 `codex #1 · done`、`kimi #2 · passed`、`kimi #3 · error`；这是刻意的改写，房间级 `status === 'completed'`（房间头部状态徽标、房间列表卡片，见 §4/§11）在事件树里满屏都是 session 标签的情况下太容易和"这次 session 正常结束、发过实质消息"混成一回事，改用 `done` 避免视觉/语义撞车，底层数据和 API 字段名不变。点击这个标签 → `getSessionDetail({ sessionId })` 打开 `SessionDetailModal`（**复盘视图**，元数据 + 消息列表 + 只读日志回放；running session 也走这里，只是日志为当前快照，见 §10.2）。注意与 AgentRail 的 `LiveSessionModal`（§10.1，实时只读日志）是**两个不同的入口、两种不同的内容**。**人类消息没有这个标签**（没有 `sessionId`），用 human 色 + "人类"标签代替，与 agent 消息在样式上明显区分（需求 3.5）。
@@ -219,7 +226,8 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - **用量后缀**：跟在运行时长之后，`getEventTree().sessions` 里这条 session 的 `inputTokens`/`outputTokens` 都非 null 时追加 `· 12.3k tok`（两者之和的紧凑数字）；只要有一个是 null（如 kimi）就什么都不追加，不摆占位符。费用不放进这个标签（太挤），要看费用和 cache read/write 拆分点进 `SessionDetailModal`（见 §10.2）。
 - `passed`/报错/人工终止且此前没有实质消息的情况，由编排器核心补写的系统占位消息（见需求 3.5、`03-orchestrator-core.md` §2）会作为一条普通消息节点出现在时间线上，旁边的 session 标签同样按上面规则显示 `· passed`/`· error`/`· terminated`——不需要额外的展示逻辑。
 - **关联线**：每个消息节点带 `data-message-id`；反应类消息（`challenge`/`verify`）和带 `referencedMessageIds` 的 `chain`，在节点旁用一层绝对定位的 SVG（贝塞尔曲线）连到目标节点；目标不在当前时间线内（未加载）时跳过。连线颜色取源消息类型徽标色，选中目标时高亮。主轴就是真实时间，源节点和目标节点通常本就相邻，连线不再需要跨越远距离的容器。
-- 空态：没有任何消息时显示"还没有任何事件"。
+- **边界标记行**：按上面的合并排序穿插在消息行之间。它比消息行更矮，只占一行，没有内容区；左边框用该 session 的身份色，但画成**虚线**，和消息行的实线左边框区分开。行内依次是 `HH:mm:ss`（`--text-faint`），然后是 `▶ codex #1 开始`（开始标记，`--text-muted`），或者 `■ codex #1 结束 · done · 03:25 · 12.3k tok`（结束标记，文案来自 `sessionTagLabel` 并加上"结束"字样，颜色按 outcome）。session 文案是按钮，点击打开 `SessionDetailModal`。
+- 空态：没有任何消息、也没有任何边界标记时显示"还没有任何事件"。
 
 ### 9.3 Session 页（泳道视图）
 
@@ -234,11 +242,13 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - **列头**（`position: sticky; top: 0`，`--panel-head` 背景）：
   - session 列：按钮，身份色（`colorForAgent(agentId)`）描边，文案与 §9.2 的 session 标签完全一致（`codex #1 · done · 03:25 · 12.3k tok`，outcome 文案/配色、时长后缀、用量后缀规则都相同，同一个函数生成）；列宽放不下时省略号截断，`title` 显示完整文案。点击 → 打开 `SessionDetailModal`（与 §9.2 的 session 标签是同一个入口）。
   - 人类列：静态文字"人类"，human 色，不可点击。
-- **行**：所有事件按与 §9.2 相同的排序（`createdAt` 升序，相同时按 `id` 升序）每条占一个全局行，这条事件的块只出现在它所属的那一列，同一行的其他列留空——各列共用同一条时间轴，并发的 session 在纵向上如实交错。行高固定、紧凑（22px），行与行之间用 `--border` 细线分隔。
+- **行**：消息与边界标记按 §9 开头的合并排序，每个条目占一个全局行，块只出现在所属的列里，同一行的其他列留空——各列共用同一条时间轴，并发的 session 在纵向上如实交错。行高固定、紧凑（22px），行与行之间用 `--border` 细线分隔。
 - **事件块**：`MessageTypeBadge`（无 type 的消息用中性灰"消息"徽标）+ `#N`（`--mono`、`--text-muted`）。不显示内容、作者、状态徽标、@ 定向徽标。块左侧 2px 竖条取所在列的颜色（session 列用身份色，人类列用 human 色）。点击 → `onJumpToMessage(message.id)`，在消息流中定位并高亮（与 §9.2 点击时间/内容的行为一致）。
+- **边界标记块**：画在所属 session 列里。开始标记是 `▶ 开始`（`--text-muted`）；结束标记是 `■ done`、`■ passed` 等 outcome 文案，按 outcome 配色，完整的时长和用量放在 `title` 里。点击打开 `SessionDetailModal`。人类列没有边界标记。
+- **运行区间竖线**：在每个 session 列里，从开始标记所在行到结束标记所在行，沿块的左边缘画一条 2px 身份色竖线，这个区间内的事件块都落在线上。running/stopping 的 session 没有结束标记，竖线一直延伸到最后一行。开始标记在已加载窗口之前的 session，竖线从第一行开始。
 - **不画关联线**：泳道视图里源和目标常常跨列，贝塞尔连线会横穿整张表、干扰阅读；要看引用关系就切回时间线页。
 - **贴底**：同 §9.2，默认滚到最底部（最新事件）；用户往上滚动后，新事件到来时不强制拉回底部；滚回底部附近（距底 ≤ 24px）后恢复自动贴底。
-- 空态：没有任何消息时显示"还没有任何事件"（与 §9.2 相同）。
+- 空态：没有任何消息、也没有任何边界标记时显示"还没有任何事件"（与 §9.2 相同）。只要有一个正在运行的 session，就会显示它的开始标记，不显示空态。
 
 ## 10. Session 视图
 
@@ -364,7 +374,7 @@ src/
 └── api/{rest.ts,types.ts}
 ```
 
-`*Tab` 后缀组件统一改名为 `*Panel`；`test/` 下对应测试同步更新，并新增布局、Composer 目标/类型选择、EventTree 人类消息穿插与关联线、事件树标签页切换与记忆、Session 泳道（列的组成与顺序、全局行对齐、列头打开详情、事件块定位消息）、MemoryPanel 总线/逐级下钻、LiveSessionModal 实时日志（`mode=live` 只读）、SessionDetailModal 复盘视图（`mode=replay` 只读回放、running 也走 replay）、删除房间、多实例建房间、agent 派发启停的测试。
+`*Tab` 后缀组件统一改名为 `*Panel`；`test/` 下对应测试同步更新，并新增布局、Composer 目标/类型选择、EventTree 人类消息穿插与关联线、事件树标签页切换与记忆、Session 泳道（列的组成与顺序、全局行对齐、列头打开详情、事件块定位消息）、session 边界标记（合并排序与同时刻先后、两个标签页的开始/结束标记、运行中无结束标记、泳道运行区间竖线）、MemoryPanel 总线/逐级下钻、LiveSessionModal 实时日志（`mode=live` 只读）、SessionDetailModal 复盘视图（`mode=replay` 只读回放、running 也走 replay）、删除房间、多实例建房间、agent 派发启停的测试。
 
 ## 17. Agent 可用性与停用
 

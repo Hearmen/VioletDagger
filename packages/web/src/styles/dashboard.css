@@ -999,6 +999,34 @@ body.is-resizing-y {
   color: var(--accent);
 }
 
+.tree-marker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 8px;
+  border-left: 2px dashed var(--tree-color);
+}
+
+.tree-marker__time {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.tree-marker__tag,
+.tree-marker__tag:hover:not(:disabled) {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.tree-marker__tag:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
 .tree-row__content {
   color: var(--text-muted);
   cursor: pointer;
@@ -1126,6 +1154,42 @@ body.is-resizing-y {
   font-size: 10px;
   font-family: var(--mono);
 }
+
+.lane-marker {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+/* 运行区间竖线：与块的左边框同一 x，块画在线上面（07-frontend.md §9.3）。 */
+.lane-rail {
+  grid-row: 1;
+  align-self: stretch;
+  justify-self: start;
+  width: 2px;
+  margin: 0 0 -1px 4px;
+  background: var(--tree-color);
+  opacity: 0.6;
+}
+
+.lane-rail--start {
+  margin-top: 11px;
+}
+
+.lane-rail--end {
+  margin-bottom: 11px;
+}
+
+/* session 结束标记按 outcome 配色（07-frontend.md §9）。放在最后，覆盖上面标记的默认文字色。 */
+.outcome-text--completed,
+.outcome-text--completed:hover:not(:disabled) { color: var(--ok); }
+.outcome-text--passed,
+.outcome-text--passed:hover:not(:disabled) { color: var(--warn); }
+.outcome-text--error,
+.outcome-text--error:hover:not(:disabled) { color: var(--danger); }
+.outcome-text--terminated,
+.outcome-text--terminated:hover:not(:disabled) { color: var(--accent); }
 
 /* ---- modal ---- */
 .modal-backdrop {

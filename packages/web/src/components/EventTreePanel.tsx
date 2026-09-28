@@ -57,6 +57,50 @@ const TABS: { id: EventTreeTab; label: string }[] = [
   { id: 'sessions', label: 'Session' },
 ];
 
+// 时间轴上的条目（07-frontend.md §9）：消息，或 session 的开始/结束边界标记。
+export type TreeEntry =
+  | { kind: 'message'; key: string; time: string; message: Message }
+  | { kind: 'start' | 'end'; key: string; time: string; seq: number; agentId: string; meta: SessionMeta };
+
+// 同一时刻：开始标记在前、消息居中、结束标记在后。
+const ENTRY_RANK: Record<TreeEntry['kind'], number> = { start: 0, message: 1, end: 2 };
+
+function entryTieBreak(entry: TreeEntry): number {
+  return entry.kind === 'message' ? entry.message.id : entry.seq;
+}
+
+// 可见 session = 已加载消息里出现过的 session ∪ running/stopping session；只有可见 session 有边界标记。
+// 消息与标记合并成一条按时间升序的序列，两个标签页共用。
+function buildEntries(messages: Message[], sessions: SessionMeta[]): TreeEntry[] {
+  const visible = new Set<number>();
+  for (const message of messages) if (message.sessionSeq != null) visible.add(message.sessionSeq);
+  for (const session of sessions) {
+    if (session.outcome === 'running' || session.outcome === 'stopping') visible.add(session.seq);
+  }
+
+  const entries: TreeEntry[] = messages.map((message) => ({
+    kind: 'message', key: `m-${message.id}`, time: message.createdAt, message,
+  }));
+  for (const meta of sessions) {
+    if (!visible.has(meta.seq)) continue;
+    entries.push({ kind: 'start', key: `s-${meta.seq}`, time: meta.startedAt, seq: meta.seq, agentId: meta.agentId, meta });
+    if (meta.endedAt != null) {
+      entries.push({ kind: 'end', key: `e-${meta.seq}`, time: meta.endedAt, seq: meta.seq, agentId: meta.agentId, meta });
+    }
+  }
+  return entries.sort((a, b) => {
+    if (a.time !== b.time) return a.time < b.time ? -1 : 1;
+    if (a.kind !== b.kind) return ENTRY_RANK[a.kind] - ENTRY_RANK[b.kind];
+    return entryTieBreak(a) - entryTieBreak(b);
+  });
+}
+
+// 结束标记文案：session 标签在 "agentId #seq" 之后插入 "结束"。
+export function endMarkerLabel(meta: SessionMeta, agentId: string, seq: number): string {
+  const base = `${agentId} #${seq}`;
+  return `${base} 结束${sessionTagLabel(meta, agentId, seq).slice(base.length)}`;
+}
+
 interface EventTreeProps {
   sessions: EventTreePayload['sessions'];
   messages: Message[];
@@ -67,12 +111,8 @@ interface EventTreeProps {
 export function EventTreePanel(props: EventTreeProps) {
   const [tab, setTab] = useState<EventTreeTab>(readStoredTab);
 
-  // 主轴就是真实发生时间：不存在独立的 session 节点，每条消息各自一行（见需求 3.5）。
-  // 两个标签页共用同一份排序（07-frontend.md §9.3）。
-  const items = useMemo(
-    () => [...props.messages].sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.id - b.id)),
-    [props.messages],
-  );
+  // 主轴就是真实发生时间：每条消息各自一行，session 只以开始/结束标记出现（见需求 3.5）。
+  const entries = useMemo(() => buildEntries(props.messages, props.sessions), [props.messages, props.sessions]);
 
   function selectTab(next: EventTreeTab) {
     setTab(next);
@@ -100,17 +140,16 @@ export function EventTreePanel(props: EventTreeProps) {
   return (
     <Panel
       title="事件树"
-      count={items.length}
+      count={props.messages.length}
       actions={tabs}
       className="event-tree-panel"
       bodyClassName={tab === 'timeline' ? 'event-tree-body' : 'session-lanes-body'}
     >
       {tab === 'timeline' ? (
-        <EventTimeline {...props} items={items} />
+        <EventTimeline {...props} entries={entries} />
       ) : (
         <SessionLanes
-          sessions={props.sessions}
-          items={items}
+          entries={entries}
           onOpenSession={props.onOpenSession}
           onJumpToMessage={props.onJumpToMessage}
         />
@@ -119,8 +158,8 @@ export function EventTreePanel(props: EventTreeProps) {
   );
 }
 
-function EventTimeline(props: EventTreeProps & { items: Message[] }) {
-  const { items } = props;
+function EventTimeline(props: EventTreeProps & { entries: TreeEntry[] }) {
+  const { entries } = props;
   const containerRef = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState<Edge[]>([]);
 
@@ -192,15 +231,19 @@ function EventTimeline(props: EventTreeProps & { items: Message[] }) {
         ))}
       </svg>
 
-      {items.length === 0 && <p className="placeholder">还没有任何事件</p>}
+      {entries.length === 0 && <p className="placeholder">还没有任何事件</p>}
 
-      {items.map((message) => {
+      {entries.map((entry) => {
+        if (entry.kind !== 'message') {
+          return <BoundaryMarkerRow key={entry.key} entry={entry} onOpenSession={props.onOpenSession} />;
+        }
+        const { message } = entry;
         const isHuman = message.sessionSeq == null;
         const meta = message.sessionSeq != null ? sessionBySeq.get(message.sessionSeq) : undefined;
         const agentId = meta?.agentId ?? message.authorId;
         return (
           <div
-            key={message.id}
+            key={entry.key}
             className={`tree-row${isHuman ? ' tree-row--human' : ''}`}
             data-message-id={message.id}
             data-edge-from={message.id}
@@ -240,6 +283,32 @@ function EventTimeline(props: EventTreeProps & { items: Message[] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// 边界标记行（07-frontend.md §9.2）：虚线左边框、只占一行、无内容区；session 文案点击打开详情。
+function BoundaryMarkerRow(props: {
+  entry: Extract<TreeEntry, { kind: 'start' | 'end' }>;
+  onOpenSession: (seq: number) => void;
+}) {
+  const { entry } = props;
+  const isEnd = entry.kind === 'end';
+  return (
+    <div
+      className={`tree-marker tree-marker--${entry.kind}`}
+      data-marker={`${entry.kind}-${entry.seq}`}
+      style={{ ['--tree-color' as string]: colorForAgent(entry.agentId) }}
+    >
+      <span className="tree-marker__time">{formatClock(entry.time)}</span>
+      <button
+        type="button"
+        className={`tree-marker__tag${isEnd ? ` outcome-text--${entry.meta.outcome}` : ''}`}
+        onClick={() => props.onOpenSession(entry.seq)}
+        title="打开 session 详情"
+      >
+        {isEnd ? `■ ${endMarkerLabel(entry.meta, entry.agentId, entry.seq)}` : `▶ ${entry.agentId} #${entry.seq} 开始`}
+      </button>
     </div>
   );
 }

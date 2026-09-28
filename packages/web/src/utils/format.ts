@@ -109,7 +109,7 @@ export function formatCostUsd(n: number): string {
 // session 结果未揭晓（running/stopping）时标签只显示 agentId #seq；到达终态后追加结果
 // （见需求 3.5、07-frontend.md §9.2）。展示文案与底层 outcome 值不是同一个词：'completed' 显示为
 // 'done'，避免和房间级 status === 'completed'（房间头部状态徽标、房间列表卡片）撞语义。
-const OUTCOME_LABELS: Partial<Record<SessionMeta['outcome'], string>> = {
+export const OUTCOME_LABELS: Partial<Record<SessionMeta['outcome'], string>> = {
   completed: 'done',
 };
 
