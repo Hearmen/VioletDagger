@@ -4,8 +4,8 @@ import {
   createRoom, getRoom, getRoomAgents, setRoomStatus, setAgentState, setAgentEnabled,
   setDispatchPending, setDirectedPending,
 } from '../../src/storage/rooms';
-import { createSession, getSession } from '../../src/storage/sessions';
-import { insertMessage } from '../../src/storage/messages';
+import { createSession, getSession, finishSession, countSessions } from '../../src/storage/sessions';
+import { insertMessage, setQuestionStatus } from '../../src/storage/messages';
 import { createStuckCounter } from '../../src/orchestrator-core/stuckCounter';
 import { checkAndDispatch, isDispatchIdle } from '../../src/orchestrator-core/dispatch';
 import { roomEvents } from '../../src/events';
@@ -246,14 +246,134 @@ describe('checkAndDispatch — directed flag (需求 3.3.2)', () => {
   });
 });
 
+describe('checkAndDispatch — continuation without flags (03-orchestrator-core.md §1.2)', () => {
+  function withOpenGoal(agents: string[]) {
+    const ctx = setup(agents);
+    const goal = insertMessage(ctx.db, { roomId: ctx.room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
+    // 结束一个 session：agent 回到 idle，按给定 outcome 结算。
+    const ended = (agentId: string, outcome: 'completed' | 'passed' | 'error' = 'completed') => {
+      const seq = ctx.busy(agentId);
+      finishSession(ctx.db, ctx.room.id, seq, outcome);
+      setAgentState(ctx.db, ctx.room.id, agentId, 'idle');
+      return seq;
+    };
+    return { ...ctx, goal, ended };
+  }
+
+  it('rotates to the agent after the last session in join order, without touching the room flag', () => {
+    const { db, room, check, startSession, ended } = withOpenGoal(['claude', 'codex', 'kimi-1', 'kimi-2']);
+    ended('claude');
+    ended('kimi-1');
+    const listener = vi.fn();
+    roomEvents.on('roomStatus', listener);
+
+    check();
+
+    expect(startSession).toHaveBeenCalledTimes(1);
+    expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'kimi-2', seq: 3 }));
+    expect(getSession(db, room.id, 3)!.dispatchScope).toBe('broadcast');
+    expect(getRoom(db, room.id)).toMatchObject({ dispatchPending: false, pendingAuthorId: null });
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('wraps around join order and skips disabled agents', () => {
+    const { db, room, check, startSession, ended } = withOpenGoal(['claude', 'codex', 'kimi']);
+    setAgentEnabled(db, room.id, 'claude', false);
+    ended('kimi');
+
+    check();
+
+    expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'codex' }));
+  });
+
+  it('starts from the first agent when the room has no session yet', () => {
+    const { check, startSession } = withOpenGoal(['codex', 'claude']);
+    check();
+    expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'codex', seq: 1 }));
+  });
+
+  it('does not continue while any agent is running', () => {
+    const { check, startSession, busy } = withOpenGoal(['codex', 'claude']);
+    busy('codex');
+    check();
+    expect(startSession).not.toHaveBeenCalled();
+  });
+
+  it('does not continue when every open_question is closed', () => {
+    const { db, room, check, startSession, goal, ended } = withOpenGoal(['codex', 'claude']);
+    ended('codex');
+    setQuestionStatus(db, room.id, goal.id, { status: 'CLOSED', closeReason: 'RESOLVED', closedBy: goal.id }, goal.id);
+    const listener = vi.fn();
+    roomEvents.on('roomStatus', listener);
+
+    check();
+
+    expect(startSession).not.toHaveBeenCalled();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it('keeps continuing while trailing passed sessions are fewer than the enabled agents', () => {
+    const { check, startSession, ended } = withOpenGoal(['codex', 'claude']);
+    ended('codex', 'completed');
+    ended('claude', 'passed');
+    check();
+    expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'codex' }));
+  });
+
+  it('stops once every enabled agent passed in a row, and resumes after new output', () => {
+    const { check, startSession, ended } = withOpenGoal(['codex', 'claude']);
+    ended('codex', 'passed');
+    ended('claude', 'passed');
+    check();
+    expect(startSession).not.toHaveBeenCalled();
+
+    ended('codex', 'completed');
+    check();
+    expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'claude' }));
+  });
+
+  it('pauses the room at the session limit instead of continuing', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential', { maxSessions: 1 });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
+    const seq = createSession(db, room.id, 'codex').seq;
+    finishSession(db, room.id, seq, 'completed');
+    const startSession = vi.fn();
+
+    checkAndDispatch(db, room.id, startSession, createStuckCounter());
+
+    expect(startSession).not.toHaveBeenCalled();
+    expect(getRoom(db, room.id)!.status).toBe('paused_limit');
+    expect(countSessions(db, room.id)).toBe(1);
+  });
+});
+
 describe('isDispatchIdle (03-orchestrator-core.md §1.6)', () => {
   it('is false for an empty room and while the room flag can still be taken', () => {
     const { db, room } = setup(['codex', 'claude']);
     expect(isDispatchIdle(db, room.id)).toBe(false);
-    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'chat' });
     setDispatchPending(db, room.id, true, 'human');
     expect(isDispatchIdle(db, room.id)).toBe(false);
     setDispatchPending(db, room.id, false);
+    expect(isDispatchIdle(db, room.id)).toBe(true);
+  });
+
+  it('is false while continuation would still dispatch, true once the questions close or the room converges', () => {
+    const { db, room } = setup(['codex', 'claude']);
+    const goal = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
+    expect(isDispatchIdle(db, room.id)).toBe(false);
+
+    for (const agentId of ['codex', 'claude']) {
+      const session = createSession(db, room.id, agentId);
+      finishSession(db, room.id, session.seq, 'passed');
+    }
+    expect(isDispatchIdle(db, room.id)).toBe(true);
+
+    const session = createSession(db, room.id, 'codex');
+    finishSession(db, room.id, session.seq, 'completed');
+    expect(isDispatchIdle(db, room.id)).toBe(false);
+    setQuestionStatus(db, room.id, goal.id, { status: 'CLOSED', closeReason: 'RESOLVED', closedBy: goal.id }, goal.id);
     expect(isDispatchIdle(db, room.id)).toBe(true);
   });
 

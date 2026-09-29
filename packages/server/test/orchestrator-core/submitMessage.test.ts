@@ -121,6 +121,57 @@ describe('submitMessage — write validation', () => {
     expect(ctx.agent('codex', s1, { content: 'e2', type: 'exploring', targetMessageId: goalId }).exploringStatus).toBe('active');
   });
 
+  describe('exploring on a closed question', () => {
+    // 人类发一条收尾 chain 并 verify true，关闭问题 q；返回收尾 chain。
+    const closeQuestion = (q: number, resolution: 'RESOLVED' | 'UNRESOLVED' = 'RESOLVED') => {
+      const chain = ctx.human({ content: 'answer', type: 'chain', targetMessageId: q, closesQuestion: true, chainResolution: resolution });
+      ctx.human({ content: 'ok', type: 'verify', targetMessageId: chain.id, verifyVerdict: true });
+      return chain;
+    };
+
+    it('rejects exploring a closed question, naming the question and its closing chain', () => {
+      const q = ctx.human({ content: 'sub', type: 'open_question' });
+      const chain = closeQuestion(q.id, 'UNRESOLVED');
+      const s1 = ctx.agentSession('codex');
+      expectRejected(
+        () => ctx.agent('codex', s1, { content: 'e', type: 'exploring', targetMessageId: q.id }),
+        `目标问题 #${q.id} 已关闭（CLOSED/UNRESOLVED，收尾 chain #${chain.id}）`,
+      );
+      expectRejected(() => ctx.agent('codex', s1, { content: 'e', type: 'exploring', targetMessageId: q.id }), 'get_overview');
+    });
+
+    it('rejects exploring a hypothesis whose question is closed', () => {
+      const q = ctx.human({ content: 'sub', type: 'open_question' });
+      const h = ctx.human({ content: 'h', type: 'hypothesis', targetMessageId: q.id });
+      closeQuestion(q.id);
+      const s1 = ctx.agentSession('codex');
+      expectRejected(() => ctx.agent('codex', s1, { content: 'e', type: 'exploring', targetMessageId: h.id }), `目标问题 #${q.id} 已关闭`);
+    });
+
+    it('rejects exploring a closed goal', () => {
+      closeQuestion(goalId);
+      const s1 = ctx.agentSession('codex');
+      expectRejected(() => ctx.agent('codex', s1, { content: 'e', type: 'exploring', targetMessageId: goalId }), `目标问题 #${goalId} 已关闭`);
+    });
+
+    it('accepts exploring again once the question is reopened', () => {
+      const q = ctx.human({ content: 'sub', type: 'open_question' });
+      const chain = closeQuestion(q.id);
+      ctx.human({ content: 'doubt', type: 'challenge', targetMessageId: chain.id });
+      expect(getMessageById(ctx.db, ctx.room.id, q.id)!.questionStatus).toBe('OPEN');
+      const s1 = ctx.agentSession('codex');
+      expect(ctx.agent('codex', s1, { content: 'e', type: 'exploring', targetMessageId: q.id }).exploringStatus).toBe('active');
+    });
+
+    it('leaves an exploring that was active before the question closed untouched', () => {
+      const q = ctx.human({ content: 'sub', type: 'open_question' });
+      const s1 = ctx.agentSession('codex');
+      const e = ctx.agent('codex', s1, { content: 'e', type: 'exploring', targetMessageId: q.id });
+      closeQuestion(q.id);
+      expect(getMessageById(ctx.db, ctx.room.id, e.id)!.exploringStatus).toBe('active');
+    });
+  });
+
   it('rejects exploring from a human but accepts every other type', () => {
     expectRejected(() => ctx.human({ content: 'e', type: 'exploring', targetMessageId: goalId }), 'humans cannot post exploring');
     expect(ctx.human({ content: 'done', type: 'propose_completion' }).type).toBe('propose_completion');

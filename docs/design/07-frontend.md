@@ -163,10 +163,10 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - 人类可以发送除 `exploring` 外的全部 type（需求 3.5）；`exploring` 不提供入口。
 - **发送要求提示**：选中类型后，在 Composer 顶部显示一行 `--text-muted` 的"发送要求"，帮助人类按与 agent 相同的消息原则书写（需求 3.5）。文案取自 `04-agent-invocation.md` §2.1 记忆类型表的"发送要求"列，把字段名改成界面用语：
   - `open_question`：应描述一个具体、可继续探索的问题
-  - `hypothesis`：针对所选问题的候选答案；存在依据但仍需验证的判断写成 hypothesis
-  - `fact`：必须有明确证据；直接回答某个问题时请先选中该问题
-  - `boundary`：必须说明为什么不可行、成立的条件和范围；单次尝试失败不能写成 boundary
-  - `chain`：一条从输入到输出的完整链路或答案；只有新路径或实质变化才发新 chain；认为足以关闭问题时勾选"关闭该问题"
+  - `hypothesis`：一条可以被验证的独立判断，能脱离具体方案成立；候选方案或修复方案请发 chain
+  - `fact`：能脱离具体方案独立成立的事实，必须有明确证据，一条只写一个；对方案的修复或建议不是 fact，方案的缺陷请用 challenge；直接回答某个问题时请先选中该问题
+  - `boundary`：能脱离具体方案独立成立的约束或死胡同，必须说明为什么不可行、成立的条件和范围；单次尝试失败或某个方案被否定都不能写成 boundary
+  - `chain`：所选问题的一个完整候选方案或答案（包括修复版）；修复已有方案时引用原 chain 和对应 challenge；只有新路径或实质变化才发新 chain；认为足以关闭问题时勾选"关闭该问题"
   - `challenge`：写明质疑点和依据
   - `verify`：必须采用独立且有实质差异的方法，并给出结论
   - `propose_completion`：只有 goal 已得到充分回答、且没有明显其他方向时发送
@@ -271,7 +271,7 @@ RoomDashboardPage 分别持有 liveSession 与 sessionDetail，目标固定为 (
 `/`，纵向：顶部品牌栏 + 房间网格 + 新建房间面板。
 
 - 房间网格：每张卡片显示 `name`、状态徽标、`createdAt`（相对时间，如"3 分钟前"），点击进入 `/rooms/:id`；空态显示"还没有房间，创建一个吧"。**`completed` 的卡片额外显示 `Delete` 按钮**（`--danger` 描边 + 二次确认弹窗，说明"将级联删除 session、记忆、事件树、信息流与磁盘日志，不可恢复"）；删除调用 `DELETE /api/rooms/:id`，成功后刷新列表；非 `completed` 卡片不显示该按钮。
-- 新建房间面板：`name` 输入框；agent chips 来自 `GET /api/agents`，**可重复点击以加入同一 agent 的多个实例**——每个 chip 显示当前已加入数量（如 `codex ×2`），点击 +1；下方"已加入实例"区按加入顺序展示将要生成的实例标识（单个显示 `codex`，多个显示 `codex-1`/`codex-2`……，与 `01-storage.md` 的规则一致），每条可单独移除、也可清空某 agent 的全部实例。`schedulingMode` 只有 `sequential`，渲染为唯一可选且已选中的选项（其他模式预留位置但禁用，需求 3.3）。另有**可选的 `maxSessions` 数字输入框**（label「session 上限」，`min=1`，placeholder 显示默认值 20）：留空表示用服务端默认值；填了就必须是正整数，否则提交时在表单内联报错、不发请求。以及**可选的 `workdir` 文本输入框**（label「工作目录」，placeholder 提示"默认：服务端目录"）：留空用服务端默认；填了随 `POST /api/rooms` 提交，路径是否存在/是目录由服务端校验（`06`），失败在表单内联报错。提交 `POST /api/rooms`（`agentIds` 按加入顺序、允许重复；数组里是注册表 key；`maxSessions` 仅在填写时带上），成功后跳 `/rooms/:id`；失败在表单内联 `role="alert"`。
+- 新建房间面板：`name` 输入框；agent chips 来自 `GET /api/agents`，**可重复点击以加入同一 agent 的多个实例**——每个 chip 显示当前已加入数量（如 `codex ×2`），点击 +1；下方"已加入实例"区按加入顺序展示将要生成的实例标识（单个显示 `codex`，多个显示 `codex-1`/`codex-2`……，与 `01-storage.md` 的规则一致），每条可单独移除、也可清空某 agent 的全部实例。`schedulingMode` 只有 `sequential`，渲染为唯一可选且已选中的选项（其他模式预留位置但禁用，需求 3.3）。另有**可选的 `maxSessions` 数字输入框**（label「session 上限」，`min=1`，placeholder 显示默认值 20）：留空表示用服务端默认值；填了就必须是正整数，否则提交时在表单内联报错、不发请求。以及**可选的 `workdir` 文本输入框**（label「工作目录」，placeholder 提示"默认：服务端目录；不存在会自动创建"）：留空用服务端默认；填了随 `POST /api/rooms` 提交，目录不存在时由服务端自动创建，路径不是目录或创建失败由服务端报错（`06`），失败在表单内联报错。提交 `POST /api/rooms`（`agentIds` 按加入顺序、允许重复；数组里是注册表 key；`maxSessions` 仅在填写时带上），成功后跳 `/rooms/:id`；失败在表单内联 `role="alert"`。
 - **不可用 agent**：`GET /api/agents` 返回 `available`/`unavailableReason`；`available=false` 的 chip 禁用并悬浮展示原因（`07 §17`）。
 - **创建后不可变**：参与的 agent 名单（含实例划分）、`schedulingMode` 与 `maxSessions` 在创建时确定，创建后不能增减或更改（需求 3.5；`maxSessions` 之后只能靠房间内 `resumeRoom` 追加）。
 

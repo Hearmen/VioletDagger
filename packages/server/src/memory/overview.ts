@@ -10,7 +10,7 @@ import type {
 const DEFAULT_RECENT_RAW_MESSAGES = 4;
 
 export const OVERVIEW_GUIDANCE =
-  '以上是当前任务的进展情况，仅供参考，请形成你自己的判断——可以采纳、组合、推翻，也可以提出全新方案。';
+  '以上是当前任务的记忆状态。已确认的 fact、boundary 和 VERIFIED 的 chain 可以直接引用，不需要重复研究；如果你认为其中某条有误或不完整，用 challenge 指出，再以新的 chain 给出你的方案，不要绕开已有结论另起一套。';
 
 function readRecentRawMessagesCount(): number {
   const raw = process.env.VIOLETDAGGER_RECENT_RAW_MESSAGES;

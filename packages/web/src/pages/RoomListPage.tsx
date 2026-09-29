@@ -226,7 +226,7 @@ export function RoomListPage() {
               id="room-workdir"
               aria-label="workdir"
               value={workdir}
-              placeholder="默认：服务端目录"
+              placeholder="默认：服务端目录；不存在会自动创建"
               onChange={(e) => setWorkdir(e.target.value)}
             />
           </div>

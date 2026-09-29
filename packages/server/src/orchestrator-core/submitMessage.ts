@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import {
   runInTransaction, insertMessage, getMessageById, countMessages, getActiveExploringByAuthor, getRoomAgents,
   getSession, setMessageType, setQuestionStatus, setChainStatus, setDispatchPending, setDirectedPending,
+  getStateTransitions,
 } from '../storage';
 import { MESSAGE_TYPES, type CloseReason, type Message, type MessageType } from '../storage/types';
 import { roomEvents } from '../events';
@@ -112,6 +113,13 @@ function validate(db: Database.Database, input: SubmitMessageInput, type: Messag
       }
       const active = getActiveExploringByAuthor(db, roomId, author.agentId);
       if (active) fail(`author already has an active exploring #${active.id}; complete it with complete_exploring first`);
+      // 所属问题已关闭时拒绝（需求 4.6）：T 为 open_question 时 Q = T，T 为 hypothesis 时 Q 为它指向的问题。
+      const question = target!.type === 'open_question'
+        ? target!
+        : target!.targetMessageId == null ? null : getMessageById(db, roomId, target!.targetMessageId);
+      if (question?.type === 'open_question' && question.questionStatus === 'CLOSED') {
+        fail(closedQuestionMessage(db, roomId, question));
+      }
       break;
     }
     case 'challenge': {
@@ -139,6 +147,20 @@ function validate(db: Database.Database, input: SubmitMessageInput, type: Messag
     default:
       break;
   }
+}
+
+// exploring 指向已关闭问题的拒绝文案（03-orchestrator-core.md §1.4）：收尾 chain C 取 Q 最近一次转为
+// CLOSED/* 的转换记录，其触发消息是一条 verify，verify 的目标即 C；找不到时省略这一段。
+function closedQuestionMessage(db: Database.Database, roomId: number, q: Message): string {
+  const closing = getStateTransitions(db, roomId, q.id)
+    .filter((t) => t.toStatus?.startsWith('CLOSED/'))
+    .at(-1);
+  const verify = closing ? getMessageById(db, roomId, closing.triggerMessageId) : null;
+  const chainPart = verify?.type === 'verify' && verify.targetMessageId != null
+    ? `，收尾 chain #${verify.targetMessageId}`
+    : '';
+  return `目标问题 #${q.id} 已关闭（CLOSED/${q.questionCloseReason}${chainPart}）。`
+    + '请先调用 get_overview 查看当前状态，不要对已关闭的问题开启探索。';
 }
 
 function describe(m: Message): string {

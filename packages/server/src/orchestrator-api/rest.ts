@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
@@ -15,19 +15,22 @@ export class ApiError extends Error {
 }
 
 // 工作目录解析（见 01-storage.md §5.4 / 06-orchestrator-api.md 第 1 节）：
-// 「~」展开 → 绝对化 → 校验存在且是目录；不填用 VIOLETDAGGER_WORKDIR，再退回 server cwd。
+// 「~」展开 → 绝对化 → 不存在时递归创建、已存在时必须是目录；不填用 VIOLETDAGGER_WORKDIR，再退回 server cwd。
 export function resolveWorkdir(input?: string): string {
   const raw = typeof input === 'string' && input.trim() !== ''
     ? input.trim()
     : (process.env.VIOLETDAGGER_WORKDIR ?? process.cwd());
   const expanded = raw === '~' ? os.homedir() : raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(2)) : raw;
   const absolute = path.resolve(expanded);
-  let stat;
-  try {
-    stat = statSync(absolute);
-  } catch {
-    throw new ApiError(`workdir does not exist: ${absolute}`);
+  if (!existsSync(absolute)) {
+    try {
+      mkdirSync(absolute, { recursive: true });
+    } catch (err) {
+      throw new ApiError(`failed to create workdir ${absolute}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return absolute;
   }
+  const stat = statSync(absolute);
   if (!stat.isDirectory()) {
     throw new ApiError(`workdir is not a directory: ${absolute}`);
   }

@@ -1,4 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createTestDb } from '../../src/storage/db';
 import { createRoom, getRoomAgents } from '../../src/storage/rooms';
@@ -10,6 +12,15 @@ import type { AgentRegistry } from '../../src/agent-invocation';
 const registry: AgentRegistry = {
   agents: { codex: { command: ['codex', 'exec'] }, claude: { command: ['claude', '-p'] } },
 };
+
+// 每个用例一个独立临时目录，用于验证 workdir 自动创建。
+let tmp: string;
+beforeEach(() => {
+  tmp = mkdtempSync(path.join(os.tmpdir(), 'vd-workdir-'));
+});
+afterEach(() => {
+  rmSync(tmp, { recursive: true, force: true });
+});
 
 describe('listRoomsHandler', () => {
   it('returns all rooms as summaries', () => {
@@ -56,13 +67,23 @@ describe('resolveWorkdir', () => {
     expect(resolveWorkdir(process.cwd())).toBe(process.cwd());
   });
 
-  it('rejects a non-existent path', () => {
-    expect(() => resolveWorkdir('/no/such/dir/violetdagger-xyz')).toThrow(ApiError);
-    expect(() => resolveWorkdir('/no/such/dir/violetdagger-xyz')).toThrow(/does not exist/);
+  it('creates a missing directory, including missing parents', () => {
+    const target = path.join(tmp, 'a', 'b', 'c');
+    expect(resolveWorkdir(target)).toBe(target);
+    expect(statSync(target).isDirectory()).toBe(true);
   });
 
   it('rejects a path that is a file, not a directory', () => {
     expect(() => resolveWorkdir(path.join(process.cwd(), 'package.json'))).toThrow(/not a directory/);
+  });
+
+  it.skipIf(process.getuid?.() === 0)('reports the path when the directory cannot be created', () => {
+    const locked = path.join(tmp, 'locked');
+    mkdirSync(locked, { mode: 0o500 });
+    const target = path.join(locked, 'child');
+    expect(() => resolveWorkdir(target)).toThrow(ApiError);
+    expect(() => resolveWorkdir(target)).toThrow(`failed to create workdir ${target}`);
+    chmodSync(locked, 0o700);
   });
 });
 
@@ -135,13 +156,33 @@ describe('createRoomHandler', () => {
     expect(room.workdir).toBe(process.cwd());
   });
 
-  it('rejects a workdir that does not exist', () => {
+  it('creates a workdir that does not exist and stores it', () => {
+    const db = createTestDb();
+    const target = path.join(tmp, 'new', 'room');
+    const room = createRoomHandler(db, registry, {
+      name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', workdir: target,
+    });
+    expect(room.workdir).toBe(target);
+    expect(statSync(target).isDirectory()).toBe(true);
+  });
+
+  it('rejects a workdir that is a file and creates no room', () => {
     const db = createTestDb();
     expect(() =>
       createRoomHandler(db, registry, {
-        name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', workdir: '/no/such/dir/violetdagger-xyz',
+        name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', workdir: path.join(process.cwd(), 'package.json'),
       }),
-    ).toThrow(/workdir/);
+    ).toThrow(/not a directory/);
+    expect(listRoomsHandler(db)).toEqual([]);
+  });
+
+  it('does not create the workdir when other fields are invalid', () => {
+    const db = createTestDb();
+    const target = path.join(tmp, 'never');
+    expect(() =>
+      createRoomHandler(db, registry, { name: 'a', agentIds: ['unknown'], schedulingMode: 'sequential', workdir: target }),
+    ).toThrow(ApiError);
+    expect(existsSync(target)).toBe(false);
   });
 
   it('rejects a schedulingMode other than sequential', () => {

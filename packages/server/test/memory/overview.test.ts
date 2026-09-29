@@ -114,7 +114,7 @@ describe('buildOverview', () => {
     const overview = buildOverview(db, room.id);
     expect(overview.completionProposals.map((m) => m.id)).toEqual([proposal.id]);
     expect(overview.guidance).toBe(
-      '以上是当前任务的进展情况，仅供参考，请形成你自己的判断——可以采纳、组合、推翻，也可以提出全新方案。',
+      '以上是当前任务的记忆状态。已确认的 fact、boundary 和 VERIFIED 的 chain 可以直接引用，不需要重复研究；如果你认为其中某条有误或不完整，用 challenge 指出，再以新的 chain 给出你的方案，不要绕开已有结论另起一套。',
     );
   });
 });

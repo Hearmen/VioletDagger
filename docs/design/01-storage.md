@@ -406,7 +406,7 @@ markSessionTerminating 在事务内将 stopIntent 设为 terminate、状态置 s
 
 ### 5.4 工作目录 `workdir`
 
-room 创建时可指定 `workdir`——该房**所有 agent CLI 的 spawn cwd**。不填时默认取服务端配置 `VIOLETDAGGER_WORKDIR`，再退回 server 进程 cwd。**路径解析/校验（`~` 展开、绝对化、必须存在且是目录）与默认值求值放在编排器对外接口层（`06`）**，存储层只落盘解析后的绝对路径；agent 调用层（`04`）spawn 时读 `room.workdir`，为空串则回退 `VIOLETDAGGER_WORKDIR`/cwd。`workdir` 只是给进程设 cwd，**不是工作区隔离**（需求第 1/8 节）；多个 room 可指向同一目录。
+room 创建时可指定 `workdir`——该房**所有 agent CLI 的 spawn cwd**。不填时默认取服务端配置 `VIOLETDAGGER_WORKDIR`，再退回 server 进程 cwd。**路径解析/校验（`~` 展开、绝对化、不存在时自动创建、已存在时必须是目录）与默认值求值放在编排器对外接口层（`06`）**，存储层只落盘解析后的绝对路径；agent 调用层（`04`）spawn 时读 `room.workdir`，为空串则回退 `VIOLETDAGGER_WORKDIR`/cwd。`workdir` 只是给进程设 cwd，**不是工作区隔离**（需求第 1/8 节）；多个 room 可指向同一目录。
 
 ### 5.5 消息 id 为 room 内自增
 

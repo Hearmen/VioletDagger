@@ -6,7 +6,7 @@
 
 - **核心类比**：这套系统是对"单模型内 spawn 一个 agent、派任务、等结果"这种 subagent 机制的推广——把"单模型的一对多"变成"多模型的多对多"：不同模型（Kimi、opencode、Codex、Claude 等）互为 agent；不是黑盒等最终结果，而是过程中持续同步进展（分层记忆、事件树）；并且有一个前端能实时看着这一切发生。
 - **通用任务**，不局限于编码类任务；不内置代码工作区隔离（不做 git worktree 之类的机制），保持系统本身简单。
-- **工作目录**：新建 room 时可指定一个工作目录 `workdir`，该 room 里所有 agent 的 CLI 都默认在这个目录下运行（不填用服务端默认）。这只是给进程设一个 cwd，**不是**工作区隔离——不复制、不隔离文件，多个 room 可以指向同一个目录。
+- **工作目录**：新建 room 时可指定一个工作目录 `workdir`，该 room 里所有 agent 的 CLI 都默认在这个目录下运行（不填用服务端默认）。**目录不存在时，创建房间时会自动创建（包括缺失的父目录）**；路径已存在但不是目录，或创建失败时，拒绝创建房间并说明原因。这只是给进程设一个 cwd，**不是**工作区隔离——不复制、不隔离文件，多个 room 可以指向同一个目录。
 - **本地单机工具**，单用户使用，无需考虑多用户鉴权/远程访问。
 - 技术栈：**TypeScript / Node.js**。
 
@@ -89,14 +89,22 @@ v1 内置以上四个 agent 的默认配置模板。
 - **触发型消息**：以下消息触发调度：当前状态为 `OPEN` 的 `open_question`、`hypothesis`、当前状态为 `CANDIDATE` 的 `chain`，以及 `challenge`（`challenge` 本身没有状态、不需要被"处理"，它的作用是转换目标消息的状态，写入时触发一次派发）。人类首次输入的任务以 `open_question` 写入，同时作为本房间的 `goal`。`fact`、`boundary`、已关闭的 `open_question`、`chain[VERIFIED]` / `chain[CHALLENGED]` / `chain[REJECT]`、`verify`、`exploring`、`propose_completion`、无 type 的纯聊天/过渡发言、`pass`/系统占位，以及定向 session 产出的所有消息（见 3.3.2），都不是触发型，不会单独拉起 agent。人类消息与 agent 消息使用同一套触发型判定：不带 type 或 type 不属于触发型的人类消息，不会拉起 agent。
 - **待分发标记**：调度不记录"哪些消息待处理"，只记录"当前是否需要分发"。房间有一个**房间标记**，并记下最近一次置位它的消息作者（**标记作者**）；每个 agent 另有一个**定向标记**（见 3.3.2）。标记持久化保存，服务重启后不丢失。
 - **置位**：一条触发型消息写入时，如果它不是定向消息、也不是定向 session 的产出，就把房间标记置为 true，并把标记作者更新为这条消息的作者（人类消息的作者记为 human）。标记已经为 true 时只更新标记作者。消息写入之后的状态变化（被 verify、被 challenge）不会改变标记。
-- **检查时机**：以下情况各做一次派发检查：(1) 一条触发型消息写入；(2) 某个 agent 的 session 结束、变回空闲（正常结束、报错退出，或被 `terminateAgentSession` 处理完）；(3) 人类恢复房间；(4) 人类启用某个 agent 的派发。所有标记都为 false 时，检查什么都不做。
+- **检查时机**：以下情况各做一次派发检查：(1) 一条触发型消息写入；(2) 某个 agent 的 session 结束、变回空闲（正常结束、报错退出，或被 `terminateAgentSession` 处理完）；(3) 人类恢复房间；(4) 人类启用某个 agent 的派发。所有标记都为 false 时，只做续派判定（见下）。
 - **派发规则**：房间标记为 true 时，按固定顺序（agent 加入房间的顺序）选出第一个空闲、启用派发、没有待处理定向标记、且不是标记作者的 agent，为它启动一个 session，并清除房间标记。没有这样的 agent 时，改为选标记作者本人（如果它空闲、启用派发、没有待处理定向标记）。仍然选不出，就保留房间标记，等下一次检查。一次检查最多因房间标记派发一个 session；忙碌期间写入的多条触发型消息只会合并成一个标记，由这一个 session 处理，被派发的 agent 通过 `get_overview` 看到全部新内容。
 - **失败后恢复标记**：一个 session 以 error 结束时，它消耗的标记会被恢复：因房间标记派发的，重新置位房间标记，并把标记作者设为这个失败的 agent，下一次优先派给其他 agent；因定向标记派发的，重新置位该 agent 的定向标记。completed、passed、terminated 不恢复标记。
-- **派发停止**：房间标记和所有定向标记都为 false 时，派发自然停止。
+- **无标记时的续派**：派发检查发现房间标记和所有定向标记都为 false 时，如果同时满足以下条件，系统仍然派发一个 session（不置位标记，直接派发）：(1) 房间处于 active；(2) 没有任何 agent 正在运行（running/stopping）；(3) 房间里至少有一个 OPEN 的 `open_question`（包括 goal）；(4) 没有**收敛**——最近连续以 `passed` 结束的 session 数，小于当前启用派发的 agent 数；(5) 至少有一个启用派发的 agent。续派的对象按 agent 加入房间的顺序**轮转**：从最近一次结束的 session 的 agent 的下一个开始，选第一个启用派发的 agent（排到末尾后回到开头），保证每个 agent 都会轮到，而不是总在同两个 agent 之间来回。续派的 session 与因房间标记派发的 session 一样，属于广播派发，产出按正常规则置位标记，也同样计入总 session 数上限。
+- **派发停止**：以下任一情况出现时，派发停止：所有 `open_question` 都已关闭且没有任何标记；连续 `passed` 达到收敛条件（每个启用的 agent 都轮过一次、都没有新增内容）；达到总 session 数上限（自动暂停）；房间被暂停或结束；没有启用派发的 agent。
 - **被派发的 agent 拿到什么**：两部分。(1) **房间协议说明**——固定的、不随每次派发变化的规则性内容，这份说明必须每次都完整给到，不能假设 agent 记得上次的规则。(2) **当前房间状态**（`get_overview`）。两者一起构成这次 session 的完整输入。
 - **忙碌中的 agent 不受打扰**：一个 session 还在跑的时候，不会被通知、不会被打断，直到它自己结束（正常完成、报错退出，或被人类通过 `terminateAgentSession` 强制终止）。
 - **`pass`**：session 结束时，如果本 session 没有发出任何带 type 的消息（完全没发消息，或只发了无 type 的聊天），这次 session 记为 `passed`，系统写一条占位事件（"pass"）在事件树里留痕（见 3.5），它不是触发型消息，不会置位标记；`passed` 的 session 结束时照常做一次派发检查，但它本身不会置位标记。只要发出过任意一条带 type 的消息（包括只发了一条 `verify`），就记为 `completed`。
-- **Agent 讨论方式**：围绕当前 `goal` 研究。`open_question` 用于提出需要继续研究的问题；`challenge` 必须质疑已有 `fact` 或 `boundary` 或 `chain`，并触发新的调度；`exploring` 是研究空间占用，不代表知识。
+- **Agent 讨论方式**：
+  - 围绕当前 `goal` 研究。`open_question` 用于提出需要继续研究的问题。
+  - **拆分子问题**：goal 或某个问题包含多个可以独立研究的部分、而记忆中还没有对应子问题时，agent 应先把它们拆成多个 `open_question`，子问题正文注明所属的父问题；每个子问题由各自的 chain 收尾。
+  - **缺陷用 challenge 指出，修复用新 chain**：`challenge` 必须质疑已有 `fact` 或 `boundary` 或 `chain`，并触发新的调度；反过来，发现已有 `fact`、`boundary` 或 `chain` 存在缺陷（结论错误、遗漏关键条件、在某些输入下不成立）时，必须用 `challenge` 指向它，不得另发一条 `fact`/`hypothesis` 来描述缺陷——那样既不会触发调度，原结论也不会转回待验证状态，缺陷就被埋没了。目标 chain 已处于 `CHALLENGED` 时不能再 challenge，直接对它做 verify false；已 `VERIFIED`/`REJECT` 的 chain 不能 verify，只能 challenge。修复方案在 challenge 之后作为新的 `chain` 发送，指向原方案回答的问题，并用 `referencedMessageIds` 引用原方案和 challenge。
+  - **优先 verify**：处于待验证状态的消息（`hypothesis`、`CANDIDATE`/`CHALLENGED` 的 `chain`）是未完成的工作，agent 应优先对其做独立 verify，而不是开辟新方向。
+  - **收尾 chain**：问题只能由 `closesQuestion=true` 的 chain 在 `VERIFIED` 后关闭，因此当某个 `open_question` 已有足够的已确认结论支撑时，agent 应主动发出收尾 chain（指向该问题、引用依据、写出完整答案并给出 `chainResolution`），交由其他 agent 独立 verify。子问题先收尾，goal 的收尾 chain 以引用各子问题已 `VERIFIED` 的 chain 为主，只写组合方式和整体验收结果。
+  - **立即提交**：触发型消息是其他 agent 被拉起的来源，agent 应在产出后立即提交，不要攒到 session 结束时再发。
+  - `exploring` 是研究空间占用，不代表知识。
 - **总 session 数上限**：就是 agent 累计启动的 session 总数（`sessionId` 的最大值），不区分是被什么触发的，没有例外。消息本身的发出不会增加或重置这个上限，只有 `resumeRoom(additionalSessions)` 能追加额度。**这个上限在创建 room 时可选指定（`maxSessions`，正整数；不填用服务端默认值）**，创建后不能直接改，只能靠 `resumeRoom(additionalSessions)` 追加。达到上限后自动暂停，把"是否继续"的决定权交还给人类——通过 `resumeRoom`（见 3.5）继续，或直接 `confirmCompletion` 结束。人类也可以在任何时候主动 `pauseRoom`，不需要等到达上限。
 - **没有自动超时机制**：编排器不会主动判断"这次 session 跑太久了"，不会自动把某次 session 标记为超时/出错——session 会一直运行，直到它自己正常退出或报错退出为止，系统不设执行时长上限，但是会记录每个 session 的执行时间。如果人类观察到某个 session 的运行时长（`getRoomStatus` 里的"已运行 X 秒"）长到不合理，可以随时主动通过 `terminateAgentSession`（见 3.5）强制终止——"多久算太久"完全由人类自己判断，系统不做自动终止。
 - **人类消息的认知权重优先级**：人类发的消息带 `source: human` 标记，agent 被明确告知应更重视人类的判断；但系统依然不做任何强制语义判断。人类首条任务消息由系统写为 `open_question`，触发第一次派发；之后的人类消息与 agent 消息一样，按触发型判定是否触发调度，在派发规则上没有特权。
@@ -225,17 +233,17 @@ post_message({
 
 | type | 含义 |
 |---|---|
-| `fact` | 已确认的事实；如果直接回答某个 `open_question`，必须通过 `targetMessageId` 指向该问题 |
-| `hypothesis` | 针对某个 `open_question` 提出的候选答案，尚无定论；新写入必须通过 `targetMessageId` 关联该问题；被独立 `verify` 后由 Scheduler 转换为 `fact` 或 `boundary` |
-| `boundary` | 已确认走不通的路径/死胡同；如果直接回答某个 `open_question`，必须通过 `targetMessageId` 指向该问题 |
+| `fact` | 已确认的事实，内容必须能脱离任何具体方案独立成立：关于问题本身、需求、运行环境、依赖库或外部系统的事实，任何方案都可以直接引用。对某个方案的修复、改进、实现建议或设计取舍都不是 fact；方案自身的行为（"方案 X 在输入 Y 下会崩溃"）也不是 fact，应作为对该方案的 `challenge`。如果直接回答某个 `open_question`，必须通过 `targetMessageId` 指向该问题 |
+| `hypothesis` | 待验证的独立判断，同样必须能脱离具体方案独立成立，写成一个可以被验证的肯定陈述；新写入必须通过 `targetMessageId` 关联它所涉及的 `open_question`；被独立 `verify` 后由 Scheduler 转换：verify true 表示判断成立，转为 `fact`；verify false 表示判断不成立、对应的路径走不通，转为 `boundary`。候选方案、修复方案不写成 hypothesis，写成 `chain` |
+| `boundary` | 已确认的约束或走不通的路径，同样必须能脱离具体方案独立成立（例如"只限制指数大小不足以防止幂运算 DoS"）。某个方案或修复被验证不成立，是对该 chain 的 verify false（`REJECT`），不是 boundary。如果直接回答某个 `open_question`，必须通过 `targetMessageId` 指向该问题 |
 | `open_question` | 提出的开放问题；只有 `OPEN`、`CLOSED` 两种状态，`CLOSED` 进一步记录 `RESOLVED` 或 `UNRESOLVED` 关闭原因；首条用户任务就是 goal |
 | `chain` | 一条从输入到输出的完整候选链路或答案；具有 `CANDIDATE`、`VERIFIED`、`CHALLENGED`、`REJECT` 四种状态。**必须**通过 `targetMessageId` 指向一个 `open_question`，可通过 `referencedMessageIds` 标注依据；`closesQuestion=true` 时必须提供 `chainResolution=RESOLVED|UNRESOLVED`，在该 chain 变为 `VERIFIED` 时由 Scheduler 关闭目标问题 |
-| `exploring` | 某个 agent 正在探索某方向的状态广播；开始时必须通过 `targetMessageId` 指向 `open_question` 或 `hypothesis`，不代表知识；一次 exploring 可以产生多个结果 |
+| `exploring` | 某个 agent 正在探索某方向的状态广播；开始时必须通过 `targetMessageId` 指向 `open_question` 或 `hypothesis`，不代表知识；一次 exploring 可以产生多个结果。**所属问题（指向 `open_question` 时即该问题，指向 `hypothesis` 时为该 hypothesis 指向的 `open_question`，包括 goal）当前处于 `CLOSED` 时拒绝写入**，拒绝信息写明问题编号、关闭原因和关闭它的收尾 chain，提示 agent 先刷新 `get_overview` |
 | `propose_completion` | agent 认为任务可以结束了，发出的一次性信号；只有 goal 已得到充分回答，且 goal 没有明显其他方向时发送；不参与知识转换，不直接关闭问题 |
 | `challenge` | 对某条已有 `fact`、`boundary` 或 `chain` 的质疑；必须通过 `targetMessageId` 指向被质疑消息。质疑 fact/boundary 时 Scheduler 将其当前 type 转换为 `hypothesis`；质疑 chain 时将其状态转换为 `CHALLENGED`。只能针对 `fact`、`boundary`，或状态为 `CANDIDATE`/`VERIFIED`/`REJECT` 的 `chain`；`CHALLENGED` 状态的 chain 不能再被 challenge |
 | `verify` | 对某条 `hypothesis` 或 `chain` 的独立验证；必须通过 `targetMessageId` 指向目标，并设置 `verifyVerdict: boolean`。目标为 hypothesis 时 true→fact、false→boundary；目标为 chain 时 true→VERIFIED、false→REJECT。只能针对 `hypothesis`，或状态为 `CANDIDATE`/`CHALLENGED` 的 `chain`；已 `VERIFIED`/`REJECT` 的 chain 不能再被 verify。同一 session 不能 verify 本 session 产出的消息；同一 agent 在后续 session 中可以 verify 自己此前的产出；人类不受这条限制 |
 
-**开放问题 vs 假设**：`open_question` 是问题本身（可能已有候选回答），`hypothesis` 是对某个问题给出的候选回答（还没被认定为定论）。二者概念不重复。
+**开放问题 vs 假设 vs 链路**：`open_question` 是问题本身；`hypothesis` 是关于某个问题的一条待确认的独立判断；对问题的候选回答（包括修复版）写成 `chain`。三者概念不重复。
 
 ### 4.4 记忆读取：概览 + 按需深挖
 
@@ -243,7 +251,7 @@ post_message({
 
 **`get_overview(roomId)`** —— 每个 agent 被派发一个新 session 时自动获得，**只给摘要/索引，不给全文**：
 
-`get_overview` 返回已经组合好的结构化数据，不要求 Agent 根据 message ID 自己拼装关系。以 `open_question` 为主要聚合根：
+`get_overview` 返回已经组合好的房间状态文本，不要求 Agent 根据 message ID 自己拼装关系；它与派发时 prompt 中的记忆面板使用同一种渲染格式，内容依次为 goal 全文、按下面 `OverviewPayload` 结构渲染的摘要树、固定引导语（见第 5 节）。`OverviewPayload` 是这份文本的数据结构，以 `open_question` 为主要聚合根：
 
 ```typescript
 interface OverviewPayload {
@@ -316,7 +324,7 @@ interface ExploringOverview {
 }
 ```
 
-每个 `open_question` 是一个聚合根，它的状态和关闭原因直接给出，不由 Agent 从消息关系推断。goal 只出现在 `goal` 字段，不在 `questions` 中重复。chain 必须挂在某个问题之下，因此只出现在 `QuestionOverview.chains` 中。`activeExploring` 只包含当前 active 的 exploring，`completedExploring` 只包含已完成的 exploring。所有字段只提供摘要/索引，需要全文时使用 `get_detail`。
+每个 `open_question` 是一个聚合根，它的状态和关闭原因直接给出，不由 Agent 从消息关系推断。goal 只出现在 `goal` 字段，不在 `questions` 中重复。chain 必须挂在某个问题之下，因此只出现在 `QuestionOverview.chains` 中。`activeExploring` 只包含当前 active 的 exploring，`completedExploring` 只包含已完成的 exploring。所有字段只提供摘要/索引，需要全文时使用 `get_detail`。渲染成交给 agent 的文本时（派发 prompt 与 `get_overview`），已关闭的子问题（goal 除外）会折叠：只保留收尾 chain，以及 fact、boundary 的单行摘要；它下面的其余回答，以及指向该问题或其下 hypothesis 的 exploring，都只以计数形式出现。问题重新打开后恢复完整显示。折叠只作用于这份文本，不删除、不修改任何存储内容；`OverviewPayload` 本身仍然完整，被折叠的内容照常可以通过 `get_detail` 查询，前端记忆视图也照常显示。具体格式见 `02-memory-management.md` §3.4。
 
 **`get_detail(roomId, messageId | { type } | { list: true, type?, targetMessageId?, beforeId?, limit? })`** —— agent 按需调用，拿某条或某类记忆的完整内容（包括它挂载的所有 challenge/verify 注解）。`list: true` 时分页浏览全部历史（含无类型聊天），默认 30、最大 100，按 ID 倒序取页、页内升序，返回 `{ messages, nextCursor }`。按 `type: "exploring"` 查询时返回**该类型下的全部记录，不分 active/completed**——这是深挖历史的工具，跟 `get_overview` 里只给 active 快照的 `activeExploring` 是两回事。
 
@@ -337,19 +345,20 @@ interface ExploringOverview {
 - 每条 `exploring` 记录带一个 `status: "active" | "completed"` 字段。
 - **显式完成**：agent 探索完一个方向、但还没想好下一个方向时，调用 `complete_exploring(roomId, authorId, messageId, resultSummary, resultMessageIds?)`，把当前 active 的记录标记为 `completed`。
 - **不可叠加**：agent 已有一条 active 的 `exploring` 时，再发 `type: "exploring"` 会被拒绝；必须先通过 `complete_exploring` 结束当前这条（或由 `terminateAgentSession` 强制完成），才能开启新的 exploring。
+- **不指向已关闭的问题**：exploring 的所属问题（见 4.3）当前为 `CLOSED` 时，写入被拒绝，拒绝信息告知 agent 该问题已被哪条 chain 关闭。问题重新变为 `OPEN` 后可以再次对它发 exploring。这条校验同样按写入时的当前状态进行：agent 在问题关闭前发出的 exploring 不受影响，也不会被自动完成。
 - **人类强制完成**：人类也可以通过 3.5 的 `terminateAgentSession` 把它标记为 `completed`（带"人类强制终止"的系统备注），不需要 agent 自己配合。
 - 不做超时自动完成（讨论过，明确不要）。一个 agent 的 active `exploring` 只在**派发扫描经过它自己**时计数：派发扫描只在房间标记为 true 的派发检查中发生；每次派发扫描按顺序遇到处于 `running`/`stopping` 且带 active `exploring` 的 agent，就给它的计数 +1（不需要它自己被重新派发），exploring 状态发生变化时清零；达到 N 只在 UI 上给人类一个提醒，具体怎么处理由人类自己决定（见 3.1、3.5）。房间只有一个 agent 时扫描不会反复经过它、计数难以累积，该机制基本不起作用，人类靠"已运行 X 秒"自行判断。
 
 ## 5. agent 身份与"接手"
 
 - 不引入正式的"席位/交接"概念。所谓"接手"就是被 3.3 的派发规则选中的下一个空闲 agent（不管是不是同一类型的第一次参与）。
-- 任何 agent 读取 `get_overview` 时，都会被明确告知："以上是当前任务的进展情况，仅供参考，请形成你自己的判断——可以采纳、组合、推翻，也可以提出全新方案。"
+- 任何 agent 读取 `get_overview` 时，都会被明确告知："以上是当前任务的记忆状态。已确认的 fact、boundary 和 VERIFIED 的 chain 可以直接引用，不需要重复研究；如果你认为其中某条有误或不完整，用 challenge 指出，再以新的 chain 给出你的方案，不要绕开已有结论另起一套。"
 
 ## 6. 去中心化协调
 
 - 不设协调者角色，**跨 agent** 之间没有系统强制的方向锁——不同 agent 探索的方向是否重复/冲突，完全靠 agent 自己读记忆面板判断避让，系统不做语义去重。
 - 系统只对**单个 agent 自己**强制一条规则：同时只能有一个 active 的 `exploring`（见 4.6），这是并发状态管理，不是跨 agent 的协调裁决。
-- "避免重复探索"依赖：(a) `exploring` 广播（agent 开始探索前先声明方向）+ (b) 其他 agent 自己读取 `activeExploring` 后自行判断避让。不同 agent 之间本来就可能同时在跑（见 3.3，`sequential` 只保证单个 agent 自己不会跟自己并发，不是房间级别的互斥），所以**不存在任何调度层面的防抢占保护**——两个 agent 完全可能在几乎同一时刻各自读到"没人在探索 X"、然后都去声明探索 X，这是去中心化设计本身接受的代价，不因 `schedulingMode` 是 `sequential` 还是 `parallel` 而改变。
+- "避免重复探索"依赖：(a) `exploring` 广播（agent 开始探索前先声明方向）+ (b) 其他 agent 自己读取 `activeExploring` 后自行判断避让。不同 agent 之间本来就可能同时在跑（见 3.3，`sequential` 只保证单个 agent 自己不会跟自己并发，不是房间级别的互斥），所以**不存在任何调度层面的防抢占保护**——两个 agent 完全可能在几乎同一时刻各自读到"没人在探索 X"、然后都去声明探索 X，这是去中心化设计本身接受的代价，不因 `schedulingMode` 是 `sequential` 还是 `parallel` 而改变。指向已关闭子问题的 exploring 在交给 agent 的文本中会被折叠（见 4.4），但仍保存在存储中。问题关闭后，新的 exploring 在写入时就会被拒绝（见 4.6），因此折叠不影响避让判断；即使 agent 手上的快照已经过期、仍把问题当作 OPEN，也会在声明探索的那一刻得知问题已关闭。
 
 ## 7. 任务生命周期
 

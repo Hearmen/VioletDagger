@@ -72,12 +72,12 @@ complete_exploring(params: { roomId: number; authorId: string; messageId: number
 ## 6. `get_overview`
 
 ```typescript
-get_overview(params: { roomId: number }): OverviewPayload
+get_overview(params: { roomId: number }): string
 ```
 
 **无需 session 绑定**——按需求 4.4 的签名，`get_overview` 只接受 `roomId`，是纯读操作，不校验调用者身份。
 
-实现：直接 `return memoryManagement.buildOverview(roomId)`（见 `02-memory-management.md` 第 3 节，`OverviewPayload` 的字段定义、组装逻辑都在那边）。这是 agent 主动调用这个工具时的用法；同一份 `buildOverview` 也被 `04-agent-invocation.md` 在派发时调用，预渲染进 prompt——两处共用一份实现，不重复。
+实现：`buildOverview(roomId)` 得到 `OverviewPayload`，`getFirstMessage(roomId).content` 取 goal 全文，再交给 `renderOverviewText`（`02-memory-management.md` §3.4）渲染成文本，作为 MCP 结果的单个 `text` 内容直接返回，不做 JSON 序列化。派发时写进 prompt 的记忆面板（`04-agent-invocation.md` §2.1）也用同一个函数生成，所以 agent 中途刷新看到的格式和 prompt 里完全一致。
 
 ## 7. `get_detail`
 
@@ -94,11 +94,12 @@ get_detail(params: { roomId: number; messageId?: number; type?: MessageType; lis
 
 ```typescript
 // 存储层（见 01-storage.md）
-getRoom, getSession, getMessageById, completeExploring
+getRoom, getSession, getMessageById, getFirstMessage, completeExploring
 
 // 记忆管理层（见 02-memory-management.md）
 buildOverview(roomId: number): OverviewPayload
 buildDetail(roomId: number, params: DetailParams): MessageWithAnnotations | MessageWithAnnotations[] | DetailPage
+renderOverviewText(goalContent: string, overview: OverviewPayload): string
 
 // 编排器核心（见 03-orchestrator-core.md）
 submitMessage(input: SubmitMessageInput): { message: Message; changedMessageIds: number[] }

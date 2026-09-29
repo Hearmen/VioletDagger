@@ -10,10 +10,10 @@ const BASE_TYPES: MessageType[] = ['open_question', 'fact', 'boundary', 'propose
 // 发送要求提示（07-frontend.md §7）：文案取自 04 §2.1 记忆类型表的"发送要求"列，只做提示、不阻止发送。
 export const SEND_REQUIREMENTS: Partial<Record<MessageType, string>> = {
   open_question: '应描述一个具体、可继续探索的问题',
-  hypothesis: '针对所选问题的候选答案；存在依据但仍需验证的判断写成 hypothesis',
-  fact: '必须有明确证据；直接回答某个问题时请先选中该问题',
-  boundary: '必须说明为什么不可行、成立的条件和范围；单次尝试失败不能写成 boundary',
-  chain: '一条从输入到输出的完整链路或答案；只有新路径或实质变化才发新 chain；认为足以关闭问题时勾选"关闭该问题"',
+  hypothesis: '一条可以被验证的独立判断，能脱离具体方案成立；候选方案或修复方案请发 chain',
+  fact: '能脱离具体方案独立成立的事实，必须有明确证据，一条只写一个；对方案的修复或建议不是 fact，方案的缺陷请用 challenge；直接回答某个问题时请先选中该问题',
+  boundary: '能脱离具体方案独立成立的约束或死胡同，必须说明为什么不可行、成立的条件和范围；单次尝试失败或某个方案被否定都不能写成 boundary',
+  chain: '所选问题的一个完整候选方案或答案（包括修复版）；修复已有方案时引用原 chain 和对应 challenge；只有新路径或实质变化才发新 chain；认为足以关闭问题时勾选"关闭该问题"',
   challenge: '写明质疑点和依据',
   verify: '必须采用独立且有实质差异的方法，并给出结论',
   propose_completion: '只有 goal 已得到充分回答、且没有明显其他方向时发送',

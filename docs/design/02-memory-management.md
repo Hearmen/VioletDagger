@@ -112,13 +112,104 @@ interface ExploringOverview {
 - **activeExploring / completedExploring**：当前 type 为 `exploring`、按 `exploringStatus` 分成两组，各自按 id 升序；`agentId` 为 `authorId`；`target` 为 `targetMessageId` 指向的消息；`resultMessages` 按 `exploringResultMessageIds` 展开。
 - **completionProposals**：全部 `propose_completion`，按 id 升序，不受最近窗口限制。
 - **recentRawMessages**：`getRecentRawMessages(roomId, n)`，n 默认 4，由 `VIOLETDAGGER_RECENT_RAW_MESSAGES` 配置正整数（非法值回落默认 4）；按 id 升序；只提供最近上下文，不承担历史索引职责。
-- **guidance**：固定文案"以上是当前任务的进展情况，仅供参考，请形成你自己的判断——可以采纳、组合、推翻，也可以提出全新方案。"（需求第 5 节）。
+- **guidance**：固定文案"以上是当前任务的记忆状态。已确认的 fact、boundary 和 VERIFIED 的 chain 可以直接引用，不需要重复研究；如果你认为其中某条有误或不完整，用 challenge 指出，再以新的 chain 给出你的方案，不要绕开已有结论另起一套。"（需求第 5 节）。
 
 所有数组只提供摘要/索引，不提供全文；需要全文时使用 `get_detail`。
 
 ### 3.3 Prompt 大小保护
 
 派发前检测完整 prompt 的 UTF-8 大小，默认上限 128 KiB，用 `VIOLETDAGGER_MAX_PROMPT_BYTES` 配置正整数。这是输入大小保护，不等同模型 token 上限。超限时在原始消息流写入一条无 type 的系统诊断，把 room 暂停为 `paused_manual`，以 `spawn-failed` 结算本次未启动的 session；不截断，也不自动重试。
+
+### 3.4 文本渲染 `renderOverviewText(goalContent, overview)`
+
+把 `OverviewPayload` 渲染成 agent 阅读的文本，派发时的 prompt（`04-agent-invocation.md` §2.1）和 MCP `get_overview`（`05-mcp-server.md` §6）共用这一个函数，保证 agent 在同一个 session 里看到的房间状态只有一种格式。输出为：
+
+```
+任务目标：
+{goalContent}
+
+本次 Session 的核心目标是推进这个 goal，不要主动转向与 goal 无关的问题。
+
+{renderMemory(overview)}
+
+{overview.guidance}
+```
+
+`goalContent` 是 `getFirstMessage(roomId).content` 的完整正文。`renderMemory(overview)` 的格式如下。
+
+把 `OverviewPayload`（§3.1）按固定顺序、固定标题渲染成文本，本节只定义"渲染成什么文字"，取数规则见 §3.2。分组顺序：
+
+`### 任务目标（goal）` → `### 其他问题`（questions）→ `### 未挂在问题下的知识`（unattachedKnowledge）→ `### 正在探索的方向`（activeExploring）→ `### 已结束探索`（completedExploring）→ `### 完成提议`（completionProposals）→ `### 最近消息`（recentRawMessages）。
+
+组内为空显示"（无）"。
+
+**问题**（goal 与 questions 共用）：
+
+```
+- [#id] 问题 [{status}{/closeReason}]：{summary}
+  - 假设：
+    {逐条渲染 hypotheses}
+  - 事实：
+    {逐条渲染 facts}
+  - 死胡同：
+    {逐条渲染 boundaries}
+  - 候选链路：
+    {逐条渲染 chains}
+```
+
+问题下某个子组为空时省略该子组行，四个子组都为空时显示一行"  - （尚无回答）"。
+
+goal 的根行不渲染摘要（完整正文已在上方"任务目标"处给出），写成 `- [#id] goal [{status}{/closeReason}]：（全文见上方"任务目标"）`，其下子组的渲染与其他问题相同；其他问题的根行按上面的格式渲染摘要。
+
+**已关闭的问题**（只针对 questions；goal 始终完整渲染）：`status === 'CLOSED'` 时只渲染根行、收尾 chain，以及 fact 和 boundary 的单行摘要。其余回答和相关的 exploring 全部折叠：
+
+```
+- [#id] 问题 [CLOSED/{closeReason}]：{summary}
+  - 收尾链路：
+    {逐条渲染收尾 chain}
+  - 事实：
+    - [#id] fact：{summary}
+  - 死胡同：
+    - [#id] boundary：{summary}
+  - 已折叠：{N} 条回答、{M} 条 exploring，需要时用 get_detail 查看
+```
+
+- **收尾 chain**：chains 中 `status === 'VERIFIED'` 且 `closesQuestion` 为 true 的 chain，按下文 chain 的格式完整渲染（含转换、verify、challenge 行），正常情况下只有一条。
+- **fact / boundary**：每条只渲染一行 `- [#id] {type}：{summary}`，不带依据、转换、verify、challenge 行。
+- **N**：hypotheses 与 chains 的条数之和，减去收尾 chain 的条数。
+- **相关的 exploring**：activeExploring 和 completedExploring 中满足任一条件的条目——`target.id` 等于该问题的 id；或 `target.targetMessageId` 等于该问题的 id，即指向该问题下的某条 hypothesis（包括它后来转成的 fact 或 boundary）。这些条目不在"正在探索的方向"和"已结束探索"两个分组中渲染，只计入 M。
+- 某个子组为空时省略该子组行；N 或 M 为 0 时省略对应的那一项，两者都为 0 时省略整行"已折叠"。
+- 问题被 challenge 重新打开、变回 `OPEN` 后恢复完整渲染，相关的 exploring 也回到各自的分组中渲染。
+- 折叠只发生在渲染层：`buildOverview` 返回的 `OverviewPayload` 仍然包含全部条目，存储层、`buildDetail` 和 `buildMemoryView`（前端记忆视图）都不受影响，被折叠的内容照常可以查询和展示。
+
+**知识条目**（hypothesis/fact/boundary，含 unattachedKnowledge）：
+
+```
+- [#id] {current.type}：{summary}{ 依据：#ref …}
+  - 转换：{fromType}→{toType}（#triggerMessageId）…
+  - verify [#id]：{summary}
+  - challenge [#id]：{summary}
+```
+
+**chain**：
+
+```
+- [#id] chain [{status}]{ 关闭意图：{chainResolution}}：{summary}{ 依据：#ref …}
+  - 转换：{fromStatus}→{toStatus}（#triggerMessageId）…
+  - verify [#id]：{summary}
+  - challenge [#id]：{summary}
+```
+
+verify 的结论不单独渲染：它造成的结果已体现在"转换"行（触发消息 id 即该 verify），完整的 `verifyVerdict` 可通过 `get_detail` 查看。转换、verify、challenge 各自按 id 升序，没有时省略对应行。
+
+**exploring**：
+
+```
+- [#id] 占用：{agentId} → #{target.id}：{summary}
+  结束：{resultSummary ?? '未记录结果'}；结果引用：#id …      ← 仅 completedExploring
+```
+
+**完成提议**与**最近消息**：`- [#id] {type ?? '聊天'}{（人类）}：{summary}`，`source === 'human'` 时追加"（人类）"。最近消息按 `recentRawMessages` 原有顺序渲染，不重新排序。
 
 ## 4. 详情 `buildDetail(roomId, params)`
 
@@ -190,6 +281,7 @@ interface MemoryViewPayload {
 function buildOverview(roomId: number): OverviewPayload;
 function buildDetail(roomId: number, params: DetailParams): MessageWithAnnotations | MessageWithAnnotations[] | DetailPage;
 function buildMemoryView(roomId: number): MemoryViewPayload;
+function renderOverviewText(goalContent: string, overview: OverviewPayload): string;
 
 // 依赖（01-storage.md）
 getRoomMessages, getRoomStateTransitions, getFirstMessage, getRecentRawMessages

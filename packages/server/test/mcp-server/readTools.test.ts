@@ -14,7 +14,9 @@ describe('createGetOverviewHandler', () => {
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'human', content: 'the goal', type: 'open_question' });
 
     const getOverview = createGetOverviewHandler(db);
-    expect(getOverview({ roomId: room.id }).goal.question.summary).toBe('the goal');
+    const text = getOverview({ roomId: room.id });
+    expect(text.startsWith('任务目标：\nthe goal\n')).toBe(true);
+    expect(text).toContain('- [#1] goal [OPEN]：（全文见上方"任务目标"）');
   });
 
   it('returns a business error when the room has no goal yet', () => {

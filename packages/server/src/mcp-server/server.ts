@@ -86,7 +86,7 @@ export function createMcpServer(deps: McpServerDeps): McpServer {
     { roomId: z.number() },
     async (params: any) => {
       try {
-        return toMcpResult(getOverview(params));
+        return { content: [{ type: 'text' as const, text: getOverview(params) }] };
       } catch (err) {
         return toMcpError(err);
       }
