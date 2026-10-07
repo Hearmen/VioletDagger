@@ -1,108 +1,116 @@
 # VioletDagger
 
-多 agent 协作聊天室系统：新建一个"聊天室"，拉入多个异构 AI coding agent CLI（Kimi、opencode、Codex、Claude，可扩展），围绕同一个任务目标持续协作——共享分层记忆，通过 endorse/challenge/verify/追问等结构化反应互动，人类可以随时插话、查看进展、终止卡住的 session。本地单机工具，单用户使用。
+中文 | [English](README_en.md)
 
-## 架构
+一个本地运行的多 agent 协作聊天室。你新建一个房间、写下任务目标，拉进几个 AI coding agent（Codex、Claude、opencode、Kimi，或你自己加的），它们会围绕这个目标分工研究、互相验证，把发现记录成共享记忆。你在网页上实时看着整个过程，可以随时插话、暂停或终止某个 agent。
 
-两层，职责严格分离：
-
-```
-┌─────────────────────────┐
-│  编排器 (Orchestrator)    │  本地网页 UI + 进程编排
-│  REST + WebSocket 服务前端 │
-└──────┬─────────────┬─────┘
-       │ WS           │ 直接读写（同进程/同存储）
-       ▼              ▼
-┌────────────┐  ┌──────────────────────┐
-│ 网页前端     │  │  MCP Server            │
-│ (React)     │  │  post_message/         │
-└────────────┘  │  get_overview/...       │
-                 └───────────┬────────────┘
-                             ▲
-                 ┌───────────┼───────────┬───────────┐
-               Kimi       opencode     Codex       Claude
-```
-
-编排器核心、存储层、记忆管理、MCP Server、Agent 调用适配层运行在同一个 Node.js 进程内；Web 前端是独立的浏览器应用，通过 REST + WebSocket 通信；MCP Server 通过 HTTP 暴露给外部 agent CLI 进程。详见 [`docs/design/00-overview.md`](docs/design/00-overview.md)。
-
-## 技术栈
-
-- 后端：TypeScript / Node.js，SQLite（`better-sqlite3`，WAL 模式，无 ORM），`@modelcontextprotocol/sdk`
-  - **`better-sqlite3` 必须是 13.x**：11.x 在 Node 24 上有原生崩溃（`Statement` 析构时环境已销毁的断言），会让后端不定时退出、前端出现 `ECONNREFUSED`。仓库已锁 `^13.0.3`。
-- 前端：React + Vite
-
-## 目录结构
-
-```
-VioletDagger/
-├── docs/
-│   ├── requirements.md          # 需求文档
-│   └── design/                  # 9 份模块设计文档（00-08）
-├── packages/
-│   ├── server/                  # 编排器核心 + 存储层 + 记忆管理 + MCP Server + Agent 调用适配层
-│   │   └── agents.config.json   # agent 注册表，登记每个 CLI 的调用命令
-│   └── web/                     # React + Vite 前端
-└── package.json                 # npm workspaces 根
-```
+单机、单用户使用。
 
 ## 快速开始
 
+需要 Node.js，以及至少一个已安装并登录好的 agent CLI。
+
 ```bash
 npm install
-```
-
-**运行模型：** session 以**一次性非交互 CLI** 直接 exec（不经 shell、不使用 PTY），stdout/stderr 按流标记记录为只读日志；前端用纯文本视图展示，不依赖 xterm。人类通过房间 Composer 指导协作、通过编排器暂停/终止，不提供终端输入。详见 [`docs/design/04-agent-invocation.md`](docs/design/04-agent-invocation.md)。
-
-**运行测试：**
-
-```bash
-npm test -w @violetdagger/server   # 229 个测试
-npm test -w @violetdagger/web      # 108 个测试
-```
-
-**本地启动：**
-
-0. 按你机器上实际安装的 CLI，检查/调整 `packages/server/agents.config.json` 里每个 agent 的 `command`（**一次性非交互调用的 argv 数组**，首元素是可执行文件；`promptVia: 'arg'`（默认，用 `{{prompt}}` 占位符）或 `'stdin'`；另可用 `env` 补环境变量；可选 `stopGraceMs`/`stopConfirmMs` 控制人工终止的 SIGTERM 宽限/SIGKILL 确认时长）。四个内置 agent 已预接编排器的 MCP server：**codex** 用内联 `-c`；**claude** 用 `--mcp-config`、**opencode** 用 `OPENCODE_CONFIG` 环境变量（两者都由编排器每次生成一份含 `{{mcpUrl}}` 的**独立**配置文件 `<logsDir>/mcp/<roomId>/<seq>.json`）；**kimi** 没有 per-invocation 的 MCP 配置 flag，只认 user 级 `~/.kimi-code/mcp.json`（或 `$KIMI_CODE_HOME/mcp.json`），因此编排器对它做**合并写入**（保留你已有的其它 server，不整文件覆盖）；它的 `-p/--prompt` 非交互模式已经默认走 `auto` 权限策略（官方文档：`-p` 不与 `--auto`/`--yolo` 组合，非交互模式默认 auto），所以命令就是 `kimi -p "{{prompt}}"`，不能再加 `--auto`。其余三家处理了"审批挡住 MCP 工具"的问题（codex `--dangerously-bypass-approvals-and-sandbox`、claude `--dangerously-skip-permissions` + `--settings` 跳过一次性确认、opencode `run --auto`）。**四家都打开了各自的"过程流"输出**，便于在只读日志里实时观察工具调用/思考：codex `--json`、claude `--output-format stream-json --verbose`、opencode `--format json`、kimi `--output-format stream-json`。日志按设计**原样记录、不解析**，所以看到的是 JSON 事件行。**默认命令已按本机 `--help` 核对（`codex exec` / `claude -p` / `opencode run --auto` / `kimi -p`），但 CLI 升级后仍可能变化，以本机 `--help` 为准**。详见 [`docs/design/04-agent-invocation.md`](docs/design/04-agent-invocation.md) §1。
-
-**一键启动**（后端 + 前端一起，日志分别标 `[server]`/`[web]` 前缀）：
-
-```bash
 npm run dev
 ```
 
-默认后端 REST/WS 监听 `:4200`、MCP Server 监听 `:4201`，前端 `http://localhost:5173`；`Ctrl+C` 一次性停掉两个进程。
+打开 http://localhost:5173 ，新建房间、选择 agent、发出第一条消息（它就是任务目标）。
 
-也可以分开单独启动：
+`npm run dev` 同时启动后端和前端，`Ctrl+C` 一起停掉。启动时后端会自检 MCP 服务，失败会直接退出并打印原因。
+
+## 怎么用
+
+- **房间**：一个任务一个房间。参与的 agent 在建房时选定，之后不能增减；同一个 agent 可以点多次，得到多个实例（`codex-1`、`codex-2`……）。
+- **消息流**：agent 和你的所有消息。点选一条消息可以回复它；输入 `@agent名` 可以指定某个 agent 处理。
+- **记忆**：按类型整理的结构化发现（问题、假设、事实、边界、方案、验证……）。
+- **事件树**：按时间展示每个 agent 的每次运行（session），点开可以看它产出的消息和运行日志。
+- **控制**：顶栏可暂停 / 恢复房间、结束房间；左侧可终止正在运行的 agent，或停用某个 agent 的派发。
+- **界面语言**：顶栏右侧的 `EN` / `中` 按钮切换中英文。
+
+## 添加新的 agent
+
+agent 登记在 `packages/server/agents.config.json`，后端启动时读取（可用环境变量 `VIOLETDAGGER_AGENTS_CONFIG` 指向别的文件）。在 `"agents"` 下加一项，key 就是建房时看到的名字：
+
+```json
+"my-agent": {
+  "command": ["my-agent", "-p", "{{prompt}}"],
+  "mcpFile": {
+    "template": "{\"mcpServers\":{\"violetdagger\":{\"url\":\"{{mcpUrl}}\"}}}"
+  }
+}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `command`（必填） | 一次性、非交互的启动命令，按数组直接执行（不经过 shell）。可用占位符：`{{prompt}}`、`{{promptFile}}`、`{{mcpUrl}}`、`{{mcpFile}}` |
+| `promptVia` | `"arg"`（默认，prompt 放进命令参数）或 `"stdin"`（prompt 从标准输入传入） |
+| `env` | 额外的环境变量 |
+| `mcpFile` | CLI 需要 MCP 配置文件时使用：每次运行把 `template` 写成一份独立文件，`{{mcpFile}}` 就是它的路径。只有 CLI 只认固定位置的配置时才设 `path` + `merge: true`（参考 kimi） |
+| `stopGraceMs` / `stopConfirmMs` | 终止 agent 时的等待时长（毫秒），默认 2000 / 3000 |
+
+改完重启后端，新 agent 就会出现在新建房间的选项里。
+
+**这个 CLI 必须做到**：
+
+- 能非交互地接收任务并运行，不会停下来等终端输入或权限确认；
+- 能调用 MCP 工具——agent 通过 VioletDagger 的 MCP 服务发消息；
+- 做完后自己退出；
+- 每次运行相互独立。
+
+这些要按 CLI 实际情况逐项验证。目前所有登记的 agent 都会显示为可用，不满足条件的 CLI 不会在建房时被拦下，只会在运行时失败。
+
+**用量统计（可选）**：新 agent 默认不显示 token / 费用。需要的话，在 `packages/server/src/agent-invocation/usage.ts` 里为它加一个解析器（见 `docs/design/04-agent-invocation.md` §5）。
+
+## 内置 agent 的配置说明
+
+默认命令已对照各 CLI 的 `--help` 核对过，但 CLI 升级后参数可能变化，以你本机的 `--help` 为准。
+
+| agent | 命令 | MCP 接入方式 |
+|---|---|---|
+| codex | `codex exec --json --dangerously-bypass-approvals-and-sandbox …` | 命令行内联 `-c mcp_servers…url` |
+| claude | `claude -p … --dangerously-skip-permissions --output-format stream-json --verbose` | `--mcp-config` 指向每次生成的独立配置文件 |
+| opencode | `opencode run --auto --format json …` | `OPENCODE_CONFIG` 环境变量指向每次生成的独立配置文件 |
+| kimi | `kimi --output-format stream-json -p …` | 只认 `~/.kimi-code/mcp.json`，因此合并写入（保留你已有的其他配置）；`-p` 默认就是 auto 权限，不要再加 `--auto` |
+
+前三个都关掉了权限确认，否则 MCP 工具调用会被审批挡住。四个都打开了 JSON 事件流输出，所以运行日志里看到的是原样记录的 JSON 行。
+
+## 配置
+
+| 环境变量 | 作用 | 默认 |
+|---|---|---|
+| `VIOLETDAGGER_HTTP_PORT` | 后端 REST / WebSocket 端口 | `4200` |
+| `VIOLETDAGGER_MCP_PORT` | MCP 服务端口 | `4201` |
+| `VIOLETDAGGER_DB_PATH` | SQLite 数据库路径 | `violetdagger.db`（后端工作目录下） |
+| `VIOLETDAGGER_AGENTS_CONFIG` | agent 登记文件 | `agents.config.json`（后端工作目录下） |
+| `VIOLETDAGGER_LOGS_DIR` | 运行日志目录 | `packages/server/logs` |
+
+开发模式下前端的 `/api` 请求（含 WebSocket）由 Vite 代理到后端，无需配置跨域。
+
+## 开发
 
 ```bash
 npm start -w @violetdagger/server   # 只启动后端
 npm run dev -w @violetdagger/web    # 只启动前端
+npm test  -w @violetdagger/server   # 后端测试
+npm test  -w @violetdagger/web      # 前端测试
 ```
 
-启动时会自动做一次 **MCP 自检**（连接本进程的 MCP 端点并校验四个工具已注册），失败则关掉已监听端口并退出、打印原因——避免"进程起来了但 agent 调 `post_message` 才发现 MCP 不通"。
+项目结构：
 
-端口/路径可通过环境变量覆盖：`VIOLETDAGGER_HTTP_PORT`、`VIOLETDAGGER_MCP_PORT`、`VIOLETDAGGER_DB_PATH`、`VIOLETDAGGER_AGENTS_CONFIG`、`VIOLETDAGGER_LOGS_DIR`。开发模式下前端的 `/api` 开头请求（含 WebSocket）会被 Vite 自动代理到后端端口，不需要额外配置 CORS。
+```
+docs/requirements.md    需求文档
+docs/design/            各模块设计文档
+packages/server/        后端：编排器、存储（SQLite）、记忆管理、MCP 服务、agent 调用
+packages/web/           前端：React + Vite
+```
 
-## 项目状态
+技术栈：TypeScript / Node.js、SQLite（`better-sqlite3`）、`@modelcontextprotocol/sdk`、React + Vite。
 
-7 个模块全部实现，已合并到 `main`：
+> **注意**：`better-sqlite3` 必须是 13.x。11.x 在 Node 24 上会原生崩溃，导致后端不定时退出、前端报 `ECONNREFUSED`。仓库已锁定 `^13.0.3`。
 
-| 模块 | 状态 |
-|---|---|
-| storage-layer / memory-management / orchestrator-core / agent-invocation / mcp-server / orchestrator-api | ✅（`packages/server`，229 个测试） |
-| frontend | ✅（`packages/web`，108 个测试） |
-
-模块顺序与依赖关系见 [`docs/design/00-overview.md`](docs/design/00-overview.md)。
-
-> **只读 session 日志（已实现）。** session 以一次性非交互 CLI 执行、自然退出后结算；AgentRail 进入的是固定 session 的实时只读日志（`SessionLogView`），事件树点开的是复盘视图（元数据 + 消息列表 + 生命周期记录 + 只读日志回放）。不提供 PTY、终端输入或 xterm。见 `docs/design/04-agent-invocation.md`、`06-orchestrator-api.md` §2.1、`08-live-session-modal.md`。各 CLI 非交互参数仍需按本机版本核对（见上面第 0 步）。
+这个项目先写文档、再写代码：任何改动先更新 `docs/` 里对应的设计文档。架构总览见 [`docs/design/00-overview.md`](docs/design/00-overview.md)。
 
 ## 已知缺口
 
-前端 review 时记录的缺口，现状如下：
-
-- `chain` 类型消息的 `referencedMessageIds` 多选器未实现（人类 UI 不产生 `chain`，接口层仍接受该字段）。
-
-## 文档索引
-
-- [需求文档](docs/requirements.md)
-- [设计文档（00-08）](docs/design/)
+- 人类发送 `chain` 消息时，还不能在界面上多选引用的消息（接口本身支持该字段）。
