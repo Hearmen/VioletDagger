@@ -13,6 +13,9 @@ import { EventTreePanel } from '../components/EventTreePanel';
 import { SessionDetailModal } from '../components/SessionDetailModal';
 import { LiveSessionModal, type LiveSessionSnapshot, type LiveSessionTarget } from '../components/LiveSessionModal';
 import { ToastStack } from '../components/ToastStack';
+import { LocaleToggle } from '../components/LocaleToggle';
+import { useI18n } from '../i18n/LocaleProvider';
+import { errorText, renderText, type LocalizedText } from '../i18n/types';
 import type {
   Room, RoomStatusPayload, Message, MemoryViewPayload, EventTreePayload,
   SessionDetailPayload, UsageSummaryPayload, HumanMessageParams,
@@ -41,6 +44,7 @@ export function RoomDashboardPage() {
   const roomIdNum = Number(roomId);
   const navigate = useNavigate();
   const socket = useRoomSocket(roomIdNum);
+  const { t } = useI18n();
   const { toasts, push: pushToast, dismiss } = useToasts();
   const { style: layoutStyle, adjustAgentsW, adjustEventsW, adjustMemoryH } = useDashboardLayout();
 
@@ -55,15 +59,15 @@ export function RoomDashboardPage() {
   const [sessionDetail, setSessionDetail] = useState<SessionDetailPayload | null>(null);
   const [liveSession, setLiveSession] = useState<LiveSessionTarget | null>(null);
   const [liveDetail, setLiveDetail] = useState<SessionDetailPayload | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<LocalizedText | null>(null);
   const [jumpToMessageId, setJumpToMessageId] = useState<number | null>(null);
 
   function reportLoadError(err: unknown) {
-    setLoadError(err instanceof Error ? err.message : 'unknown error');
+    setLoadError(errorText(err));
   }
 
   function reportActionError(err: unknown) {
-    pushToast(err instanceof Error ? err.message : 'unknown error');
+    pushToast(errorText(err));
   }
 
   const refreshMemory = () => socket.call<MemoryViewPayload>('getMemoryView').then(setMemory).catch(reportLoadError);
@@ -227,10 +231,11 @@ export function RoomDashboardPage() {
             <span className="brand">
               <span className="brand__mark">◆</span> VioletDagger
             </span>
+            <LocaleToggle />
           </div>
           <div style={{ padding: 20 }}>
-            {loadError && <p role="alert" className="error-inline">{loadError}</p>}
-            <p className="placeholder">Loading…</p>
+            {loadError && <p role="alert" className="error-inline">{renderText(loadError, t)}</p>}
+            <p className="placeholder">{t('common.loading')}</p>
           </div>
         </div>
         <ToastStack toasts={toasts} onDismiss={dismiss} />
@@ -279,10 +284,10 @@ export function RoomDashboardPage() {
         ) : (
           <div className="panel memory-panel">
             <header className="panel__head">
-              <h2 className="panel__title">记忆</h2>
+              <h2 className="panel__title">{t('memory.title')}</h2>
             </header>
             <div className="panel__body">
-              <div className="placeholder">Loading…</div>
+              <div className="placeholder">{t('common.loading')}</div>
             </div>
           </div>
         )}
@@ -318,10 +323,10 @@ export function RoomDashboardPage() {
         ) : (
           <div className="panel event-tree-panel">
             <header className="panel__head">
-              <h2 className="panel__title">事件树</h2>
+              <h2 className="panel__title">{t('eventTree.title')}</h2>
             </header>
             <div className="panel__body">
-              <div className="placeholder">Loading…</div>
+              <div className="placeholder">{t('common.loading')}</div>
             </div>
           </div>
         )}

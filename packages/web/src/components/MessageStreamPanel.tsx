@@ -4,6 +4,7 @@ import { MessageTypeBadge } from './MessageTypeBadge';
 import { MessageStatusBadge } from './MessageStatusBadge';
 import { Composer, TARGET_ONLY_TYPES } from './Composer';
 import { Panel } from './Panel';
+import { useI18n } from '../i18n/LocaleProvider';
 import { authorInitial, authorLabel, colorForAgent, formatClock } from '../utils/format';
 
 const NEAR_BOTTOM_PX = 80;
@@ -24,6 +25,7 @@ export function MessageStreamPanel(props: {
   // 房间内可 @ 的 agent 实例标识，按 joinOrder（需求 3.2、3.3.2），转交给 Composer 渲染 @ 候选。
   agentIds: string[];
 }) {
+  const { t } = useI18n();
   const listRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
   const prevFirstIdRef = useRef<number | null>(null);
@@ -111,16 +113,16 @@ export function MessageStreamPanel(props: {
 
   return (
     <Panel
-      title="消息流"
+      title={t('messages.title')}
       count={props.messages.length}
       className="message-panel"
       bodyClassName="panel__body--messages"
     >
       <div className="message-list" ref={listRef} onScroll={handleScroll} data-testid="message-list">
         {props.messages.length > 0 && props.nextCursor === null && (
-          <div className="no-earlier">没有更早的消息了</div>
+          <div className="no-earlier">{t('messages.noEarlier')}</div>
         )}
-        {props.loadingEarlier && <div className="no-earlier">加载中…</div>}
+        {props.loadingEarlier && <div className="no-earlier">{t('messages.loadingEarlier')}</div>}
         {props.messages.map((message) => {
           const selected = targetMessageId === message.id;
           const isAgent = message.authorId !== 'human' && message.authorId !== 'system';
@@ -140,7 +142,7 @@ export function MessageStreamPanel(props: {
                 className={`message__avatar ${avatarClass(message)}`}
                 style={isAgent ? { background: colorForAgent(message.authorId) } : undefined}
               >
-                {authorInitial(message.authorId)}
+                {authorInitial(message.authorId, t)}
               </div>
               <div className="message__main">
                 <div className="message__head">
@@ -149,14 +151,14 @@ export function MessageStreamPanel(props: {
                     className="message__author"
                     style={isAgent ? { color: colorForAgent(message.authorId) } : undefined}
                   >
-                    {authorLabel(message.authorId)}
+                    {authorLabel(message.authorId, t)}
                   </span>
                   {message.type && <MessageTypeBadge type={message.type} />}
                   <MessageStatusBadge
                     message={message}
                     targetType={message.targetMessageId != null ? byId.get(message.targetMessageId)?.type : undefined}
                   />
-                  {props.goalMessageId === message.id && <span className="goal-tag">goal</span>}
+                  {props.goalMessageId === message.id && <span className="goal-tag">{t('messages.goalTag')}</span>}
                   {message.targetAgentId != null && (
                     <span className="ref-chip mono" style={{ color: colorForAgent(message.targetAgentId) }}>
                       → @{message.targetAgentId}
@@ -188,7 +190,7 @@ export function MessageStreamPanel(props: {
                           jumpTo(id);
                         }}
                       >
-                        引用 #{id}
+                        {t('messages.reference', { id })}
                       </span>
                     ))}
                   </div>
@@ -201,7 +203,7 @@ export function MessageStreamPanel(props: {
 
       {newCount > 0 && (
         <button className="new-messages primary" onClick={scrollToBottom}>
-          ↓ {newCount} 条新消息
+          {t('messages.newMessages', { count: newCount })}
         </button>
       )}
 

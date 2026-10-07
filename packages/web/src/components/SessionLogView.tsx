@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LogChunk } from '../api/types';
 import type { SessionLog } from '../hooks/useSessionLog';
+import { useI18n } from '../i18n/LocaleProvider';
+import { renderText } from '../i18n/types';
 import { createAnsiFilter } from '../utils/ansi';
 
 const MAX_WINDOW_BYTES = 1024 * 1024; // 浏览器日志窗口上限 1 MiB，按完整事件裁剪（08 §5）
@@ -13,6 +15,7 @@ export function SessionLogView(props: {
   className?: string;
 }) {
   const { log, resetKey } = props;
+  const { t } = useI18n();
   const [chunks, setChunks] = useState<LogChunk[]>([]);
   const [follow, setFollow] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -59,11 +62,11 @@ export function SessionLogView(props: {
   return (
     <div className={`session-log ${props.className ?? ''}`}>
       {log.truncated && (
-        <p className="session-log__notice">仅显示部分日志，完整记录请查看详情</p>
+        <p className="session-log__notice">{t('log.truncated')}</p>
       )}
-      {log.error && <p role="alert" className="session-log__notice">{log.error}</p>}
+      {log.error && <p role="alert" className="session-log__notice">{renderText(log.error, t)}</p>}
       {log.connectionState === 'disconnected' && !log.ended && (
-        <p role="alert" className="session-log__notice">日志连接已断开，重新打开可获取最近快照</p>
+        <p role="alert" className="session-log__notice">{t('log.disconnected')}</p>
       )}
       <div className="session-log__toolbar">
         <button
@@ -72,19 +75,19 @@ export function SessionLogView(props: {
             void navigator.clipboard?.writeText(text).catch(() => {});
           }}
         >
-          复制
+          {t('log.copy')}
         </button>
         {!follow && (
-          <button type="button" onClick={() => setFollow(true)}>回到底部</button>
+          <button type="button" onClick={() => setFollow(true)}>{t('log.backToBottom')}</button>
         )}
       </div>
       <div
         ref={containerRef}
         className="session-log__body"
         onScroll={handleScroll}
-        aria-label="session log"
+        aria-label={t('log.label')}
       >
-        {chunks.length === 0 && <span className="placeholder">（暂无日志）</span>}
+        {chunks.length === 0 && <span className="placeholder">{t('log.empty')}</span>}
         {chunks.map((chunk) => (
           <span key={chunk.offset} className={`log-chunk log-chunk--${chunk.stream}`}>
             {chunk.text}

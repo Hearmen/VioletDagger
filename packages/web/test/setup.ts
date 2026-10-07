@@ -19,4 +19,11 @@ if (typeof window !== 'undefined' && !('PointerEvent' in window)) {
 
 afterEach(() => {
   cleanup();
+  // 切换语言的用例不得影响后续用例（09-frontend-i18n.md §7）。
+  try {
+    window.localStorage.removeItem('vd.locale');
+  } catch {
+    // 存储不可用时无需清理
+  }
+  document.documentElement.lang = 'zh-CN';
 });

@@ -6,6 +6,8 @@ React + Vite。只消费 `06-orchestrator-api.md` 的 REST + WebSocket 接口，
 
 **不引入 CSS 框架/UI 组件库、不新增运行时依赖**：样式用手写全局 CSS + CSS 变量实现。日志使用纯文本 SessionLogView，无需 xterm 或终端 addons。交互式 PTY 属于下一版本，本版本不做。
 
+**界面语言**：中文（默认）/ English 两套界面文案，顶栏按钮切换，见 `09-frontend-i18n.md`。本文档中写出的按钮与提示文字均为中文界面下的文案。
+
 ## 1. 信息架构
 
 - `/`：RoomListPage——房间列表 + 新建房间。
@@ -98,6 +100,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 
 - `active`：`Pause`；其余非 `completed`：`Resume`（`paused_limit` 时弹输入框要求填 `additionalSessions`，必填不可提交；`paused_manual` 直接调用，见 `03-orchestrator-core.md` 第 4 节）；非 `completed` 恒有 `Confirm Completion`（`--danger` 描边 + 二次确认弹窗）。
 - `completed`：pause/resume/confirm 控制隐藏，顶栏显示"已结束 · 只读"，并保留一个 `Delete Room` 按钮（`--danger` 描边 + 二次确认弹窗）——只有 completed 房间可删；删除成功后跳回 `/`。
+- **语言切换**：右侧控制区最右端是 `LocaleToggle`（见 `09-frontend-i18n.md` §4），任何房间状态下都显示。
 - 连接状态：`disconnected` 时顶栏下方压一条 `--danger` 且不可关闭的提示条"连接已断开，正在重连…"；`connecting` 时右侧一个呼吸圆点。
 - **`propose_completion` 提醒**：已加载消息中存在 `propose_completion` 且房间未 `completed` 时，顶栏下方再压一条可关闭的 `role="alert"` 提醒条"有 agent 提议完成这个房间"，并提供跳转到该消息的锚点。用户关闭后，直到下一条新的 `propose_completion` 到达前不再出现。该提醒由前端从已加载消息流派生，不需要额外接口或状态管理；消息流分页导致更早的提议不在窗口内时不显示，这是可接受的降级。
 - **无任务派发提醒**：`getRoomStatus().dispatchIdle === true` 时，在顶栏下方显示一条可关闭的 `role="alert"` 提醒条"当前没有任务可派发：所有 agent 均空闲，且没有待处理的触发型消息"。`disabledAgentCount > 0` 时追加"（N 个 agent 已停用派发）"。关闭后，要等 `dispatchIdle` 先变回 false、再重新变为 true 时才再次出现。
@@ -268,7 +271,7 @@ RoomDashboardPage 分别持有 liveSession 与 sessionDetail，目标固定为 (
 
 ## 11. RoomListPage
 
-`/`，纵向：顶部品牌栏 + 房间网格 + 新建房间面板。
+`/`，纵向：顶部品牌栏 + 房间网格 + 新建房间面板。品牌栏（`app-bar`）右端是语言切换按钮 `LocaleToggle`（见 `09-frontend-i18n.md` §4）；`RoomDashboardPage` 在房间/状态尚未加载完成或加载失败时显示的 `app-bar` 同样带此按钮。
 
 - 房间网格：每张卡片显示 `name`、状态徽标、`createdAt`（相对时间，如"3 分钟前"），点击进入 `/rooms/:id`；空态显示"还没有房间，创建一个吧"。**`completed` 的卡片额外显示 `Delete` 按钮**（`--danger` 描边 + 二次确认弹窗，说明"将级联删除 session、记忆、事件树、信息流与磁盘日志，不可恢复"）；删除调用 `DELETE /api/rooms/:id`，成功后刷新列表；非 `completed` 卡片不显示该按钮。
 - 新建房间面板：`name` 输入框；agent chips 来自 `GET /api/agents`，**可重复点击以加入同一 agent 的多个实例**——每个 chip 显示当前已加入数量（如 `codex ×2`），点击 +1；下方"已加入实例"区按加入顺序展示将要生成的实例标识（单个显示 `codex`，多个显示 `codex-1`/`codex-2`……，与 `01-storage.md` 的规则一致），每条可单独移除、也可清空某 agent 的全部实例。`schedulingMode` 只有 `sequential`，渲染为唯一可选且已选中的选项（其他模式预留位置但禁用，需求 3.3）。另有**可选的 `maxSessions` 数字输入框**（label「session 上限」，`min=1`，placeholder 显示默认值 20）：留空表示用服务端默认值；填了就必须是正整数，否则提交时在表单内联报错、不发请求。以及**可选的 `workdir` 文本输入框**（label「工作目录」，placeholder 提示"默认：服务端目录；不存在会自动创建"）：留空用服务端默认；填了随 `POST /api/rooms` 提交，目录不存在时由服务端自动创建，路径不是目录或创建失败由服务端报错（`06`），失败在表单内联报错。提交 `POST /api/rooms`（`agentIds` 按加入顺序、允许重复；数组里是注册表 key；`maxSessions` 仅在填写时带上），成功后跳 `/rooms/:id`；失败在表单内联 `role="alert"`。
@@ -343,6 +346,7 @@ GET /api/rooms/:roomId/sessions/:seq/logs?mode=live|replay
 - **REST 失败**（RoomListPage 拉列表 / 建房间表单 / 删除房间）：失败时在列表/表单旁内联展示错误文案；删除失败用 toast 展示错误，不跳转、不刷新。
 - **日志连接失败**（第 10 节）：在 `LiveSessionModal` / `SessionDetailModal` 中保留已显示日志并展示错误提示，不静默空白。
 - **连接断开**：见第 4 节顶栏提示条，重连成功后隐藏。
+- **文案保存方式**：toast、`loadError`、日志错误与表单内联错误在状态中保存为 `LocalizedText`（前端生成的文案存字典 key，服务端 `error.message` 原样保存），渲染时再翻译，见 `09-frontend-i18n.md` §2.4。
 
 ## 16. 组件与文件落点
 
@@ -351,7 +355,9 @@ src/
 ├── styles/theme.css             # 设计令牌（第 2 节）
 ├── styles/dashboard.css         # 布局与面板样式（第 3 节）
 ├── utils/ansi.ts                # 日志 ANSI/控制字符显示清理
-├── utils/format.ts              # 格式化工具；含 sessionTagLabel（session 标签文案，第 9.2 与 9.3 节共用）
+├── utils/format.ts              # 格式化工具；含 sessionTagLabel（session 标签文案，第 9.2 与 9.3 节共用）、
+│                                #   formatUsageParts / outcomeLabel / formatNumber（09-frontend-i18n.md §2.2、§5）
+├── i18n/                        # 界面语言：字典、createT、LocaleProvider/useI18n（09-frontend-i18n.md）
 ├── pages/RoomListPage.tsx
 ├── pages/RoomDashboardPage.tsx  # 取代原 RoomPage
 ├── components/
@@ -367,6 +373,7 @@ src/
 │   ├── SessionDetailModal.tsx   # 事件树入口：元数据 + 消息列表 + 只读回放（第 10.2 节）
 │   ├── SessionLogView.tsx        # 纯文本日志，两个 modal 共用
 │   ├── Splitter.tsx             # 可拖动分隔条（第 3 节）
+│   ├── LocaleToggle.tsx         # 语言切换按钮（09-frontend-i18n.md §4）
 │   └── ToastStack.tsx
 ├── hooks/useRoomSocket.ts
 ├── hooks/useSessionLog.ts  # 日志 WS 连接（第 12.1 节）

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LogChunk, SessionLogFrame } from '../api/types';
+import type { LocalizedText } from '../i18n/types';
 
 export type SessionLogConnectionState = 'connecting' | 'connected' | 'disconnected';
 export type SessionLogMode = 'live' | 'replay';
@@ -9,7 +10,7 @@ export interface SessionLog {
   source: 'live' | 'snapshot' | null;
   truncated: boolean;
   ended: boolean;
-  error: string | null;
+  error: LocalizedText | null;
   connectionState: SessionLogConnectionState;
 }
 
@@ -23,7 +24,7 @@ export function useSessionLog(roomId: number, seq: number, mode: SessionLogMode)
   const [source, setSource] = useState<'live' | 'snapshot' | null>(null);
   const [truncated, setTruncated] = useState(false);
   const [ended, setEnded] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<LocalizedText | null>(null);
   const [connectionState, setConnectionState] = useState<SessionLogConnectionState>('connecting');
 
   useEffect(() => {
@@ -64,7 +65,7 @@ export function useSessionLog(roomId: number, seq: number, mode: SessionLogMode)
         setConnectionState('disconnected');
         ws.close();
       } else if (frame.type === 'error') {
-        setError(frame.message);
+        setError({ kind: 'raw', text: frame.message });
       }
     };
     // 没有 end 就断开：保留已显示内容，提示重新打开（08 §4）。

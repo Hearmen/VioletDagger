@@ -52,7 +52,7 @@ describe('SessionLogView', () => {
   it('shows truncation, error, and disconnect notices', () => {
     render(
       <SessionLogView
-        log={makeLog({ truncated: true, error: 'read failed', connectionState: 'disconnected', ended: false })}
+        log={makeLog({ truncated: true, error: { kind: 'raw', text: 'read failed' }, connectionState: 'disconnected', ended: false })}
         resetKey="1:2:live"
       />,
     );

@@ -3,6 +3,9 @@ import type { EventTreePayload, Message, MessageType, StateTransition } from '..
 import { Panel } from './Panel';
 import { MessageTypeBadge } from './MessageTypeBadge';
 import { SessionLanes } from './SessionLanes';
+import { useI18n } from '../i18n/LocaleProvider';
+import type { TFunction } from '../i18n/translate';
+import type { MessageKey } from '../i18n/zh';
 import { colorForAgent, formatClock, sessionTagLabel, truncate } from '../utils/format';
 
 const EDGE_COLORS: Partial<Record<MessageType, string>> = {
@@ -52,9 +55,9 @@ function storeTab(tab: EventTreeTab): void {
   }
 }
 
-const TABS: { id: EventTreeTab; label: string }[] = [
-  { id: 'timeline', label: '时间线' },
-  { id: 'sessions', label: 'Session' },
+const TABS: { id: EventTreeTab; label: MessageKey }[] = [
+  { id: 'timeline', label: 'eventTree.tabTimeline' },
+  { id: 'sessions', label: 'eventTree.tabSessions' },
 ];
 
 // 时间轴上的条目（07-frontend.md §9）：消息，或 session 的开始/结束边界标记。
@@ -107,10 +110,10 @@ function buildEntries(
   });
 }
 
-// 结束标记文案：session 标签在 "agentId #seq" 之后插入 "结束"。
-export function endMarkerLabel(meta: SessionMeta, agentId: string, seq: number): string {
+// 结束标记文案：session 标签在 "agentId #seq" 之后插入"结束"。
+export function endMarkerLabel(meta: SessionMeta, agentId: string, seq: number, t: TFunction): string {
   const base = `${agentId} #${seq}`;
-  return `${base} 结束${sessionTagLabel(meta, agentId, seq).slice(base.length)}`;
+  return `${base} ${t('eventTree.end')}${sessionTagLabel(meta, agentId, seq).slice(base.length)}`;
 }
 
 interface EventTreeProps {
@@ -122,6 +125,7 @@ interface EventTreeProps {
 }
 
 export function EventTreePanel(props: EventTreeProps) {
+  const { t } = useI18n();
   const [tab, setTab] = useState<EventTreeTab>(readStoredTab);
 
   // 主轴就是真实发生时间：每条消息各自一行，session 只以开始/结束标记出现（见需求 3.5）。
@@ -139,7 +143,7 @@ export function EventTreePanel(props: EventTreeProps) {
   }
 
   const tabs = (
-    <div className="panel-tabs" role="tablist" aria-label="事件树视图">
+    <div className="panel-tabs" role="tablist" aria-label={t('eventTree.tabsLabel')}>
       {TABS.map((item) => (
         <button
           key={item.id}
@@ -149,7 +153,7 @@ export function EventTreePanel(props: EventTreeProps) {
           className={`panel-tab${tab === item.id ? ' panel-tab--active' : ''}`}
           onClick={() => selectTab(item.id)}
         >
-          {item.label}
+          {t(item.label)}
         </button>
       ))}
     </div>
@@ -158,7 +162,7 @@ export function EventTreePanel(props: EventTreeProps) {
   // 未选中的那一页不渲染（07-frontend.md §9.1），切回时重新挂载。
   return (
     <Panel
-      title="事件树"
+      title={t('eventTree.title')}
       count={props.messages.length}
       actions={tabs}
       className="event-tree-panel"
@@ -179,6 +183,7 @@ export function EventTreePanel(props: EventTreeProps) {
 
 function EventTimeline(props: EventTreeProps & { entries: TreeEntry[] }) {
   const { entries } = props;
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState<Edge[]>([]);
 
@@ -250,7 +255,7 @@ function EventTimeline(props: EventTreeProps & { entries: TreeEntry[] }) {
         ))}
       </svg>
 
-      {entries.length === 0 && <p className="placeholder">还没有任何事件</p>}
+      {entries.length === 0 && <p className="placeholder">{t('eventTree.empty')}</p>}
 
       {entries.map((entry) => {
         if (entry.kind === 'transition') {
@@ -277,7 +282,7 @@ function EventTimeline(props: EventTreeProps & { entries: TreeEntry[] }) {
               type="button"
               className="tree-row__time"
               onClick={() => props.onJumpToMessage?.(message.id)}
-              title="定位到消息流"
+              title={t('eventTree.jumpToMessage')}
             >
               {formatClock(message.createdAt)}
             </button>
@@ -285,14 +290,14 @@ function EventTimeline(props: EventTreeProps & { entries: TreeEntry[] }) {
               <div className="tree-row__top">
                 {message.type && <MessageTypeBadge type={message.type} />}
                 {isHuman ? (
-                  <span className="tree-tag tree-tag--human">人类</span>
+                  <span className="tree-tag tree-tag--human">{t('format.authorHuman')}</span>
                 ) : (
                   <button
                     type="button"
                     className={`tree-tag tree-tag--${meta?.outcome ?? 'running'}`}
                     style={{ ['--tree-color' as string]: colorForAgent(agentId) }}
                     onClick={() => props.onOpenSession(message.sessionSeq!)}
-                    title="打开 session 详情"
+                    title={t('eventTree.openSession')}
                   >
                     {sessionTagLabel(meta, agentId, message.sessionSeq!)}
                   </button>
@@ -314,33 +319,34 @@ function TransitionMarkerRow(props: {
   onJumpToMessage?: (messageId: number) => void;
 }) {
   const { transition } = props.entry;
+  const { t } = useI18n();
   const changes: string[] = [];
   if (transition.fromType != null || transition.toType != null) {
-    changes.push(`类型 ${transition.fromType ?? '—'} → ${transition.toType ?? '—'}`);
+    changes.push(t('eventTree.typeChange', { from: transition.fromType ?? '—', to: transition.toType ?? '—' }));
   }
   if (transition.fromStatus != null || transition.toStatus != null) {
-    changes.push(`状态 ${transition.fromStatus ?? '—'} → ${transition.toStatus ?? '—'}`);
+    changes.push(t('eventTree.statusChange', { from: transition.fromStatus ?? '—', to: transition.toStatus ?? '—' }));
   }
   return (
     <div className="tree-marker tree-marker--transition" data-transition-id={transition.id}>
       <span className="tree-marker__time">{formatClock(props.entry.time)}</span>
-      <span className="tree-transition__label">状态转化</span>
+      <span className="tree-transition__label">{t('eventTree.transition')}</span>
       <button
         type="button"
         className="tree-transition__link"
         onClick={() => props.onJumpToMessage?.(transition.messageId)}
-        title="定位到状态发生变化的消息"
+        title={t('eventTree.jumpToChanged')}
       >
         #{transition.messageId}
       </button>
-      <span className="tree-transition__change">{changes.join('；')}</span>
+      <span className="tree-transition__change">{changes.join(t('eventTree.changeSeparator'))}</span>
       <span className="tree-transition__trigger">
-        触发于{' '}
+        {t('eventTree.triggeredBy')}{' '}
         <button
           type="button"
           className="tree-transition__link"
           onClick={() => props.onJumpToMessage?.(transition.triggerMessageId)}
-          title="定位到触发转换的消息"
+          title={t('eventTree.jumpToTrigger')}
         >
           #{transition.triggerMessageId}
         </button>
@@ -355,6 +361,7 @@ function BoundaryMarkerRow(props: {
   onOpenSession: (seq: number) => void;
 }) {
   const { entry } = props;
+  const { t } = useI18n();
   const isEnd = entry.kind === 'end';
   return (
     <div
@@ -367,9 +374,11 @@ function BoundaryMarkerRow(props: {
         type="button"
         className={`tree-marker__tag${isEnd ? ` outcome-text--${entry.meta.outcome}` : ''}`}
         onClick={() => props.onOpenSession(entry.seq)}
-        title="打开 session 详情"
+        title={t('eventTree.openSession')}
       >
-        {isEnd ? `■ ${endMarkerLabel(entry.meta, entry.agentId, entry.seq)}` : `▶ ${entry.agentId} #${entry.seq} 开始`}
+        {isEnd
+          ? `■ ${endMarkerLabel(entry.meta, entry.agentId, entry.seq, t)}`
+          : `▶ ${entry.agentId} #${entry.seq} ${t('eventTree.start')}`}
       </button>
     </div>
   );

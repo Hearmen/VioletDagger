@@ -1,27 +1,22 @@
 import { useEffect } from 'react';
 import type { Message, SessionDetailPayload, SessionEventKind } from '../api/types';
 import { useSessionLog } from '../hooks/useSessionLog';
-import { authorInitial, authorLabel, colorForAgent, formatClock, formatCostUsd, formatDuration } from '../utils/format';
+import { useI18n } from '../i18n/LocaleProvider';
+import type { MessageKey } from '../i18n/zh';
+import {
+  authorInitial, authorLabel, colorForAgent, formatClock, formatCostUsd, formatDuration, formatNumber, outcomeLabel,
+} from '../utils/format';
 import { MessageTypeBadge } from './MessageTypeBadge';
 import { SessionLogView } from './SessionLogView';
 
-const OUTCOME_LABELS: Record<SessionDetailPayload['outcome'], string> = {
-  running: '运行中',
-  stopping: 'stopping',
-  completed: 'completed',
-  passed: 'passed',
-  error: 'error',
-  terminated: 'terminated',
-};
-
-const LIFECYCLE_LABELS: Record<SessionEventKind, string> = {
-  cleanup_started: '开始清理',
-  sigterm_sent: '发送 SIGTERM',
-  sigkill_sent: '发送 SIGKILL',
-  cleanup_failed: '清理失败',
-  terminate_requested: '请求人工终止',
-  process_exited: '进程退出',
-  terminated: '确认终止',
+const LIFECYCLE_LABELS: Record<SessionEventKind, MessageKey> = {
+  cleanup_started: 'session.lifecycle.cleanup_started',
+  sigterm_sent: 'session.lifecycle.sigterm_sent',
+  sigkill_sent: 'session.lifecycle.sigkill_sent',
+  cleanup_failed: 'session.lifecycle.cleanup_failed',
+  terminate_requested: 'session.lifecycle.terminate_requested',
+  process_exited: 'session.lifecycle.process_exited',
+  terminated: 'session.lifecycle.terminated',
 };
 
 // 复盘入口（事件树 session 节点）：元数据 + 该 session 的消息列表 + 生命周期记录 + 只读日志回放。
@@ -32,6 +27,7 @@ export function SessionDetailModal(props: {
   onClose: () => void;
 }) {
   const { detail, roomId, onClose } = props;
+  const { t, locale } = useI18n();
   const log = useSessionLog(roomId, detail?.sessionId ?? 0, 'replay');
 
   useEffect(() => {
@@ -49,7 +45,7 @@ export function SessionDetailModal(props: {
   const duration =
     detail.endedAt != null
       ? formatDuration((new Date(detail.endedAt).getTime() - new Date(detail.startedAt).getTime()) / 1000)
-      : '运行中';
+      : t('session.outcomeRunning');
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -57,14 +53,14 @@ export function SessionDetailModal(props: {
         className="modal modal--session-detail"
         role="dialog"
         aria-modal="true"
-        aria-label="session detail"
+        aria-label={t('session.detailLabel')}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="modal__head">
           <span className="mono" style={{ color: colorForAgent(detail.agentId) }}>{detail.agentId}</span>
           <span className="mono">#{detail.sessionId}</span>
-          <span className="tree-node__meta">{OUTCOME_LABELS[detail.outcome]}</span>
-          <span className="tree-node__meta">{running ? '尚未结束 · 日志快照' : '已结束 · 只读'}</span>
+          <span className="tree-node__meta">{outcomeLabel(detail.outcome, t)}</span>
+          <span className="tree-node__meta">{running ? t('session.notEndedSnapshot') : t('session.endedReadonly')}</span>
           <span className="mono">
             {formatClock(detail.startedAt)} → {detail.endedAt ? formatClock(detail.endedAt) : '…'} （{duration}）
           </span>
@@ -72,33 +68,37 @@ export function SessionDetailModal(props: {
           {detail.exitSignal && <span className="tree-node__meta">signal {detail.exitSignal}</span>}
           {detail.exitCause && <span className="tree-node__meta">{detail.exitCause}</span>}
           <span className="modal__spacer" />
-          <button aria-label="Close" onClick={onClose}>关闭</button>
+          <button aria-label={t('session.closeLabel')} onClick={onClose}>{t('common.close')}</button>
         </div>
         {detail.inputTokens != null && detail.outputTokens != null && (
           <div className="session-detail__usage mono" data-testid="session-usage">
-            <span>输入 {detail.inputTokens.toLocaleString()}</span>
-            <span>· 输出 {detail.outputTokens.toLocaleString()}</span>
-            {detail.cacheReadTokens != null && <span>· 缓存读 {detail.cacheReadTokens.toLocaleString()}</span>}
-            {detail.cacheWriteTokens != null && <span>· 缓存写 {detail.cacheWriteTokens.toLocaleString()}</span>}
+            <span>{t('session.inputTokens', { n: formatNumber(detail.inputTokens, locale) })}</span>
+            <span>· {t('session.outputTokens', { n: formatNumber(detail.outputTokens, locale) })}</span>
+            {detail.cacheReadTokens != null && (
+              <span>· {t('session.cacheReadTokens', { n: formatNumber(detail.cacheReadTokens, locale) })}</span>
+            )}
+            {detail.cacheWriteTokens != null && (
+              <span>· {t('session.cacheWriteTokens', { n: formatNumber(detail.cacheWriteTokens, locale) })}</span>
+            )}
             {detail.costUsd != null && <span>· ≈ {formatCostUsd(detail.costUsd)}</span>}
           </div>
         )}
         <div className="modal__body modal__body--session-detail">
           <div className="session-detail__messages" data-testid="session-messages">
-            {detail.messages.length === 0 && <p className="placeholder">这次 session 没有产出消息</p>}
+            {detail.messages.length === 0 && <p className="placeholder">{t('session.noMessages')}</p>}
             {detail.messages.map((message) => (
               <SessionMessageRow key={message.id} message={message} />
             ))}
           </div>
           <div className="session-detail__side">
             <div className="session-detail__lifecycle" data-testid="session-lifecycle">
-              <h3 className="session-detail__heading">生命周期</h3>
-              {detail.lifecycleEvents.length === 0 && <p className="placeholder">无生命周期事件</p>}
+              <h3 className="session-detail__heading">{t('session.lifecycle')}</h3>
+              {detail.lifecycleEvents.length === 0 && <p className="placeholder">{t('session.noLifecycle')}</p>}
               <ul>
                 {detail.lifecycleEvents.map((event) => (
                   <li key={event.id} className="mono">
                     <span className="tree-node__meta">{formatClock(event.createdAt)}</span>
-                    {' '}{LIFECYCLE_LABELS[event.kind] ?? event.kind}
+                    {' '}{LIFECYCLE_LABELS[event.kind] ? t(LIFECYCLE_LABELS[event.kind]) : event.kind}
                     {event.detail ? ` · ${event.detail}` : ''}
                   </li>
                 ))}
@@ -115,6 +115,7 @@ export function SessionDetailModal(props: {
 }
 
 function SessionMessageRow({ message }: { message: Message }) {
+  const { t } = useI18n();
   const isAgent = message.authorId !== 'human' && message.authorId !== 'system';
   const avatarClass =
     message.authorId === 'human' ? 'message__avatar--human' : message.authorId === 'system' ? 'message__avatar--system' : '';
@@ -124,12 +125,12 @@ function SessionMessageRow({ message }: { message: Message }) {
         className={`message__avatar ${avatarClass}`}
         style={isAgent ? { background: colorForAgent(message.authorId) } : undefined}
       >
-        {authorInitial(message.authorId)}
+        {authorInitial(message.authorId, t)}
       </div>
       <div className="message__main">
         <div className="message__head">
           <span className="message__author" style={isAgent ? { color: colorForAgent(message.authorId) } : undefined}>
-            {authorLabel(message.authorId)}
+            {authorLabel(message.authorId, t)}
           </span>
           {message.type && <MessageTypeBadge type={message.type} />}
           <span className="message__time">{formatClock(message.createdAt)}</span>
@@ -139,7 +140,7 @@ function SessionMessageRow({ message }: { message: Message }) {
           <div className="message__refs">
             {message.targetMessageId != null && <span className="ref-chip">↳ #{message.targetMessageId}</span>}
             {message.referencedMessageIds.map((id) => (
-              <span key={id} className="ref-chip">引用 #{id}</span>
+              <span key={id} className="ref-chip">{t('messages.reference', { id })}</span>
             ))}
           </div>
         )}

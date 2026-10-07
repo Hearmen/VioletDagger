@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { RoomDashboardPage } from '../../src/pages/RoomDashboardPage';
+import { LocaleProvider } from '../../src/i18n/LocaleProvider';
 import * as rest from '../../src/api/rest';
 import { useRoomSocket } from '../../src/hooks/useRoomSocket';
 import type { Message, MemoryViewPayload, RoomStatusPayload, UsageTotals } from '../../src/api/types';
@@ -288,5 +289,32 @@ describe('RoomDashboardPage', () => {
       const statusCallsAfter = call.mock.calls.filter(([method]) => method === 'getRoomStatus').length;
       expect(statusCallsAfter).toBeGreaterThan(statusCallsBefore);
     });
+  });
+
+  it('switches the UI to English without losing the composer draft or server error text', async () => {
+    call.mockImplementation((method: string) =>
+      method === 'postHumanMessage' ? Promise.reject(new Error('rpc failed')) : defaultCall(method),
+    );
+    render(
+      <LocaleProvider>
+        <MemoryRouter initialEntries={['/rooms/1']}>
+          <Routes>
+            <Route path="/rooms/:roomId" element={<RoomDashboardPage />} />
+          </Routes>
+        </MemoryRouter>
+      </LocaleProvider>,
+    );
+    await screen.findByText('room a');
+    fireEvent.change(screen.getByLabelText('content'), { target: { value: 'draft text' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await screen.findByText('rpc failed');
+
+    fireEvent.click(screen.getByRole('button', { name: '切换到英文' }));
+
+    expect(screen.getByText('Messages')).toBeInTheDocument();
+    expect(screen.getByText('Event Tree')).toBeInTheDocument();
+    expect(screen.getByText('Active')).toBeInTheDocument();
+    expect(screen.getByLabelText('content')).toHaveValue('draft text');
+    expect(screen.getByText('rpc failed')).toBeInTheDocument();
   });
 });

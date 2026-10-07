@@ -1,4 +1,6 @@
-import type { EventTreePayload, MessageType } from '../api/types';
+import type { EventTreePayload, MessageType, UsageTotals } from '../api/types';
+import type { TFunction } from '../i18n/translate';
+import type { Locale } from '../i18n/types';
 
 type SessionMeta = EventTreePayload['sessions'][number];
 
@@ -16,15 +18,15 @@ export function colorForAgent(agentId: string): string {
   return color;
 }
 
-export function authorLabel(authorId: string): string {
-  if (authorId === 'human') return '人类';
-  if (authorId === 'system') return '系统';
+export function authorLabel(authorId: string, t: TFunction): string {
+  if (authorId === 'human') return t('format.authorHuman');
+  if (authorId === 'system') return t('format.authorSystem');
   return authorId;
 }
 
-export function authorInitial(authorId: string): string {
-  if (authorId === 'human') return '人';
-  if (authorId === 'system') return '系';
+export function authorInitial(authorId: string, t: TFunction): string {
+  if (authorId === 'human') return t('format.initialHuman');
+  if (authorId === 'system') return t('format.initialSystem');
   return authorId.slice(0, 1).toUpperCase();
 }
 
@@ -57,30 +59,34 @@ export function formatElapsed(fromIso: string, now: number): string {
   return formatDuration((now - date.getTime()) / 1000);
 }
 
-export function formatRelative(iso: string): string {
+export function formatRelative(iso: string, t: TFunction): string {
   const date = parse(iso);
   if (!date) return '';
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
-  if (seconds < 60) return '刚刚';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
-  return `${Math.floor(seconds / 86400)} 天前`;
+  if (seconds < 60) return t('format.justNow');
+  if (seconds < 3600) return t('format.minutesAgo', { n: Math.floor(seconds / 60) });
+  if (seconds < 86400) return t('format.hoursAgo', { n: Math.floor(seconds / 3600) });
+  return t('format.daysAgo', { n: Math.floor(seconds / 86400) });
 }
 
-const TYPE_LABELS: Record<MessageType, string> = {
-  fact: 'fact',
-  hypothesis: 'hypothesis',
-  boundary: 'boundary',
-  open_question: 'open_question',
-  chain: 'chain',
-  exploring: 'exploring',
-  propose_completion: '提议完成',
-  challenge: 'challenge',
-  verify: 'verify',
-};
+// 类型徽标文案：只有 propose_completion 是界面文案，其余就是协议标识符本身（09-frontend-i18n.md §5.2）。
+export function typeLabel(type: MessageType, t: TFunction): string {
+  return type === 'propose_completion' ? t('format.typeProposeCompletion') : type;
+}
 
-export function typeLabel(type: MessageType): string {
-  return TYPE_LABELS[type] ?? type;
+export function formatNumber(n: number, locale: Locale): string {
+  return n.toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US');
+}
+
+// RoomHeader 与 AgentRail 共用的用量明细（悬浮 title）：缓存项 > 0 才出现。
+export function formatUsageParts(usage: UsageTotals, t: TFunction, locale: Locale): string[] {
+  const parts = [
+    t('format.usageInput', { n: formatNumber(usage.inputTokens, locale) }),
+    t('format.usageOutput', { n: formatNumber(usage.outputTokens, locale) }),
+  ];
+  if (usage.cacheReadTokens > 0) parts.push(t('format.usageCacheRead', { n: formatNumber(usage.cacheReadTokens, locale) }));
+  if (usage.cacheWriteTokens > 0) parts.push(t('format.usageCacheWrite', { n: formatNumber(usage.cacheWriteTokens, locale) }));
+  return parts;
 }
 
 // 当前属于触发型的人类新消息类型（03-orchestrator-core.md §1.1）：新写入的 open_question 为 OPEN、
@@ -115,6 +121,11 @@ export const OUTCOME_LABELS: Partial<Record<SessionMeta['outcome'], string>> = {
 
 // 运行时长后缀（07-frontend.md §9.2）：只对已结束（endedAt 非 null）的 session 显示 endedAt − startedAt；
 // 任一时间戳无法解析时不追加。running 的实时时长只在 AgentRail 展示。
+// session outcome 展示：只有 running 是界面文案，其余原样显示 outcome 值（09-frontend-i18n.md §5.3）。
+export function outcomeLabel(outcome: SessionMeta['outcome'], t: TFunction): string {
+  return outcome === 'running' ? t('session.outcomeRunning') : outcome;
+}
+
 function sessionDuration(meta: SessionMeta): string | null {
   if (meta.endedAt == null) return null;
   const start = Date.parse(meta.startedAt);

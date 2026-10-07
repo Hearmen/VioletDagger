@@ -2,6 +2,7 @@ import { useLayoutEffect, useMemo, useRef } from 'react';
 import type { EventTreePayload } from '../api/types';
 import type { TreeEntry } from './EventTreePanel';
 import { MessageTypeBadge } from './MessageTypeBadge';
+import { useI18n } from '../i18n/LocaleProvider';
 import { colorForAgent, formatClock, OUTCOME_LABELS, sessionTagLabel } from '../utils/format';
 
 type SessionMeta = EventTreePayload['sessions'][number];
@@ -75,6 +76,7 @@ export function SessionLanes(props: {
   onJumpToMessage?: (messageId: number) => void;
 }) {
   const { entries } = props;
+  const { t } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
 
@@ -97,7 +99,7 @@ export function SessionLanes(props: {
   }
 
   if (entries.length === 0) {
-    return <p className="placeholder">还没有任何事件</p>;
+    return <p className="placeholder">{t('eventTree.empty')}</p>;
   }
 
   const columns = { ['--lane-cols' as string]: `${TIME_COL_W}px repeat(${lanes.length}, ${LANE_W}px)` };
@@ -110,7 +112,7 @@ export function SessionLanes(props: {
           {lanes.map((lane) =>
             lane.seq == null ? (
               <div key="human" className="lane-head">
-                <span className="tree-tag tree-tag--human lane-head__tag">人类</span>
+                <span className="tree-tag tree-tag--human lane-head__tag">{t('format.authorHuman')}</span>
               </div>
             ) : (
               <div key={lane.seq} className="lane-head">
@@ -158,12 +160,12 @@ export function SessionLanes(props: {
                   className="lane-event"
                   style={laneStyle}
                   onClick={() => props.onJumpToMessage?.(entry.message.id)}
-                  title="定位到消息流"
+                  title={t('eventTree.jumpToMessage')}
                 >
                   {entry.message.type ? (
                     <MessageTypeBadge type={entry.message.type} />
                   ) : (
-                    <span className="type-badge type-badge--none">消息</span>
+                    <span className="type-badge type-badge--none">{t('eventTree.plainMessage')}</span>
                   )}
                   <span className="lane-event__id">#{entry.message.id}</span>
                 </button>
@@ -175,7 +177,7 @@ export function SessionLanes(props: {
                   onClick={() => props.onOpenSession(entry.seq)}
                   title={sessionTagLabel(entry.meta, entry.agentId, entry.seq)}
                 >
-                  {entry.kind === 'start' ? '▶ 开始' : `■ ${OUTCOME_LABELS[entry.meta.outcome] ?? entry.meta.outcome}`}
+                  {entry.kind === 'start' ? `▶ ${t('eventTree.start')}` : `■ ${OUTCOME_LABELS[entry.meta.outcome] ?? entry.meta.outcome}`}
                 </button>
               )}
             </div>

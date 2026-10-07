@@ -119,6 +119,6 @@ describe('useSessionLog', () => {
       ws.open();
       ws.emit({ type: 'error', message: 'read failed' });
     });
-    expect(result.current.error).toBe('read failed');
+    expect(result.current.error).toEqual({ kind: 'raw', text: 'read failed' });
   });
 });

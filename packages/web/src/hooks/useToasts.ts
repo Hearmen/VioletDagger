@@ -1,8 +1,9 @@
 import { useCallback, useRef, useState } from 'react';
+import type { LocalizedText } from '../i18n/types';
 
 export interface Toast {
   id: number;
-  message: string;
+  message: LocalizedText;
 }
 
 const TOAST_TTL_MS = 5000;
@@ -15,7 +16,7 @@ export function useToasts() {
     setToasts((prev) => prev.filter((toast) => toast.id !== id));
   }, []);
 
-  const push = useCallback((message: string) => {
+  const push = useCallback((message: LocalizedText) => {
     const id = nextIdRef.current++;
     setToasts((prev) => [...prev, { id, message }]);
     setTimeout(() => {

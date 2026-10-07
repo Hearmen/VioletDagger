@@ -2,18 +2,17 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { Room, RoomStatusPayload, RoomStatus, UsageTotals } from '../api/types';
 import type { ConnectionState } from '../hooks/useRoomSocket';
-import { formatCostUsd, formatTokens } from '../utils/format';
+import { useI18n } from '../i18n/LocaleProvider';
+import type { MessageKey } from '../i18n/zh';
+import { formatCostUsd, formatTokens, formatUsageParts } from '../utils/format';
+import { LocaleToggle } from './LocaleToggle';
 
 // 房间总用量（07-frontend.md §4，格式同 AgentRail 的用量行）：sessionCount === 0 时不显示；
 // costUsd 为 null 时不显示 $ 部分；部分 session 缺费用数据时加 * 提示，不让总数看起来比实际更精确。
 function RoomUsageSummary({ usage }: { usage: UsageTotals }) {
+  const { t, locale } = useI18n();
   if (usage.sessionCount === 0) return null;
-  const title = [
-    `输入 ${usage.inputTokens.toLocaleString()}`,
-    `输出 ${usage.outputTokens.toLocaleString()}`,
-    usage.cacheReadTokens > 0 ? `缓存读 ${usage.cacheReadTokens.toLocaleString()}` : null,
-    usage.cacheWriteTokens > 0 ? `缓存写 ${usage.cacheWriteTokens.toLocaleString()}` : null,
-  ].filter(Boolean).join(' · ');
+  const title = formatUsageParts(usage, t, locale).join(' · ');
   return (
     <span className="mono room-header__usage" title={title}>
       {formatTokens(usage.inputTokens + usage.outputTokens)}
@@ -21,7 +20,7 @@ function RoomUsageSummary({ usage }: { usage: UsageTotals }) {
         <>
           {' '}· {formatCostUsd(usage.costUsd)}
           {usage.sessionsWithoutCost > 0 && (
-            <span title={`${usage.sessionsWithoutCost} 个 session 无费用数据，未计入`}>*</span>
+            <span title={t('format.sessionsWithoutCost', { count: usage.sessionsWithoutCost })}>*</span>
           )}
         </>
       )}
@@ -29,11 +28,11 @@ function RoomUsageSummary({ usage }: { usage: UsageTotals }) {
   );
 }
 
-const STATUS_LABELS: Record<RoomStatus, string> = {
-  active: '进行中',
-  paused_limit: '已暂停（session 上限）',
-  paused_manual: '已暂停（人工）',
-  completed: '已结束',
+export const ROOM_STATUS_LABELS: Record<RoomStatus, MessageKey> = {
+  active: 'header.statusActive',
+  paused_limit: 'header.statusPausedLimit',
+  paused_manual: 'header.statusPausedManual',
+  completed: 'header.statusCompleted',
 };
 
 export function RoomHeader(props: {
@@ -49,6 +48,7 @@ export function RoomHeader(props: {
   onDeleteRoom?: () => void;
 }) {
   const { room, status, connectionState, proposeCompletionId, onJumpToMessage } = props;
+  const { t } = useI18n();
   const readOnly = status.status === 'completed';
   const [dismissedProposeId, setDismissedProposeId] = useState<number | null>(null);
 
@@ -64,7 +64,7 @@ export function RoomHeader(props: {
 
   function handleResume() {
     if (status.status === 'paused_limit') {
-      const raw = window.prompt('additionalSessions (required)');
+      const raw = window.prompt(t('header.resumePrompt'));
       if (!raw) return;
       props.onResume(Number(raw));
     } else {
@@ -73,13 +73,13 @@ export function RoomHeader(props: {
   }
 
   function handleConfirmCompletion() {
-    if (window.confirm('确认结束这个房间？结束后转为只读。')) {
+    if (window.confirm(t('header.confirmCompletionPrompt'))) {
       props.onConfirmCompletion();
     }
   }
 
   function handleDeleteRoom() {
-    if (window.confirm('删除这个房间？将级联删除它的 session、记忆、事件树、信息流与磁盘日志，不可恢复。')) {
+    if (window.confirm(t('header.deleteRoomPrompt'))) {
       props.onDeleteRoom?.();
     }
   }
@@ -88,11 +88,11 @@ export function RoomHeader(props: {
     <header className="room-header">
       <div className="room-header__bar">
         <Link to="/" className="room-header__back">
-          ← 房间列表
+          {t('header.backToRooms')}
         </Link>
         <h1 className="room-header__name">{room.name}</h1>
-        <span className={`status-pill status-pill--${status.status}`}>{STATUS_LABELS[status.status]}</span>
-        <span className="mono">{status.currentSessionCount}/{room.maxSessions} sessions</span>
+        <span className={`status-pill status-pill--${status.status}`}>{t(ROOM_STATUS_LABELS[status.status])}</span>
+        <span className="mono">{t('header.sessionCount', { current: status.currentSessionCount, max: room.maxSessions })}</span>
         {props.roomUsage && <RoomUsageSummary usage={props.roomUsage} />}
         {room.workdir && (
           <span className="mono room-header__workdir" title={room.workdir}>
@@ -103,49 +103,50 @@ export function RoomHeader(props: {
         <span className={`conn-dot conn-dot--${connectionState}`} title={connectionState} />
         {readOnly ? (
           <div className="room-header__controls">
-            <span className="room-header__readonly">已结束 · 只读</span>
+            <span className="room-header__readonly">{t('header.readonly')}</span>
             {props.onDeleteRoom && (
               <button className="danger" onClick={handleDeleteRoom}>
-                Delete Room
+                {t('header.deleteRoom')}
               </button>
             )}
           </div>
         ) : (
           <div className="room-header__controls">
-            {status.status === 'active' && <button onClick={props.onPause}>Pause</button>}
-            {status.status !== 'active' && <button onClick={handleResume}>Resume</button>}
+            {status.status === 'active' && <button onClick={props.onPause}>{t('header.pause')}</button>}
+            {status.status !== 'active' && <button onClick={handleResume}>{t('header.resume')}</button>}
             <button className="danger" onClick={handleConfirmCompletion}>
-              Confirm Completion
+              {t('header.confirmCompletion')}
             </button>
           </div>
         )}
+        <LocaleToggle />
       </div>
 
       <div className="room-header__banners">
         {connectionState === 'disconnected' && (
           <div role="alert" className="banner banner--danger">
-            连接已断开，正在重连…
+            {t('header.disconnected')}
           </div>
         )}
         {showProposeBanner && (
           <div role="alert" className="banner banner--warn">
-            有 agent 提议完成这个房间
+            {t('header.proposeCompletion')}
             {onJumpToMessage && proposeCompletionId != null && (
               <button className="ghost" onClick={() => onJumpToMessage(proposeCompletionId)}>
-                查看
+                {t('header.view')}
               </button>
             )}
             <button className="ghost banner__close" onClick={() => setDismissedProposeId(proposeCompletionId!)}>
-              关闭
+              {t('common.close')}
             </button>
           </div>
         )}
         {showIdleBanner && (
           <div role="alert" className="banner banner--warn">
-            当前没有任务可派发：所有 agent 均空闲，且没有待处理的触发型消息
-            {status.disabledAgentCount > 0 && `（${status.disabledAgentCount} 个 agent 已停用派发）`}
+            {t('header.dispatchIdle')}
+            {status.disabledAgentCount > 0 && t('header.disabledAgents', { count: status.disabledAgentCount })}
             <button className="ghost banner__close" onClick={() => setDismissedIdle(true)}>
-              关闭
+              {t('common.close')}
             </button>
           </div>
         )}

@@ -1,4 +1,5 @@
 import type { Message, MessageType } from '../api/types';
+import { useI18n } from '../i18n/LocaleProvider';
 
 type StatusSource = Pick<Message, 'type' | 'questionStatus' | 'questionCloseReason' | 'chainStatus' | 'verifyVerdict'>;
 
@@ -7,6 +8,7 @@ type StatusSource = Pick<Message, 'type' | 'questionStatus' | 'questionCloseReas
 // fact/boundary）显示"成立/不成立"。
 export function MessageStatusBadge(props: { message: StatusSource; targetType?: MessageType | null }) {
   const { message } = props;
+  const { t } = useI18n();
   if (message.type === 'open_question' && message.questionStatus) {
     if (message.questionStatus === 'OPEN') {
       return <span className="status-badge status-badge--question-open">OPEN</span>;
@@ -27,7 +29,9 @@ export function MessageStatusBadge(props: { message: StatusSource; targetType?: 
   }
   if (message.type === 'verify' && message.verifyVerdict != null) {
     const onChain = props.targetType === 'chain';
-    const label = message.verifyVerdict ? (onChain ? '通过' : '成立') : (onChain ? '驳回' : '不成立');
+    const label = message.verifyVerdict
+      ? t(onChain ? 'messages.verifyPass' : 'messages.verifyHolds')
+      : t(onChain ? 'messages.verifyReject' : 'messages.verifyNotHolds');
     return <span className={`status-badge status-badge--verify-${message.verifyVerdict}`}>{label}</span>;
   }
   return null;

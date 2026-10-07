@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useI18n } from '../i18n/LocaleProvider';
 
 // 面板之间的拖动分隔条（见 07-frontend.md §3）。用 Pointer Events + setPointerCapture，
 // 按增量回调 onDrag(delta)；delta 的轴向由 orientation 决定。
@@ -7,6 +8,7 @@ export function Splitter(props: {
   area: 'agents' | 'events' | 'memory';
   onDrag: (delta: number) => void;
 }) {
+  const { t } = useI18n();
   const lastRef = useRef<number | null>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -45,7 +47,7 @@ export function Splitter(props: {
     <div
       role="separator"
       aria-orientation={props.orientation === 'v' ? 'vertical' : 'horizontal'}
-      aria-label={`resize ${props.area}`}
+      aria-label={t('common.resize', { area: props.area })}
       className={`splitter splitter--${props.orientation} splitter--${props.area} ${dragging ? 'is-dragging' : ''}`}
       onPointerDown={handleDown}
       onPointerMove={handleMove}

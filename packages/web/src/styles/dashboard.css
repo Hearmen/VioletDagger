@@ -1688,3 +1688,17 @@ body.is-resizing-y {
   font-size: 12px;
   color: var(--warn);
 }
+
+/* ---- 语言切换按钮（09-frontend-i18n.md §4）：固定最小宽度，EN/中 切换时不跳动 ---- */
+.locale-toggle {
+  min-width: 36px;
+  font-family: var(--mono);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.locale-toggle:hover {
+  border-color: var(--border-strong);
+}
+.app-bar .locale-toggle {
+  margin-left: auto;
+}

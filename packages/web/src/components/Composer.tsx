@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CloseReason, HumanMessageParams, Message, MessageType } from '../api/types';
 import { MessageTypeBadge } from './MessageTypeBadge';
+import { useI18n } from '../i18n/LocaleProvider';
+import type { MessageKey } from '../i18n/zh';
 import { colorForAgent, isTriggeringNewMessageType } from '../utils/format';
 
 // 不需要目标的类型（07-frontend.md §7）：fact/boundary 未选目标时即为不挂在问题下的知识。
@@ -8,15 +10,15 @@ import { colorForAgent, isTriggeringNewMessageType } from '../utils/format';
 const BASE_TYPES: MessageType[] = ['open_question', 'fact', 'boundary', 'propose_completion'];
 
 // 发送要求提示（07-frontend.md §7）：文案取自 04 §2.1 记忆类型表的"发送要求"列，只做提示、不阻止发送。
-export const SEND_REQUIREMENTS: Partial<Record<MessageType, string>> = {
-  open_question: '应描述一个具体、可继续探索的问题',
-  hypothesis: '一条可以被验证的独立判断，能脱离具体方案成立；候选方案或修复方案请发 chain',
-  fact: '能脱离具体方案独立成立的事实，必须有明确证据，一条只写一个；对方案的修复或建议不是 fact，方案的缺陷请用 challenge；直接回答某个问题时请先选中该问题',
-  boundary: '能脱离具体方案独立成立的约束或死胡同，必须说明为什么不可行、成立的条件和范围；单次尝试失败或某个方案被否定都不能写成 boundary',
-  chain: '所选问题的一个完整候选方案或答案（包括修复版）；修复已有方案时引用原 chain 和对应 challenge；只有新路径或实质变化才发新 chain；认为足以关闭问题时勾选"关闭该问题"',
-  challenge: '写明质疑点和依据',
-  verify: '必须采用独立且有实质差异的方法，并给出结论',
-  propose_completion: '只有 goal 已得到充分回答、且没有明显其他方向时发送',
+export const SEND_REQUIREMENTS: Partial<Record<MessageType, MessageKey>> = {
+  open_question: 'composer.requirement.open_question',
+  hypothesis: 'composer.requirement.hypothesis',
+  fact: 'composer.requirement.fact',
+  boundary: 'composer.requirement.boundary',
+  chain: 'composer.requirement.chain',
+  challenge: 'composer.requirement.challenge',
+  verify: 'composer.requirement.verify',
+  propose_completion: 'composer.requirement.propose_completion',
 };
 // 只有选中目标后才会出现的类型；取消目标时已选中的这些类型一并清空。
 export const TARGET_ONLY_TYPES: MessageType[] = ['hypothesis', 'chain', 'challenge', 'verify'];
@@ -62,6 +64,7 @@ export function Composer(props: {
   // 返回的 Promise 失败时保留输入（错误由调用方 toast 展示），成功后才清空。
   onSend: (params: HumanMessageParams) => Promise<unknown> | void;
 }) {
+  const { t } = useI18n();
   const [content, setContent] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
   const [targetAgentId, setTargetAgentId] = useState<string | undefined>(undefined);
@@ -113,7 +116,7 @@ export function Composer(props: {
   }
 
   if (props.readOnly) {
-    return <div className="composer__readonly">房间已结束，只读</div>;
+    return <div className="composer__readonly">{t('composer.readonly')}</div>;
   }
 
   const availableTypes = [...new Set([...BASE_TYPES, ...typesForTarget(target)])];
@@ -158,16 +161,18 @@ export function Composer(props: {
 
   return (
     <div className="composer">
-      {isFirstMessage && <p role="status" className="composer__hint">第一条消息就是任务目标</p>}
+      {isFirstMessage && <p role="status" className="composer__hint">{t('composer.firstMessageHint')}</p>}
       {!isFirstMessage && type && SEND_REQUIREMENTS[type] && (
-        <p className="composer__requirement" aria-label="发送要求">发送要求：{SEND_REQUIREMENTS[type]}</p>
+        <p className="composer__requirement" aria-label={t('composer.requirementLabel')}>
+          {t('composer.requirement', { text: t(SEND_REQUIREMENTS[type]!) })}
+        </p>
       )}
       {!isFirstMessage && (targetMessageId != null || targetAgentId != null) && (
         <div className="composer__row">
           {targetMessageId != null && (
             <span className="composer__target">
-              <span className="ref-chip mono">正在回复 #{targetMessageId}</span>
-              <button type="button" className="ghost" aria-label="取消回复目标" onClick={props.onClearTarget}>
+              <span className="ref-chip mono">{t('composer.replyingTo', { id: targetMessageId })}</span>
+              <button type="button" className="ghost" aria-label={t('composer.clearReplyTarget')} onClick={props.onClearTarget}>
                 ✕
               </button>
             </span>
@@ -175,13 +180,13 @@ export function Composer(props: {
           {targetAgentId != null && (
             <span className="composer__target">
               <span className="ref-chip mono" style={{ color: colorForAgent(targetAgentId) }}>
-                发送给 @{targetAgentId}
+                {t('composer.sendTo', { agentId: targetAgentId })}
               </span>
-              <button type="button" className="ghost" aria-label="取消定向目标" onClick={() => setTargetAgentId(undefined)}>
+              <button type="button" className="ghost" aria-label={t('composer.clearAgentTarget')} onClick={() => setTargetAgentId(undefined)}>
                 ✕
               </button>
               {!isTriggeringNewMessageType(type) && (
-                <span className="composer__note">这条消息不会唤醒 @{targetAgentId}</span>
+                <span className="composer__note">{t('composer.willNotWake', { agentId: targetAgentId })}</span>
               )}
             </span>
           )}
@@ -189,14 +194,14 @@ export function Composer(props: {
       )}
 
       {!isFirstMessage && type === 'verify' && (
-        <div className="composer__row" role="radiogroup" aria-label="验证结论">
+        <div className="composer__row" role="radiogroup" aria-label={t('composer.verifyVerdict')}>
           <label>
             <input type="radio" name="verify-verdict" checked={verifyVerdict === true} onChange={() => setVerifyVerdict(true)} />
-            {verifyOnChain ? '通过' : '成立 → fact'}
+            {verifyOnChain ? t('composer.verifyPass') : t('composer.verifyHolds')}
           </label>
           <label>
             <input type="radio" name="verify-verdict" checked={verifyVerdict === false} onChange={() => setVerifyVerdict(false)} />
-            {verifyOnChain ? '驳回' : '不成立 → boundary'}
+            {verifyOnChain ? t('composer.verifyReject') : t('composer.verifyNotHolds')}
           </label>
         </div>
       )}
@@ -205,17 +210,17 @@ export function Composer(props: {
         <div className="composer__row">
           <label>
             <input type="checkbox" checked={closesQuestion} onChange={(e) => setClosesQuestion(e.target.checked)} />
-            关闭该问题
+            {t('composer.closesQuestion')}
           </label>
           {closesQuestion && (
-            <span role="radiogroup" aria-label="关闭原因">
+            <span role="radiogroup" aria-label={t('composer.closeReason')}>
               <label>
                 <input type="radio" name="chain-resolution" checked={chainResolution === 'RESOLVED'} onChange={() => setChainResolution('RESOLVED')} />
-                已解决
+                {t('composer.resolved')}
               </label>
               <label>
                 <input type="radio" name="chain-resolution" checked={chainResolution === 'UNRESOLVED'} onChange={() => setChainResolution('UNRESOLVED')} />
-                无法解决
+                {t('composer.unresolved')}
               </label>
             </span>
           )}
@@ -223,20 +228,20 @@ export function Composer(props: {
       )}
 
       {!isFirstMessage && pickerOpen && type === '' && (
-        <div className="composer__type-menu" role="listbox" aria-label="message type">
-          {availableTypes.map((t) => (
+        <div className="composer__type-menu" role="listbox" aria-label={t('composer.typeMenu')}>
+          {availableTypes.map((option) => (
             <button
-              key={t}
+              key={option}
               type="button"
               role="option"
               aria-selected={false}
               className="composer__type-option"
               onClick={() => {
-                props.onTypeChange(t);
+                props.onTypeChange(option);
                 setPickerOpen(false);
               }}
             >
-              <MessageTypeBadge type={t} />
+              <MessageTypeBadge type={option} />
             </button>
           ))}
         </div>
@@ -250,7 +255,7 @@ export function Composer(props: {
         ) : type ? (
           <span className="composer__type-selected">
             <MessageTypeBadge type={type} />
-            <button type="button" className="ghost" aria-label="清除类型" onClick={() => props.onTypeChange('')}>
+            <button type="button" className="ghost" aria-label={t('composer.clearType')} onClick={() => props.onTypeChange('')}>
               ✕
             </button>
           </span>
@@ -258,19 +263,19 @@ export function Composer(props: {
           <button
             type="button"
             className="ghost composer__type-trigger"
-            aria-label="选择消息类型"
+            aria-label={t('composer.pickType')}
             onClick={() => setPickerOpen((open) => !open)}
           >
-            ＋ 类型
+            {t('composer.typeTrigger')}
           </button>
         )}
 
         <div className="composer__textarea-wrap">
           <textarea
-            aria-label="content"
+            aria-label={t('composer.content')}
             ref={textareaRef}
             value={content}
-            placeholder={isFirstMessage ? '描述这个房间要完成的任务…' : '发送一条消息…（输入 @ 可定向某个 agent）'}
+            placeholder={isFirstMessage ? t('composer.goalPlaceholder') : t('composer.placeholder')}
             onChange={(e) => {
               handleContentChange(e.target.value);
               autoResize();
@@ -287,7 +292,7 @@ export function Composer(props: {
             }}
           />
           {mentionCandidates.length > 0 && (
-            <div className="composer__mention-menu" role="listbox" aria-label="@ 定向某个 agent">
+            <div className="composer__mention-menu" role="listbox" aria-label={t('composer.mentionMenu')}>
               {mentionCandidates.map((agentId) => (
                 <button
                   key={agentId}
@@ -305,7 +310,7 @@ export function Composer(props: {
           )}
         </div>
         <button className="primary" onClick={handleSend} disabled={!canSend}>
-          Send
+          {t('composer.send')}
         </button>
       </div>
     </div>

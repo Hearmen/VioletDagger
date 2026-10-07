@@ -2,13 +2,17 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { fetchRooms, fetchAgents, createRoom, deleteRoom } from '../api/rest';
 import type { AgentInfo, RoomSummary, RoomStatus } from '../api/types';
+import { LocaleToggle } from '../components/LocaleToggle';
+import { useI18n } from '../i18n/LocaleProvider';
+import { errorText, renderText, type LocalizedText } from '../i18n/types';
+import type { MessageKey } from '../i18n/zh';
 import { formatRelative } from '../utils/format';
 
-const STATUS_LABELS: Record<RoomStatus, string> = {
-  active: '进行中',
-  paused_limit: '已暂停',
-  paused_manual: '已暂停',
-  completed: '已结束',
+const STATUS_LABELS: Record<RoomStatus, MessageKey> = {
+  active: 'roomList.statusActive',
+  paused_limit: 'roomList.statusPaused',
+  paused_manual: 'roomList.statusPaused',
+  completed: 'roomList.statusCompleted',
 };
 
 // 与后端 createRoom 的实例标识规则一致（见 docs/design/01-storage.md），仅用于表单预览。
@@ -25,6 +29,7 @@ export function previewInstanceIds(registryKeys: string[]): string[] {
 }
 
 export function RoomListPage() {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [agents, setAgents] = useState<AgentInfo[]>([]);
@@ -32,17 +37,17 @@ export function RoomListPage() {
   const [maxSessions, setMaxSessions] = useState('');
   const [workdir, setWorkdir] = useState('');
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<LocalizedText | null>(null);
 
   function refreshRooms() {
-    return fetchRooms().then(setRooms).catch((err: Error) => setError(err.message));
+    return fetchRooms().then(setRooms).catch((err: unknown) => setError(errorText(err)));
   }
 
   useEffect(() => {
     refreshRooms();
     fetchAgents()
       .then(setAgents)
-      .catch((err: Error) => setError(err.message));
+      .catch((err: unknown) => setError(errorText(err)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -66,7 +71,7 @@ export function RoomListPage() {
     // 留空 = 用服务端默认值；填了必须是正整数。
     const parsedMaxSessions = maxSessions.trim() === '' ? undefined : Number(maxSessions);
     if (parsedMaxSessions !== undefined && (!Number.isInteger(parsedMaxSessions) || parsedMaxSessions <= 0)) {
-      setError('session 上限必须是正整数');
+      setError({ kind: 'key', key: 'roomList.maxSessionsInvalid' });
       return;
     }
     try {
@@ -79,12 +84,12 @@ export function RoomListPage() {
       });
       navigate(`/rooms/${room.id}`);
     } catch (err) {
-      setError((err as Error).message);
+      setError(errorText(err));
     }
   }
 
   async function handleDelete(room: RoomSummary) {
-    if (!window.confirm('删除这个房间？将级联删除它的 session、记忆、事件树、信息流与磁盘日志，不可恢复。')) {
+    if (!window.confirm(t('header.deleteRoomPrompt'))) {
       return;
     }
     setError(null);
@@ -92,7 +97,7 @@ export function RoomListPage() {
       await deleteRoom(room.id);
       await refreshRooms();
     } catch (err) {
-      setError((err as Error).message);
+      setError(errorText(err));
     }
   }
 
@@ -105,14 +110,15 @@ export function RoomListPage() {
         <span className="brand">
           <span className="brand__mark">◆</span> VioletDagger
         </span>
+        <LocaleToggle />
       </div>
 
       <div className="room-list__body">
         <section>
-          <h2 className="section-title">房间</h2>
-          {error && <p role="alert" className="error-inline">{error}</p>}
+          <h2 className="section-title">{t('roomList.rooms')}</h2>
+          {error && <p role="alert" className="error-inline">{renderText(error, t)}</p>}
           {rooms.length === 0 ? (
-            <p className="placeholder">还没有房间，创建一个吧</p>
+            <p className="placeholder">{t('roomList.empty')}</p>
           ) : (
             <div className="room-grid">
               {rooms.map((room) => (
@@ -120,13 +126,13 @@ export function RoomListPage() {
                   <Link to={`/rooms/${room.id}`} className="room-card__link">
                     <span className="room-card__name">{room.name}</span>
                     <span className="room-card__meta">
-                      <span className={`status-pill status-pill--${room.status}`}>{STATUS_LABELS[room.status]}</span>
-                      <span className="mono">{formatRelative(room.createdAt)}</span>
+                      <span className={`status-pill status-pill--${room.status}`}>{t(STATUS_LABELS[room.status])}</span>
+                      <span className="mono">{formatRelative(room.createdAt, t)}</span>
                     </span>
                   </Link>
                   {room.status === 'completed' && (
                     <button className="danger ghost room-card__delete" onClick={() => handleDelete(room)}>
-                      删除
+                      {t('roomList.delete')}
                     </button>
                   )}
                 </div>
@@ -136,21 +142,21 @@ export function RoomListPage() {
         </section>
 
         <form className="create-panel" onSubmit={handleSubmit} noValidate>
-          <h2 className="section-title" style={{ margin: 0 }}>新建房间</h2>
+          <h2 className="section-title" style={{ margin: 0 }}>{t('roomList.createTitle')}</h2>
 
           <div className="field">
-            <label htmlFor="room-name">房间名</label>
+            <label htmlFor="room-name">{t('roomList.nameLabel')}</label>
             <input
               id="room-name"
-              aria-label="room name"
+              aria-label={t('roomList.nameAria')}
               value={name}
-              placeholder="仅用于列表展示"
+              placeholder={t('roomList.namePlaceholder')}
               onChange={(e) => setName(e.target.value)}
             />
           </div>
 
           <div className="field">
-            <span className="field__label">参与的 agent（可重复点击加入多个实例）</span>
+            <span className="field__label">{t('roomList.agentsLabel')}</span>
             <div className="chips">
               {agents.map((agent) => {
                 const count = countFor(agent.agentId);
@@ -159,9 +165,9 @@ export function RoomListPage() {
                     type="button"
                     key={agent.agentId}
                     className={`chip ${count > 0 ? 'chip--on' : ''}`}
-                    aria-label={`add ${agent.agentId}`}
+                    aria-label={t('roomList.addAgent', { agentId: agent.agentId })}
                     disabled={!agent.available}
-                    title={agent.available ? undefined : agent.unavailableReason ?? '该 agent 当前不可用'}
+                    title={agent.available ? undefined : agent.unavailableReason ?? t('roomList.agentUnavailable')}
                     onClick={() => addAgent(agent.agentId)}
                   >
                     {agent.agentId}
@@ -174,7 +180,7 @@ export function RoomListPage() {
 
           {instanceIds.length > 0 && (
             <div className="field">
-              <span className="field__label">已加入实例（按加入顺序）</span>
+              <span className="field__label">{t('roomList.instancesLabel')}</span>
               <div className="chips">
                 {instanceIds.map((instanceId, index) => (
                   <span key={`${instanceId}-${index}`} className="chip chip--on">
@@ -182,7 +188,7 @@ export function RoomListPage() {
                     <button
                       type="button"
                       className="chip__remove"
-                      aria-label={`remove ${instanceId}`}
+                      aria-label={t('roomList.removeInstance', { instanceId })}
                       onClick={() => removeInstanceAt(index)}
                     >
                       ×
@@ -200,7 +206,7 @@ export function RoomListPage() {
                       className="ghost"
                       onClick={() => clearAgent(agent.agentId)}
                     >
-                      清空 {agent.agentId}
+                      {t('roomList.clearAgent', { agentId: agent.agentId })}
                     </button>
                   ))}
               </div>
@@ -208,41 +214,41 @@ export function RoomListPage() {
           )}
 
           <div className="field">
-            <label htmlFor="room-max-sessions">session 上限</label>
+            <label htmlFor="room-max-sessions">{t('roomList.maxSessionsLabel')}</label>
             <input
               id="room-max-sessions"
-              aria-label="max sessions"
+              aria-label={t('roomList.maxSessionsAria')}
               type="number"
               min={1}
-              placeholder="默认 20"
+              placeholder={t('roomList.maxSessionsPlaceholder')}
               value={maxSessions}
               onChange={(e) => setMaxSessions(e.target.value)}
             />
           </div>
 
           <div className="field">
-            <label htmlFor="room-workdir">工作目录</label>
+            <label htmlFor="room-workdir">{t('roomList.workdirLabel')}</label>
             <input
               id="room-workdir"
-              aria-label="workdir"
+              aria-label={t('roomList.workdirAria')}
               value={workdir}
-              placeholder="默认：服务端目录；不存在会自动创建"
+              placeholder={t('roomList.workdirPlaceholder')}
               onChange={(e) => setWorkdir(e.target.value)}
             />
           </div>
 
           <div className="field">
-            <span className="field__label">调度模式</span>
+            <span className="field__label">{t('roomList.schedulingLabel')}</span>
             <div className="chips">
               <span className="mode-option">
                 <input type="radio" checked readOnly aria-label="sequential" /> sequential
               </span>
-              <span className="mode-option mode-option--disabled" title="v1 未实现">parallel</span>
+              <span className="mode-option mode-option--disabled" title={t('roomList.notImplemented')}>parallel</span>
             </div>
           </div>
 
           <button type="submit" className="primary" disabled={!name || instanceIds.length === 0}>
-            Create
+            {t('roomList.create')}
           </button>
         </form>
       </div>
