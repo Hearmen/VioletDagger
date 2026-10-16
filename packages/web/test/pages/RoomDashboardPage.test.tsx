@@ -78,7 +78,7 @@ describe('RoomDashboardPage', () => {
   beforeEach(() => {
     vi.mocked(rest.fetchRoom).mockResolvedValue({
       id: 1, name: 'room a', schedulingMode: 'sequential', status: 'active',
-      maxSessions: 20, workdir: '/tmp/work', createdAt: 'now',
+      maxSessions: 20, workdir: '/tmp/work', createdAt: 'now', completedAt: null,
     });
     call.mockReset();
     call.mockImplementation(defaultCall);

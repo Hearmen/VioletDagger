@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS rooms (
   workdir TEXT NOT NULL DEFAULT '',
   dispatch_pending INTEGER NOT NULL DEFAULT 0,
   pending_author_id TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  completed_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS room_agents (
@@ -45,6 +46,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   cache_write_tokens INTEGER,
   cost_usd REAL,
   dispatch_scope TEXT NOT NULL DEFAULT 'broadcast',
+  dispatch_trigger TEXT,
+  native_session_id TEXT,
+  native_storage TEXT,
+  native_original_path TEXT,
+  native_copy_path TEXT,
   PRIMARY KEY (room_id, seq)
 );
 
@@ -137,7 +143,25 @@ export function createDb(path: string): Database.Database {
   // 必须在建表之前检查：CREATE TABLE IF NOT EXISTS 会先把缺失的 state_transition_log 建出来，掩盖旧 schema。
   if (hasIncompatibleSchema(db)) rebuild(db);
   db.exec(SCHEMA_SQL);
+  addMissingColumns(db);
   return db;
+}
+
+// 新增的可空列原地补齐（见 01-storage.md §5.7）：缺失就 ALTER TABLE ADD COLUMN，不删数据。
+const ADDITIVE_COLUMNS: { table: string; column: string; type: string }[] = [
+  { table: 'rooms', column: 'completed_at', type: 'TEXT' },
+  { table: 'sessions', column: 'dispatch_trigger', type: 'TEXT' },
+  { table: 'sessions', column: 'native_session_id', type: 'TEXT' },
+  { table: 'sessions', column: 'native_storage', type: 'TEXT' },
+  { table: 'sessions', column: 'native_original_path', type: 'TEXT' },
+  { table: 'sessions', column: 'native_copy_path', type: 'TEXT' },
+];
+
+function addMissingColumns(db: Database.Database): void {
+  for (const { table, column, type } of ADDITIVE_COLUMNS) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!columns.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
 }
 
 // 不兼容的旧 schema（见 01-storage.md §5.6）：messages 缺 (room_id, id) 复合主键、缺知识状态列，

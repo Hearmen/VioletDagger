@@ -16,7 +16,7 @@ describe('RoomListPage', () => {
       { agentId: 'codex', available: true },
       { agentId: 'claude', available: true },
     ]);
-    vi.mocked(rest.deleteRoom).mockResolvedValue(undefined);
+    vi.mocked(rest.deleteRoom).mockResolvedValue([]);
     vi.spyOn(window, 'confirm').mockReturnValue(true);
   });
 
@@ -56,7 +56,7 @@ describe('RoomListPage', () => {
   it('submits the form via createRoom with agentIds', async () => {
     vi.mocked(rest.createRoom).mockResolvedValue({
       id: 9, name: 'new room', schedulingMode: 'sequential', status: 'active',
-      maxSessions: 20, workdir: '/tmp/work', createdAt: 'now',
+      maxSessions: 20, workdir: '/tmp/work', createdAt: 'now', completedAt: null,
     });
     render(<MemoryRouter><RoomListPage /></MemoryRouter>);
     await screen.findByLabelText('add codex');
@@ -169,5 +169,33 @@ describe('RoomListPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('failed to create room');
+  });
+
+  it('shows which native session originals could not be deleted after a card delete', async () => {
+    vi.mocked(rest.fetchRooms).mockResolvedValue([{ id: 1, name: 'room a', status: 'completed', createdAt: 'now' }]);
+    vi.mocked(rest.deleteRoom).mockResolvedValue(
+      Array.from({ length: 6 }, (_, i) => ({ seq: i + 1, agentId: 'codex', target: `/orig/${i}`, error: 'timed out' })),
+    );
+    render(<MemoryRouter><RoomListPage /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: '删除' }));
+
+    const banner = await screen.findByText('房间已删除，但 6 个原生会话原件未能删除');
+    expect(banner).toBeInTheDocument();
+    expect(screen.getByText('/orig/0')).toBeInTheDocument();
+    expect(screen.queryByText('/orig/5')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '展开全部' }));
+    expect(screen.getByText('/orig/5')).toBeInTheDocument();
+  });
+
+  it('shows failures passed through navigation state from the room header', async () => {
+    const failures = [{ seq: 2, agentId: 'kimi', target: '/k/s', error: 'EACCES' }];
+    render(
+      <MemoryRouter initialEntries={[{ pathname: '/', state: { nativeDeleteFailures: failures } }]}>
+        <RoomListPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('房间已删除，但 1 个原生会话原件未能删除')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    expect(screen.queryByText('/k/s')).not.toBeInTheDocument();
   });
 });

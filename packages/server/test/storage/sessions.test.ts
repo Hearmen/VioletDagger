@@ -9,29 +9,50 @@ describe('sessions', () => {
   it('createSession assigns room-scoped incrementing seq', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
-    const s1 = createSession(db, room.id, 'codex');
-    const s2 = createSession(db, room.id, 'claude');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
+    const s2 = createSession(db, room.id, 'claude', 'broadcast', 'room_flag');
     expect(s1.seq).toBe(1);
     expect(s2.seq).toBe(2);
     expect(s1.outcome).toBe('running');
     expect(s1.endedAt).toBeNull();
   });
 
-  // @ 定向消息（需求 3.3.2）：dispatchScope 默认 'broadcast'，调用方可显式传 'directed'。
-  it('createSession defaults dispatchScope to "broadcast" and persists an explicit "directed"', () => {
+  // @ 定向消息（需求 3.3.2）：dispatchScope 与 dispatchTrigger 由调用方传入并持久化。
+  it('createSession persists dispatchScope and dispatchTrigger', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
-    const broadcast = createSession(db, room.id, 'codex');
-    const directed = createSession(db, room.id, 'claude', 'directed');
+    const broadcast = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
+    const directed = createSession(db, room.id, 'claude', 'directed', 'directed_flag');
     expect(broadcast.dispatchScope).toBe('broadcast');
     expect(directed.dispatchScope).toBe('directed');
     expect(getSession(db, room.id, directed.seq)!.dispatchScope).toBe('directed');
+    expect(directed.dispatchTrigger).toBe('directed_flag');
+    expect(createSession(db, room.id, 'codex', 'broadcast', 'continuation').dispatchTrigger).toBe('continuation');
+  });
+
+  it('createSession rejects a trigger that does not match the scope', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    expect(() => createSession(db, room.id, 'codex', 'broadcast', 'directed_flag')).toThrow();
+    expect(() => createSession(db, room.id, 'codex', 'directed', 'room_flag')).toThrow();
+  });
+
+  it('finishSession stores the native session ref', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
+    finishSession(db, room.id, s.seq, 'completed', undefined, undefined, undefined, {
+      sessionId: 'thread-1', storage: 'file', originalPath: '/home/r.jsonl', copyPath: '/logs/1/native/1',
+    });
+    expect(getSession(db, room.id, s.seq)).toMatchObject({
+      nativeSessionId: 'thread-1', nativeStorage: 'file', nativeOriginalPath: '/home/r.jsonl', nativeCopyPath: '/logs/1/native/1',
+    });
   });
 
   it('setSessionPgid and finishSession update the row', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const s = createSession(db, room.id, 'codex');
+    const s = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setSessionPgid(db, room.id, s.seq, 4242);
     finishSession(db, room.id, s.seq, 'completed', '/logs/1.jsonl');
     const updated = getSession(db, room.id, s.seq)!;
@@ -44,9 +65,9 @@ describe('sessions', () => {
   it('countSessions counts every session, error included (all consume maxSessions)', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const s1 = createSession(db, room.id, 'codex');
-    const s2 = createSession(db, room.id, 'codex');
-    const s3 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
+    const s2 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
+    const s3 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     finishSession(db, room.id, s1.seq, 'completed');
     finishSession(db, room.id, s2.seq, 'error');
     finishSession(db, room.id, s3.seq, 'passed');
@@ -57,8 +78,8 @@ describe('sessions', () => {
   it('listSessions returns sessions ordered by seq, countSessions counts all sessions', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
-    createSession(db, room.id, 'codex');
-    createSession(db, room.id, 'claude');
+    createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
+    createSession(db, room.id, 'claude', 'broadcast', 'room_flag');
     expect(listSessions(db, room.id).map((s) => s.seq)).toEqual([1, 2]);
     expect(countSessions(db, room.id)).toBe(2);
   });
@@ -72,7 +93,7 @@ describe('sessions', () => {
   it('finishSession persists usage fields, leaving them null when not provided', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
-    const withUsage = createSession(db, room.id, 'codex');
+    const withUsage = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     finishSession(db, room.id, withUsage.seq, 'completed', undefined, undefined, {
       inputTokens: 20, outputTokens: 6997, cacheReadTokens: 401226, cacheWriteTokens: 32806, costUsd: 0.28,
     });
@@ -80,7 +101,7 @@ describe('sessions', () => {
       inputTokens: 20, outputTokens: 6997, cacheReadTokens: 401226, cacheWriteTokens: 32806, costUsd: 0.28,
     });
 
-    const withoutUsage = createSession(db, room.id, 'claude');
+    const withoutUsage = createSession(db, room.id, 'claude', 'broadcast', 'room_flag');
     finishSession(db, room.id, withoutUsage.seq, 'passed');
     expect(getSession(db, room.id, withoutUsage.seq)).toMatchObject({
       inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costUsd: null,
@@ -92,9 +113,9 @@ describe('getUsageTotals', () => {
   it('aggregates per agent and for the whole room, summing only what is present', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'kimi'], 'sequential');
-    const codex1 = createSession(db, room.id, 'codex');
-    const codex2 = createSession(db, room.id, 'codex');
-    const kimi1 = createSession(db, room.id, 'kimi');
+    const codex1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
+    const codex2 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
+    const kimi1 = createSession(db, room.id, 'kimi', 'broadcast', 'room_flag');
     // codex 只有 token，没有费用（见 04-agent-invocation.md §7）。
     finishSession(db, room.id, codex1.seq, 'completed', undefined, undefined, {
       inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, cacheWriteTokens: 0, costUsd: null,
@@ -124,8 +145,8 @@ describe('getUsageTotals', () => {
   it('reports a non-null costUsd once at least one aggregated session has one, and flags the rest as missing', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['claude', 'codex'], 'sequential');
-    const claudeSession = createSession(db, room.id, 'claude');
-    const codexSession = createSession(db, room.id, 'codex');
+    const claudeSession = createSession(db, room.id, 'claude', 'broadcast', 'room_flag');
+    const codexSession = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     finishSession(db, room.id, claudeSession.seq, 'completed', undefined, undefined, {
       inputTokens: 20, outputTokens: 10, cacheReadTokens: null, cacheWriteTokens: null, costUsd: 0.28,
     });
@@ -141,7 +162,7 @@ describe('getUsageTotals', () => {
   it('excludes sessions that are still running or stopping', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    createSession(db, room.id, 'codex'); // still running, outcome not finished
+    createSession(db, room.id, 'codex', 'broadcast', 'room_flag'); // still running, outcome not finished
     const { room: roomTotals } = getUsageTotals(db, room.id);
     expect(roomTotals).toEqual({
       inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,

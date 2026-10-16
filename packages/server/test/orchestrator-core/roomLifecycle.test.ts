@@ -29,7 +29,7 @@ function deleteDeps(overrides: Partial<Parameters<typeof deleteRoom>[2]> = {}) {
     startSession: vi.fn(),
     stuckCounter: createStuckCounter(),
     failureCounter: createFailureCounter(),
-    deleteRoomArtifacts: vi.fn().mockResolvedValue(undefined),
+    deleteRoomArtifacts: vi.fn().mockResolvedValue([]),
     ...overrides,
   };
 }
@@ -94,7 +94,7 @@ describe('deleteRoom', () => {
   it('cascade-deletes sessions/messages, removes artifacts, and emits roomDeleted', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'x', type: 'fact' });
     confirmCompletion(db, room.id);
 
@@ -102,7 +102,14 @@ describe('deleteRoom', () => {
     const deletedEvents: number[] = [];
     roomEvents.once('roomDeleted', (payload) => deletedEvents.push(payload.roomId));
 
-    await deleteRoom(db, room.id, deps);
+    const failure = { seq: session.seq, agentId: 'codex', target: '/x', error: 'busy' };
+    deps.deleteRoomArtifacts.mockImplementationOnce(async () => {
+      // 原件删除时 sessions 表必须还在（native_* 是定位依据，03 §4 第 2 步先于第 3 步）。
+      expect(listSessions(db, room.id)).toHaveLength(1);
+      return [failure];
+    });
+
+    await expect(deleteRoom(db, room.id, deps)).resolves.toEqual({ nativeDeleteFailures: [failure] });
 
     expect(getRoom(db, room.id)).toBeNull();
     expect(listSessions(db, room.id)).toHaveLength(0);
@@ -115,7 +122,7 @@ describe('deleteRoom', () => {
   it('terminates a lingering running session before deleting', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     confirmCompletion(db, room.id);
 
@@ -131,7 +138,7 @@ describe('deleteRoom', () => {
   it('aborts deletion and keeps the room when terminating a lingering session cannot be confirmed', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     confirmCompletion(db, room.id);
 

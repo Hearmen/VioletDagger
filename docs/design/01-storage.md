@@ -19,6 +19,7 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 | dispatch_pending | INTEGER NOT NULL DEFAULT 0 | 房间标记（需求 3.3）。`1` 表示有待分发的触发型消息，`0` 表示没有。由核心在触发型消息写入、session 以 error 结束时置位，派发时清除（`03-orchestrator-core.md` §1.2） |
 | pending_author_id | TEXT | 标记作者：最近一次置位房间标记的消息作者（agent 实例标识，或 `"human"`）；session 以 error 结束恢复标记时为失败的 agent。房间标记为 0 时为 NULL |
 | created_at | TEXT NOT NULL | ISO8601 |
+| completed_at | TEXT | 房间被 confirmCompletion 结束的时间（ISO8601）；未结束为 NULL。已结束但该列为 NULL 的房间，分析报告的房间总时长为空 |
 
 ### room_agents
 
@@ -48,18 +49,23 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 | started_at | TEXT NOT NULL | |
 | ended_at | TEXT | 结束前为空 |
 | pgid | INTEGER | 进程组 id，spawn 成功后回填；spawn 失败则为空、outcome 直接是 `error` |
-| raw_log_path | TEXT | stdout/stderr JSONL 日志路径，含 offset/stream/text；仅用于查看回放，历史文本兼容见 04 |
+| raw_log_path | TEXT | stdout/stderr JSONL 日志路径，含 offset/stream/text；仅用于查看回放，不用于任何统计；历史文本兼容见 04 |
 | exit_code | INTEGER | 进程退出码，尚未退出/未知为 NULL |
 | exit_signal | TEXT | 实际退出信号，可能是系统主动清理所致，未知为 NULL |
 | stop_intent | TEXT | NULL / terminate；人工 terminate 优先，终态后不可改写 |
 | cleanup_started_at | TEXT | 首次实际清理开始时间，尚未开始为 NULL |
 | exit_cause | TEXT | natural / managed-stop / unexpected / spawn-failed / not-started，尚未确认退出为 NULL |
-| input_tokens | INTEGER | 用量统计，见 `04-agent-invocation.md` §7；该 agent 未提供或未结束为 NULL，不用 0 占位 |
-| output_tokens | INTEGER | 同上 |
+| input_tokens | INTEGER | 非缓存输入 token。由该 agent 的原生会话分析适配器在 session 结束时解析（见 `04-agent-invocation.md` §7）；没有可读的原生会话或未结束时为 NULL，不用 0 占位 |
+| output_tokens | INTEGER | 输出 token，含推理/思考 token；同上 |
 | cache_read_tokens | INTEGER | 同上 |
 | cache_write_tokens | INTEGER | 同上 |
-| cost_usd | REAL | 同上；只信任 agent CLI 自己报出的美元费用，不做任何定价表估算（如 codex 只有 token 没有费用字段，这里就是 NULL） |
+| cost_usd | REAL | 只采用原生会话中记录的美元费用（claude 的 `cost-state`、opencode 的 `part.cost`），不做任何定价表估算；codex、kimi 的原生会话没有费用，恒为 NULL |
 | dispatch_scope | TEXT NOT NULL DEFAULT 'broadcast' | `'broadcast'`（因房间标记派发）/ `'directed'`（因定向标记派发，见需求 3.3.2）；`createSession` 时由核心写入，不可事后修改。`directed` session 产出的消息不置位任何标记（见 `03-orchestrator-core.md` §1.1）；session 以 error 结束时，核心按它恢复对应的标记 |
+| dispatch_trigger | TEXT | 派发来源：`'room_flag'`（因房间标记）/ `'directed_flag'`（因定向标记）/ `'continuation'`（无标记时的续派，见需求 3.3）。`createSession` 时由核心写入，不可事后修改。**只用于分析报告的派发来源分布，不参与任何调度判断**；调度仍只看 `dispatch_scope`。与 `dispatch_scope` 的对应关系固定：`directed_flag` ↔ `directed`，`room_flag` / `continuation` ↔ `broadcast`。该列为 NULL 的 session 在报告中计为"未知" |
+| native_session_id | TEXT | CLI 原生会话标识（见 `04-agent-invocation.md` §7）；定位失败、未结束或 spawn-failed / not-started 时为 NULL |
+| native_storage | TEXT | `'file'` / `'database'`；含义与 NULL 规则同上 |
+| native_original_path | TEXT | 原件位置：文件型为会话文件或目录，数据库型为数据库文件；同上 |
+| native_copy_path | TEXT | 副本目录 `<logsDir>/<roomId>/native/<seq>/`；仅文件型且复制成功时有值，数据库型恒为 NULL |
 
 主键：`(room_id, seq)`。`messages.session_seq` 通过 `(room_id, session_seq)` 复合外键引用本表。
 
@@ -70,7 +76,7 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 | id | INTEGER PK AUTOINCREMENT | 事件稳定排序键 |
 | room_id | INTEGER NOT NULL | 与 session_seq 组成外键引用 sessions(room_id, seq) |
 | session_seq | INTEGER NOT NULL | 所属固定 session |
-| kind | TEXT NOT NULL | cleanup_started / sigterm_sent / sigkill_sent / cleanup_failed / terminate_requested / process_exited / terminated |
+| kind | TEXT NOT NULL | cleanup_started / sigterm_sent / sigkill_sent / cleanup_failed / terminate_requested / process_exited / terminated / native_session_failed。`native_session_failed`：原生会话的 locate / archive / analyze 某一步失败（`04-agent-invocation.md` §7.2），`attempt_id` 为失败的步骤名，`detail` 为错误信息 |
 | attempt_id | TEXT NOT NULL DEFAULT '' | 清理事件使用 cleanupAttemptId；其他一次性事件为空串 |
 | detail | TEXT | 可选说明，不含凭据、prompt 或终端正文 |
 | created_at | TEXT NOT NULL | ISO8601 |
@@ -167,6 +173,7 @@ interface Room {
   dispatchPending: boolean;       // 房间标记（见 rooms.dispatch_pending）
   pendingAuthorId: string | null; // 标记作者（见 rooms.pending_author_id）
   createdAt: string;
+  completedAt: string | null;     // 见 rooms.completed_at
 }
 
 interface RoomSummary {
@@ -207,6 +214,19 @@ interface Session {
   cacheWriteTokens: number | null;
   costUsd: number | null;
   dispatchScope: 'broadcast' | 'directed';
+  dispatchTrigger: 'room_flag' | 'directed_flag' | 'continuation' | null;
+  nativeSessionId: string | null;
+  nativeStorage: 'file' | 'database' | null;
+  nativeOriginalPath: string | null;
+  nativeCopyPath: string | null;
+}
+
+// 与 04-agent-invocation.md §6 SessionExitEvent.native 同形
+interface SessionNativeRef {
+  sessionId: string | null;
+  storage: 'file' | 'database' | null;
+  originalPath: string | null;
+  copyPath: string | null;
 }
 
 interface SessionUsage {
@@ -224,14 +244,14 @@ interface UsageTotals {
   cacheWriteTokens: number;
   costUsd: number | null;          // 参与聚合的 session 里一个费用数据都没有时为 null；否则是已知费用之和（不含缺失的部分）
   sessionCount: number;            // 参与聚合的已结束 session 数
-  sessionsWithoutTokens: number;   // 四个 token 字段全为 NULL 的 session 数（如 kimi）
-  sessionsWithoutCost: number;     // cost_usd 为 NULL 的 session 数（如 codex、kimi）
+  sessionsWithoutTokens: number;   // 四个 token 字段全为 NULL 的 session 数（没有可读的原生会话）
+  sessionsWithoutCost: number;     // cost_usd 为 NULL 的 session 数（codex、kimi 恒为 NULL）
 }
 
 interface SessionEvent {
   id: number; roomId: number; sessionSeq: number;
   kind: 'cleanup_started' | 'sigterm_sent' | 'sigkill_sent' | 'cleanup_failed'
-      | 'terminate_requested' | 'process_exited' | 'terminated';
+      | 'terminate_requested' | 'process_exited' | 'terminated' | 'native_session_failed';
   attemptId: string;
   detail: string | null;
   createdAt: string;
@@ -316,13 +336,15 @@ function createRoom(name: string, agentIds: string[], schedulingMode: 'sequentia
 // workdir 缺省写 ''（读出来由 agent 调用层按服务端默认目录兜底）
 function getRoom(roomId: number): Room | null;
 function listRooms(): RoomSummary[];
-function setRoomStatus(roomId: number, status: RoomStatus): void;
+function setRoomStatus(roomId: number, status: RoomStatus): void; // status 为 'completed' 时同时写入 completed_at = now
 function increaseMaxSessions(roomId: number, additional: number): void;
 function deleteRoom(roomId: number): void;
 // 级联删除该 room 的全部数据，单个事务内按依赖顺序执行：
 //   message_references(room_id) → state_transition_log(room_id) → messages(room_id)
 //   → session_events(room_id) → sessions(room_id) → room_agents(room_id) → rooms(id)
 // 只删数据库记录，不碰磁盘文件（日志/prompt 由 04-agent-invocation.md 的 deleteRoomArtifacts 负责）
+// 原生会话原件与副本由 04 的 deleteRoomArtifacts 处理，它在 storage.deleteRoom 之前执行（03 §4），
+// 依赖本表的 native_* 字段，因此本函数不得先于它调用
 
 // Room agents / 调度状态
 function getRoomAgents(roomId: number): RoomAgentState[];
@@ -334,7 +356,11 @@ function setDispatchPending(roomId: number, pending: false): void;
 function setDirectedPending(roomId: number, agentId: string, pending: boolean): void; // 只改 directed_pending
 
 // Session
-function createSession(roomId: number, agentId: string, dispatchScope: 'broadcast' | 'directed'): Session; // seq 在此自增；dispatchScope 由调用方（checkAndDispatch）按 03 §1.2 的判定结果传入
+function createSession(roomId: number, agentId: string,
+  dispatchScope: 'broadcast' | 'directed',
+  dispatchTrigger: 'room_flag' | 'directed_flag' | 'continuation'): Session;
+// seq 在此自增；dispatchScope 与 dispatchTrigger 由调用方（checkAndDispatch）按 03 §1.2 的判定结果传入；
+// 两者不符合固定对应关系时抛错
 function setSessionPgid(roomId: number, seq: number, pgid: number): void;
 function setSessionRawLogPath(roomId: number, seq: number, rawLogPath: string): void;
 // session 启动、日志文件路径确定后立即写入 raw_log_path：这样"运行中 session 的只读日志快照回放"
@@ -343,8 +369,9 @@ function setSessionRawLogPath(roomId: number, seq: number, rawLogPath: string): 
 function finishSession(roomId: number, seq: number,
   outcome: Exclude<SessionOutcome, 'running' | 'stopping'>, rawLogPath?: string,
   exit?: { exitCode: number | null; signal: string | null; exitCause: Session['exitCause'] },
-  usage?: SessionUsage): void;
-// usage 由 04-agent-invocation.md §7 从完整落盘的日志解析得到；spawn-failed/not-started 没有日志可读，不传即可，五个字段落 NULL
+  usage?: SessionUsage, native?: SessionNativeRef): void;
+// usage 与 native 来自 SessionExitEvent（04-agent-invocation.md §7.2：locate → archive → analyze）；
+// spawn-failed/not-started 不传，对应字段落 NULL
 function markSessionTerminating(roomId: number, seq: number): { changed: boolean; session: Session };
 function markSessionCleanupStarted(roomId: number, seq: number, attemptId: string): void;
 function appendSessionEvent(roomId: number, seq: number, kind: SessionEvent['kind'], detail?: string, attemptId?: string): void;
@@ -355,7 +382,7 @@ function countSessions(roomId: number): number; // 计入 maxSessions 上限的 
 function getUsageTotals(roomId: number): { byAgent: Record<string, UsageTotals>; room: UsageTotals };
 // 只统计已结束的 session（outcome 非 running/stopping）——还在跑的 session 用量没定，不计入，也不算"缺数据"。
 // costUsd 只累加非 NULL 的部分，不把 NULL 当 0；sessionsWithoutTokens/sessionsWithoutCost 让调用方能诚实标"不完整"，
-// 而不是让部分 agent（如 codex 没有费用、kimi 什么都没有）拖低总量却看不出来。
+// 而不是让部分 agent（如 codex、kimi 没有费用）拖低总量却看不出来。
 
 // Message
 function runInTransaction<T>(fn: () => T): T;
@@ -415,3 +442,13 @@ room 创建时可指定 `workdir`——该房**所有 agent CLI 的 spawn cwd**�
 ### 5.6 schema 不兼容时重建数据库
 
 建连接时检查 schema：`messages` 缺少 `(room_id, id)` 复合主键、缺少 `question_status`/`chain_status`/`chain_resolution`/`question_closed_by` 列，`rooms` 缺少 `dispatch_pending`/`pending_author_id` 列，`room_agents` 缺少 `directed_pending` 列，或不存在 `state_transition_log` 表，任一情况都视为不兼容的旧 schema，**直接重建整个数据库**——删除全部表与数据，按 §1 重新建表。旧数据不迁移、不保留。本地单机工具，接受这一取舍。
+
+### 5.7 新增可空列的原地补齐
+
+§5.6 的整库重建只针对改变主键或核心状态列的不兼容变更。对新增的可空列（`sessions` 的 `dispatch_trigger`、`native_session_id`、`native_storage`、`native_original_path`、`native_copy_path`，`rooms` 的 `completed_at`），建连接时在 §5.6 的检查之后逐列检查，缺失就执行 `ALTER TABLE <表> ADD COLUMN`，不删除任何数据。补齐前已存在的行这些列为 NULL：
+- 补齐前已结束的房间 `completed_at` 为 NULL，分析报告的房间总时长为空；
+- 分析报告把 `dispatch_trigger` 为 NULL 的 session 计为"未知"派发来源；
+- native 字段为 NULL 的 session，相关指标为空并计入缺失数；
+- 删除房间时跳过这些 session 的原件删除。
+
+此后再新增可空列也按本节处理，不触发整库重建。

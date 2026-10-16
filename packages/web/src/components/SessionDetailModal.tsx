@@ -17,6 +17,7 @@ const LIFECYCLE_LABELS: Record<SessionEventKind, MessageKey> = {
   terminate_requested: 'session.lifecycle.terminate_requested',
   process_exited: 'session.lifecycle.process_exited',
   terminated: 'session.lifecycle.terminated',
+  native_session_failed: 'session.lifecycle.native_session_failed',
 };
 
 // 复盘入口（事件树 session 节点）：元数据 + 该 session 的消息列表 + 生命周期记录 + 只读日志回放。
@@ -99,6 +100,8 @@ export function SessionDetailModal(props: {
                   <li key={event.id} className="mono">
                     <span className="tree-node__meta">{formatClock(event.createdAt)}</span>
                     {' '}{LIFECYCLE_LABELS[event.kind] ? t(LIFECYCLE_LABELS[event.kind]) : event.kind}
+                    {/* native_session_failed 的 attemptId 是失败步骤（locate/archive/analyze），见 01 session_events */}
+                    {event.kind === 'native_session_failed' && event.attemptId ? ` · ${event.attemptId}` : ''}
                     {event.detail ? ` · ${event.detail}` : ''}
                   </li>
                 ))}

@@ -1,4 +1,5 @@
-import type { SessionExitCause, SessionUsage } from '../storage';
+import type { SessionExitCause, SessionNativeRef, SessionUsage } from '../storage';
+import type { NativeDeleteFailure } from './native-session';
 
 export interface AgentMcpFileConfig {
   template: string;   // 文件内容模板（JSON），含 {{mcpUrl}}
@@ -9,7 +10,7 @@ export interface AgentMcpFileConfig {
 }
 
 export interface AgentConfig {
-  command: string[];              // 一次性非交互调用的 argv：首元素是可执行文件，其余是参数；支持 {{prompt}} / {{promptFile}} / {{mcpUrl}} / {{mcpFile}}
+  command: string[];              // 一次性非交互调用的 argv：首元素是可执行文件，其余是参数；支持 {{prompt}} / {{promptFile}} / {{mcpUrl}} / {{mcpFile}} / {{nativeSessionId}}
   promptVia?: 'arg' | 'stdin';    // prompt 注入方式：'arg'（默认，占位符替换进 argv）或 'stdin'（写入进程 stdin 后关闭）
   env?: Record<string, string>;   // 追加到 spawn 的环境变量（覆盖 process.env 同名项），值支持同样的占位符
   mcpFile?: AgentMcpFileConfig;   // 每次 session 一份独立配置文件（见 04 §2）
@@ -45,7 +46,8 @@ export type SessionExitEvent = {
   exitCause: SessionExitCause;
   rawLogPath: string;
   cleanupAttemptId?: string;
-  usage?: SessionUsage; // 见 04-agent-invocation.md §7；spawn-failed/not-started 没有日志可读，不带这个字段
+  usage?: SessionUsage; // 见 04-agent-invocation.md §7.2；spawn-failed/not-started 不带这个字段
+  native?: SessionNativeRef; // 见 01-storage.md；数据库型 copyPath 恒为 null；spawn-failed/not-started 不带
 };
 
 // 只读日志接入句柄（见 04-agent-invocation.md 第 4 节）：没有 write/resize/interactive 能力。
@@ -71,12 +73,12 @@ export type OnSessionEnded = (event: SessionExitEvent) => void;
 export type OnSessionExitProgress = (
   roomId: number,
   seq: number,
-  kind: 'cleanup_started' | 'sigterm_sent' | 'sigkill_sent' | 'cleanup_failed',
+  kind: 'cleanup_started' | 'sigterm_sent' | 'sigkill_sent' | 'cleanup_failed' | 'native_session_failed',
   detail?: string,
   cleanupAttemptId?: string,
 ) => void;
 
-export type DeleteRoomArtifacts = (roomId: number) => Promise<void>;
+export type DeleteRoomArtifacts = (roomId: number) => Promise<NativeDeleteFailure[]>;
 
 export interface AgentInvocation {
   startSession: StartSession;

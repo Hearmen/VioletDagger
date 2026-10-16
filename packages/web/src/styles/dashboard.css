@@ -1702,3 +1702,160 @@ body.is-resizing-y {
 .app-bar .locale-toggle {
   margin-left: auto;
 }
+
+/* ---- room report（07-frontend.md §10.3） ---- */
+.modal--report {
+  width: min(1200px, 95vw);
+  max-height: 88vh;
+}
+
+.modal__title {
+  font-weight: 600;
+}
+
+.report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+}
+
+.report__muted {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.report__null {
+  color: var(--text-faint);
+}
+
+.report__error {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  color: var(--danger);
+}
+
+.report__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--gap);
+}
+
+.report__card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px var(--pad);
+  background: var(--panel-head);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.report__card-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.report__card-value {
+  font-size: 22px;
+  color: var(--text);
+}
+
+.report__tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.report__tab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  color: var(--text-muted);
+}
+
+.report__tab--active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.report__table-wrap {
+  overflow-x: auto;
+}
+
+.report__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.report__table th,
+.report__table td {
+  padding: 5px 8px;
+  text-align: right;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+}
+
+.report__table th:first-child,
+.report__table td:first-child {
+  text-align: left;
+}
+
+.report__table th {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.report__total-row td {
+  font-weight: 700;
+  border-top: 1px solid var(--border-strong);
+}
+
+.report__swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 2px;
+}
+
+.report__notes {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.report__tools-head {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+}
+
+.report__mcp-badge {
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 10px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 3px;
+}
+
+/* ---- 原生会话原件未删除提示（07-frontend.md §11） ---- */
+.native-failures {
+  flex-direction: column;
+  align-items: stretch;
+  margin-bottom: var(--gap);
+  border: 1px solid;
+  border-radius: var(--radius);
+}
+
+.native-failures__head {
+  display: flex;
+  align-items: center;
+}
+
+.native-failures__list {
+  margin: 0;
+  padding-left: 16px;
+}

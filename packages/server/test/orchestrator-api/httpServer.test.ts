@@ -6,7 +6,7 @@ import { createHttpServer } from '../../src/orchestrator-api/httpServer';
 import type { AgentRegistry } from '../../src/agent-invocation';
 
 const registry: AgentRegistry = { agents: { codex: { command: ['codex', 'exec'] } } };
-const noopDeleteRoom = async () => {};
+const noopDeleteRoom = async () => ({ nativeDeleteFailures: [] });
 
 function listen(httpServer: Server): Promise<number> {
   return new Promise((resolve) => {
@@ -131,13 +131,18 @@ describe('createHttpServer', () => {
     httpServer = createHttpServer({
       db,
       registry,
-      deleteRoom: async (roomId) => { calls.push(roomId); },
+      deleteRoom: async (roomId) => {
+        calls.push(roomId);
+        return { nativeDeleteFailures: [{ seq: 1, agentId: 'codex', target: '/x', error: 'busy' }] };
+      },
     });
     const port = await listen(httpServer);
 
     const res = await fetch(`http://localhost:${port}/api/rooms/${room.id}`, { method: 'DELETE' });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    expect(await res.json()).toEqual({
+      ok: true, nativeDeleteFailures: [{ seq: 1, agentId: 'codex', target: '/x', error: 'busy' }],
+    });
     expect(calls).toEqual([room.id]);
   });
 

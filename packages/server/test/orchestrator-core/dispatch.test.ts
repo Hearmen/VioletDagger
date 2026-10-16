@@ -21,7 +21,7 @@ function setup(agents: string[]) {
   const stuckCounter = createStuckCounter();
   const check = () => checkAndDispatch(db, room.id, startSession, stuckCounter);
   const busy = (agentId: string) => {
-    const session = createSession(db, room.id, agentId);
+    const session = createSession(db, room.id, agentId, 'broadcast', 'room_flag');
     setAgentState(db, room.id, agentId, 'running', session.seq);
     return session.seq;
   };
@@ -50,7 +50,7 @@ describe('checkAndDispatch — room flag (03-orchestrator-core.md §1.2)', () =>
     expect(startSession).toHaveBeenCalledTimes(1);
     expect(startSession).toHaveBeenCalledWith({ roomId: room.id, seq: 1, agentId: 'codex', registryKey: 'codex' });
     expect(agent('codex')).toMatchObject({ state: 'running', currentSessionSeq: 1 });
-    expect(getSession(db, room.id, 1)!.dispatchScope).toBe('broadcast');
+    expect(getSession(db, room.id, 1)).toMatchObject({ dispatchScope: 'broadcast', dispatchTrigger: 'room_flag' });
     expect(getRoom(db, room.id)).toMatchObject({ dispatchPending: false, pendingAuthorId: null });
   });
 
@@ -128,7 +128,7 @@ describe('checkAndDispatch — room flag (03-orchestrator-core.md §1.2)', () =>
 
   it('pauses at paused_limit instead of dispatching, keeping the flag', () => {
     const { db, room, check, startSession } = setup(['codex']);
-    for (let i = 0; i < room.maxSessions; i++) createSession(db, room.id, 'codex');
+    for (let i = 0; i < room.maxSessions; i++) createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setDispatchPending(db, room.id, true, 'human');
     const listener = vi.fn();
     roomEvents.on('roomStatus', listener);
@@ -142,7 +142,7 @@ describe('checkAndDispatch — room flag (03-orchestrator-core.md §1.2)', () =>
 
   it('does not pause at the session limit when there is nothing to dispatch', () => {
     const { db, room, check } = setup(['codex']);
-    for (let i = 0; i < room.maxSessions; i++) createSession(db, room.id, 'codex');
+    for (let i = 0; i < room.maxSessions; i++) createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
 
     check();
 
@@ -191,7 +191,7 @@ describe('checkAndDispatch — directed flag (需求 3.3.2)', () => {
 
     expect(startSession).toHaveBeenCalledTimes(1);
     expect(startSession).toHaveBeenCalledWith({ roomId: room.id, seq: 1, agentId: 'claude', registryKey: 'claude' });
-    expect(getSession(db, room.id, 1)!.dispatchScope).toBe('directed');
+    expect(getSession(db, room.id, 1)).toMatchObject({ dispatchScope: 'directed', dispatchTrigger: 'directed_flag' });
     expect(agent('claude').directedPending).toBe(false);
   });
 
@@ -271,7 +271,7 @@ describe('checkAndDispatch — continuation without flags (03-orchestrator-core.
 
     expect(startSession).toHaveBeenCalledTimes(1);
     expect(startSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'kimi-2', seq: 3 }));
-    expect(getSession(db, room.id, 3)!.dispatchScope).toBe('broadcast');
+    expect(getSession(db, room.id, 3)).toMatchObject({ dispatchScope: 'broadcast', dispatchTrigger: 'continuation' });
     expect(getRoom(db, room.id)).toMatchObject({ dispatchPending: false, pendingAuthorId: null });
     expect(listener).toHaveBeenCalledTimes(1);
   });
@@ -336,7 +336,7 @@ describe('checkAndDispatch — continuation without flags (03-orchestrator-core.
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential', { maxSessions: 1 });
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
-    const seq = createSession(db, room.id, 'codex').seq;
+    const seq = createSession(db, room.id, 'codex', 'broadcast', 'room_flag').seq;
     finishSession(db, room.id, seq, 'completed');
     const startSession = vi.fn();
 
@@ -365,12 +365,12 @@ describe('isDispatchIdle (03-orchestrator-core.md §1.6)', () => {
     expect(isDispatchIdle(db, room.id)).toBe(false);
 
     for (const agentId of ['codex', 'claude']) {
-      const session = createSession(db, room.id, agentId);
+      const session = createSession(db, room.id, agentId, 'broadcast', 'room_flag');
       finishSession(db, room.id, session.seq, 'passed');
     }
     expect(isDispatchIdle(db, room.id)).toBe(true);
 
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     finishSession(db, room.id, session.seq, 'completed');
     expect(isDispatchIdle(db, room.id)).toBe(false);
     setQuestionStatus(db, room.id, goal.id, { status: 'CLOSED', closeReason: 'RESOLVED', closedBy: goal.id }, goal.id);

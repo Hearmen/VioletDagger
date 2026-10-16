@@ -8,6 +8,7 @@ export interface Room {
   dispatchPending: boolean;       // 房间标记（见 01-storage.md rooms.dispatch_pending）
   pendingAuthorId: string | null; // 标记作者（见 rooms.pending_author_id）
   createdAt: string;
+  completedAt: string | null;     // 见 rooms.completed_at
 }
 
 export interface RoomSummary {
@@ -32,6 +33,8 @@ export type SessionExitCause =
   | 'natural' | 'managed-stop' | 'unexpected' | 'spawn-failed' | 'not-started';
 
 export type DispatchScope = 'broadcast' | 'directed';
+// 派发来源（见 01-storage.md sessions.dispatch_trigger），只用于分析报告，不参与调度。
+export type DispatchTrigger = 'room_flag' | 'directed_flag' | 'continuation';
 
 export interface Session {
   roomId: number;
@@ -54,6 +57,19 @@ export interface Session {
   costUsd: number | null;
   // 'broadcast'（因广播触发型消息派发）/ 'directed'（因定向给它的 @ 消息派发，见需求 3.3.2）。
   dispatchScope: DispatchScope;
+  dispatchTrigger: DispatchTrigger | null;
+  nativeSessionId: string | null;
+  nativeStorage: 'file' | 'database' | null;
+  nativeOriginalPath: string | null;
+  nativeCopyPath: string | null;
+}
+
+// 与 04-agent-invocation.md §6 SessionExitEvent.native 同形
+export interface SessionNativeRef {
+  sessionId: string | null;
+  storage: 'file' | 'database' | null;
+  originalPath: string | null;
+  copyPath: string | null;
 }
 
 // 见 04-agent-invocation.md §7：不是每个 agent 都提供每个字段，拿不到就是 null，不用 0 占位。
@@ -72,13 +88,13 @@ export interface UsageTotals {
   cacheWriteTokens: number;
   costUsd: number | null;          // 参与聚合的 session 里一个费用数据都没有时为 null；否则是已知费用之和（不含缺失的部分）
   sessionCount: number;            // 参与聚合的已结束 session 数
-  sessionsWithoutTokens: number;   // 四个 token 字段全为 NULL 的 session 数（如 kimi）
-  sessionsWithoutCost: number;     // cost_usd 为 NULL 的 session 数（如 codex、kimi）
+  sessionsWithoutTokens: number;   // 四个 token 字段全为 NULL 的 session 数（没有可读的原生会话）
+  sessionsWithoutCost: number;     // cost_usd 为 NULL 的 session 数（原生会话没有费用，或没有可读的原生会话）
 }
 
 export type SessionEventKind =
   | 'cleanup_started' | 'sigterm_sent' | 'sigkill_sent' | 'cleanup_failed'
-  | 'terminate_requested' | 'process_exited' | 'terminated';
+  | 'terminate_requested' | 'process_exited' | 'terminated' | 'native_session_failed';
 
 export interface SessionEvent {
   id: number;

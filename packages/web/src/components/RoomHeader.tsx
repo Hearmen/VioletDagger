@@ -46,6 +46,7 @@ export function RoomHeader(props: {
   onResume: (additionalSessions?: number) => void;
   onConfirmCompletion: () => void;
   onDeleteRoom?: () => void;
+  onOpenReport?: () => void;
 }) {
   const { room, status, connectionState, proposeCompletionId, onJumpToMessage } = props;
   const { t } = useI18n();
@@ -118,6 +119,11 @@ export function RoomHeader(props: {
               {t('header.confirmCompletion')}
             </button>
           </div>
+        )}
+        {props.onOpenReport && (
+          <button onClick={props.onOpenReport} title={t('header.reportTitle')}>
+            {t('header.report')}
+          </button>
         )}
         <LocaleToggle />
       </div>

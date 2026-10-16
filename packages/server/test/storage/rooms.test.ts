@@ -52,6 +52,15 @@ describe('rooms', () => {
     expect(summaries.map((r) => r.name)).toEqual(['a', 'b']);
   });
 
+  it('setRoomStatus writes completed_at only when completing', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    setRoomStatus(db, room.id, 'paused_manual');
+    expect(getRoom(db, room.id)!.completedAt).toBeNull();
+    setRoomStatus(db, room.id, 'completed');
+    expect(getRoom(db, room.id)!.completedAt).not.toBeNull();
+  });
+
   it('setRoomStatus updates status', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
@@ -139,7 +148,7 @@ describe('deleteRoom', () => {
   it('cascade-deletes messages, references, sessions, agents and the room', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const first = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'fact', type: 'fact' });
     const chain = insertMessage(db, {
       roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'chain', type: 'chain',

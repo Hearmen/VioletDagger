@@ -10,7 +10,7 @@ describe('createGetOverviewHandler', () => {
   it('returns the room overview without requiring session binding', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const s1 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'human', content: 'the goal', type: 'open_question' });
 
     const getOverview = createGetOverviewHandler(db);
@@ -38,7 +38,7 @@ describe('createGetDetailHandler', () => {
   it('returns a single message detail when messageId is given', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const s1 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const message = insertMessage(db, {
       roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'a fact', type: 'fact',
     });
@@ -51,9 +51,9 @@ describe('createGetDetailHandler', () => {
   it('returns all records for a type, including completed exploring', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const s1 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'exploring A', type: 'exploring' });
-    const s2 = createSession(db, room.id, 'codex');
+    const s2 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s2.seq, authorId: 'codex', content: 'exploring B', type: 'exploring' });
 
     const getDetail = createGetDetailHandler(db);

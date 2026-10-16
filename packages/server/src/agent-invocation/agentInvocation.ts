@@ -5,11 +5,16 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import type Database from 'better-sqlite3';
-import { getRoom, setRoomStatus, setSessionPgid, setSessionRawLogPath, insertMessage, getFirstMessage } from '../storage';
+import {
+  getRoom, getRoomAgents, getSession, listSessions, setRoomStatus, setSessionPgid, setSessionRawLogPath, insertMessage,
+  getFirstMessage, type SessionNativeRef, type SessionUsage,
+} from '../storage';
 import { roomEvents } from '../events';
 import { buildOverview } from '../memory';
 import { buildPromptText, writePromptFile } from './prompt';
-import { extractSessionUsage } from './usage';
+import {
+  EMPTY_USAGE, getNativeSessionAdapter, type NativeDeleteFailure, type NativeSessionAdapter,
+} from './native-session';
 import type {
   AgentRegistry, OnSessionEnded, OnSessionExitProgress, StartSession, SessionExitEvent, LogChunk,
   SessionLogHandle, StopResult, DeleteRoomArtifacts, AgentInvocation, SpawnedProcess, SpawnProcess,
@@ -28,6 +33,9 @@ interface RunningSession {
   stopRequested: boolean;
   resolved: boolean;
   exited: boolean;
+  // 主进程已退出（close/error）。exited 要等原生会话处理完、退出事件结算后才置位（04 §5），两者分开。
+  closed: boolean;
+  closeWaiters: Set<() => void>;
   exitEvent: SessionExitEvent | null;
   rawLogPath: string;
   chunks: LogChunk[];
@@ -40,6 +48,9 @@ interface RunningSession {
   logStream: WriteStream | null;
   stopGraceMs: number;
   stopConfirmMs: number;
+  registryKey: string;
+  cwd: string;
+  preassignedId: string | null; // 适配器 preassignSessionId 的返回值（04 §7.2 第 1 步）
 }
 
 // 把 {{prompt}} / {{promptFile}} / {{mcpUrl}} / {{mcpFile}} 等占位符替换进 argv 元素或 env 值。
@@ -89,6 +100,7 @@ export function createAgentInvocation(deps: {
   mcpUrl: string;
   promptDir?: string;
   spawnProcess?: SpawnProcess;
+  getAdapter?: (registryKey: string) => NativeSessionAdapter; // 测试注入；缺省为 04 §7.1 的注册表
 }): AgentInvocation {
   const { db, registry, onSessionEnded, logsDir, mcpUrl } = deps;
   const onSessionExitProgress = deps.onSessionExitProgress ?? (() => {});
@@ -96,6 +108,7 @@ export function createAgentInvocation(deps: {
   const promptDir = deps.promptDir ?? path.join(logsDir, 'prompts');
   const spawnProcess: SpawnProcess = deps.spawnProcess ?? ((file, args, options) =>
     nodeSpawn(file, args, options) as unknown as SpawnedProcess);
+  const getAdapter = deps.getAdapter ?? getNativeSessionAdapter;
   const sessions = new Map<string, RunningSession>();
   const sessionKey = (roomId: number, seq: number) => `${roomId}:${seq}`;
 
@@ -141,7 +154,7 @@ export function createAgentInvocation(deps: {
     if (entry.logStream && !entry.logStream.writableEnded) entry.logStream.end();
   }
 
-  // 用量解析要读完整落盘的日志文件（04 §7），必须等写入流真正 flush 完才读，不然会读到截断的尾部。
+  // 适配器 locate 可能要读日志里的会话标识（04 §7.2），必须等写入流真正 flush 完才读，不然会读到截断的尾部。
   function waitForLogFlush(entry: RunningSession): Promise<void> {
     if (!entry.logStream || entry.logStream.writableEnded) return Promise.resolve();
     return new Promise((resolve) => {
@@ -151,21 +164,59 @@ export function createAgentInvocation(deps: {
     });
   }
 
-  // 进程退出且日志已完整落盘后解析用量；spawn-failed/not-started 没有真正跑过，不解析。
-  // 解析失败（读文件失败、JSON 异常）一律降级为 undefined，不影响 outcome 结算（04 §7）。
-  async function resolveUsage(
+  // 进程退出且日志已完整落盘后依次 locate → archive → analyze（04 §7.2 第 2 步）。
+  // spawn-failed/not-started 没有真正跑过，不调用。任一步失败写一条 native_session_failed 生命周期记录
+  // （attemptId 为步骤名），后续字段为 null，不影响 outcome；locate 返回 null 不算失败。
+  async function resolveNative(
     entry: RunningSession,
-    rawLogPath: string,
+    roomId: number,
+    seq: number,
     exitCause: SessionExitEvent['exitCause'],
-    registryKey: string,
-  ): Promise<import('../storage').SessionUsage | undefined> {
-    if (exitCause === 'spawn-failed' || exitCause === 'not-started') return undefined;
+  ): Promise<{ usage?: SessionUsage; native?: SessionNativeRef }> {
+    if (exitCause === 'spawn-failed' || exitCause === 'not-started') return {};
     await waitForLogFlush(entry);
+    const adapter = getAdapter(entry.registryKey);
+    const fail = (step: 'locate' | 'archive' | 'analyze', err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        onSessionExitProgress(roomId, seq, 'native_session_failed', message, step);
+      } catch (progressErr) {
+        console.error(`native session ${step} failure could not be recorded for room ${roomId}, session ${seq}:`, progressErr);
+      }
+    };
+
+    let located;
     try {
-      const text = await readFile(rawLogPath, 'utf-8');
-      return extractSessionUsage(registryKey, text);
-    } catch {
-      return undefined;
+      located = await adapter.locate({
+        roomId, seq, agentId: entry.agentId, cwd: entry.cwd,
+        startedAt: getSession(db, roomId, seq)?.startedAt ?? new Date(0).toISOString(),
+        endedAt: new Date().toISOString(),
+        preassignedId: entry.preassignedId,
+        rawLogPath: entry.rawLogPath,
+      });
+    } catch (err) {
+      fail('locate', err);
+    }
+    if (!located) return { usage: { ...EMPTY_USAGE } };
+
+    const native: SessionNativeRef = {
+      sessionId: located.sessionId, storage: located.storage, originalPath: located.originalPath, copyPath: null,
+    };
+    let source = null;
+    try {
+      source = await adapter.archive(located, path.join(logsDir, String(roomId), 'native', String(seq)));
+      if (!source) fail('archive', 'copy failed');
+    } catch (err) {
+      fail('archive', err);
+    }
+    if (!source) return { usage: { ...EMPTY_USAGE }, native };
+    if (source.storage === 'file') native.copyPath = source.copyPath;
+
+    try {
+      return { usage: (await adapter.analyze(source)).usage, native };
+    } catch (err) {
+      fail('analyze', err);
+      return { usage: { ...EMPTY_USAGE }, native };
     }
   }
 
@@ -175,6 +226,7 @@ export function createAgentInvocation(deps: {
     entry.resolved = true;
     entry.exited = true;
     entry.exitEvent = event;
+    markClosed(entry);
     endLogStream(entry);
     try {
       onSessionEnded(event);
@@ -206,21 +258,35 @@ export function createAgentInvocation(deps: {
     }
   }
 
+  function markClosed(entry: RunningSession): void {
+    if (entry.closed) return;
+    entry.closed = true;
+    for (const cb of Array.from(entry.closeWaiters)) cb();
+    entry.closeWaiters.clear();
+  }
+
+  // 等主进程退出（不含原生会话处理）；超时返回 false。
   function waitForExit(entry: RunningSession, timeoutMs: number): Promise<boolean> {
-    if (entry.exited) return Promise.resolve(true);
+    if (entry.closed) return Promise.resolve(true);
     return new Promise((resolve) => {
       let settled = false;
       const finish = (value: boolean) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        entry.exitListeners.delete(listener);
+        entry.closeWaiters.delete(waiter);
         resolve(value);
       };
-      const listener = () => finish(true);
-      const timer = setTimeout(() => finish(entry.exited), timeoutMs);
-      entry.exitListeners.add(listener);
+      const waiter = () => finish(true);
+      const timer = setTimeout(() => finish(entry.closed), timeoutMs);
+      entry.closeWaiters.add(waiter);
     });
+  }
+
+  // 主进程已退出后，等 locate → archive → analyze 完成、退出事件结算（04 §5）。
+  function waitForFinalize(entry: RunningSession): Promise<SessionExitEvent> {
+    if (entry.exitEvent) return Promise.resolve(entry.exitEvent);
+    return new Promise((resolve) => entry.exitListeners.add(resolve));
   }
 
   const startSession: StartSession = ({ roomId, seq, agentId, registryKey }) => {
@@ -270,6 +336,8 @@ export function createAgentInvocation(deps: {
       stopRequested: false,
       resolved: false,
       exited: false,
+      closed: false,
+      closeWaiters: new Set(),
       exitEvent: null,
       rawLogPath,
       chunks: [],
@@ -282,6 +350,9 @@ export function createAgentInvocation(deps: {
       logStream: null,
       stopGraceMs: config.stopGraceMs ?? DEFAULT_STOP_GRACE_MS,
       stopConfirmMs: config.stopConfirmMs ?? DEFAULT_STOP_CONFIRM_MS,
+      registryKey,
+      cwd: roomCwd,
+      preassignedId: getAdapter(registryKey).preassignSessionId(),
     };
     sessions.set(sessionKey(roomId, seq), entry);
     // 立即落库 raw_log_path：运行中的只读日志回放（06 §2.1 mode=replay）在结束前就能读到当前日志。
@@ -321,6 +392,7 @@ export function createAgentInvocation(deps: {
         '{{mcpUrl}}': mcpUrl,
         '{{mcpFile}}': mcpFilePath,
         '{{sessionToken}}': '',
+        '{{nativeSessionId}}': entry.preassignedId ?? '',
       };
       const argv = config.command.map((part) => substitutePlaceholders(part, placeholders));
       const [bin, ...args] = argv;
@@ -362,14 +434,17 @@ export function createAgentInvocation(deps: {
       proc.stderr?.on('data', (data: Buffer | string) => recordChunk(entry, 'stderr', data.toString()));
 
       proc.on('error', () => {
+        markClosed(entry);
         finalize(entry, { roomId, seq, agentId, exitCode: null, signal: null, exitCause: 'spawn-failed', rawLogPath });
       });
       proc.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
+        markClosed(entry);
         const exitCause = entry.stopRequested ? 'managed-stop' : code === 0 ? 'natural' : 'unexpected';
-        void resolveUsage(entry, rawLogPath, exitCause, registryKey).then((usage) => {
+        void resolveNative(entry, roomId, seq, exitCause).then(({ usage, native }) => {
           finalize(entry, {
             roomId, seq, agentId, exitCode: code, signal: signal ?? null, exitCause, rawLogPath,
             ...(usage ? { usage } : {}),
+            ...(native ? { native } : {}),
           });
         });
       });
@@ -412,9 +487,7 @@ export function createAgentInvocation(deps: {
       }
     }
 
-    return entry.exitEvent
-      ? { confirmed: true, exit: entry.exitEvent }
-      : { confirmed: false, error: 'process exited without a recorded exit event', rawLogPath: entry.rawLogPath };
+    return { confirmed: true, exit: await waitForFinalize(entry) };
   }
 
   const stopSessionProcess = (roomId: number, seq: number): Promise<StopResult> => {
@@ -455,9 +528,27 @@ export function createAgentInvocation(deps: {
     };
   };
 
+  // 先按 session 记录删除原生会话原件（04 §7.2 第 4 步），再删房间日志目录（含副本）、MCP 配置与 prompt。
+  // 单个原件失败不中断，收集后返回；原件不存在视为成功。
   const deleteRoomArtifacts: DeleteRoomArtifacts = async (roomId) => {
     for (const key of Array.from(sessions.keys())) {
       if (key.startsWith(`${roomId}:`)) sessions.delete(key);
+    }
+    const registryKeys = new Map(getRoomAgents(db, roomId).map((agent) => [agent.agentId, agent.registryKey]));
+    const failures: NativeDeleteFailure[] = [];
+    for (const session of listSessions(db, roomId)) {
+      if (!session.nativeSessionId || !session.nativeStorage || !session.nativeOriginalPath) continue;
+      const adapter = getAdapter(registryKeys.get(session.agentId) ?? '');
+      try {
+        await adapter.deleteOriginal({
+          sessionId: session.nativeSessionId, storage: session.nativeStorage, originalPath: session.nativeOriginalPath,
+        });
+      } catch (err) {
+        failures.push({
+          seq: session.seq, agentId: session.agentId, target: session.nativeOriginalPath,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     await rm(path.join(logsDir, String(roomId)), { recursive: true, force: true });
     await rm(path.join(logsDir, 'mcp', String(roomId)), { recursive: true, force: true });
@@ -468,6 +559,7 @@ export function createAgentInvocation(deps: {
         .filter((file) => file.startsWith(prefix))
         .map((file) => unlink(path.join(promptDir, file)).catch(() => {})),
     );
+    return failures;
   };
 
   return { startSession, stopSessionProcess, attachSessionLog, deleteRoomArtifacts };

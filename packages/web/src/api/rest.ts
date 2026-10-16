@@ -1,4 +1,4 @@
-import type { AgentInfo, Room, RoomSummary } from './types';
+import type { AgentInfo, NativeDeleteFailure, Room, RoomSummary } from './types';
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   try {
@@ -45,7 +45,8 @@ export async function createRoom(body: {
   return res.json();
 }
 
-export async function deleteRoom(roomId: number): Promise<void> {
+// 原件删除失败不阻止删除房间：返回未删除的原件列表，供界面提示（07-frontend.md §11）。
+export async function deleteRoom(roomId: number): Promise<NativeDeleteFailure[]> {
   const res = await fetch(`/api/rooms/${roomId}`, { method: 'DELETE' });
   if (!res.ok) {
     let message = 'failed to delete room';
@@ -57,4 +58,6 @@ export async function deleteRoom(roomId: number): Promise<void> {
     }
     throw new Error(message);
   }
+  const body = await res.json().catch(() => ({}));
+  return Array.isArray(body?.nativeDeleteFailures) ? body.nativeDeleteFailures : [];
 }

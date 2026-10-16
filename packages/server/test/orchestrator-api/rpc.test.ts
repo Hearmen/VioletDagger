@@ -29,7 +29,7 @@ function setup() {
 describe('createRpcHandlers', () => {
   it('listMessages returns paginated messages for the bound room', () => {
     const { db, room, handlers } = setup();
-    const s1 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'hi' });
     const result: any = handlers.listMessages({});
     expect(result.messages).toHaveLength(1);
@@ -78,7 +78,7 @@ describe('createRpcHandlers', () => {
       handlers.postHumanMessage({ content: 'goal' });
       // consume the goal's dispatch opportunity for both agents so neither is picked by broadcast rules.
       setAgentState(db, room.id, 'codex', 'idle');
-      createSession(db, room.id, 'claude');
+      createSession(db, room.id, 'claude', 'broadcast', 'room_flag');
       startSession.mockClear();
       vi.advanceTimersByTime(5);
 
@@ -106,7 +106,7 @@ describe('createRpcHandlers', () => {
 
   it('getMemoryView returns full-text groups for the bound room', () => {
     const { db, room, handlers } = setup();
-    const s1 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'a fact', type: 'fact' });
     const view: any = handlers.getMemoryView();
     expect(view.facts).toHaveLength(1);
@@ -114,7 +114,7 @@ describe('createRpcHandlers', () => {
 
   it('getRoomStatus reports agent state, running session, and stuck flag', () => {
     const { db, room, stuckCounter, handlers } = setup();
-    const s1 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', s1.seq);
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'exploring X', type: 'exploring' });
     stuckCounter.increment(room.id, 'codex');
@@ -160,7 +160,7 @@ describe('createRpcHandlers', () => {
 
   it('currentSessionCount counts error sessions too', () => {
     const { db, room, handlers } = setup();
-    const s1 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     finishSession(db, room.id, s1.seq, 'error');
     expect((handlers.getRoomStatus() as any).currentSessionCount).toBe(1);
   });
@@ -178,7 +178,7 @@ describe('createRpcHandlers', () => {
 
   it('getEventTree returns a lean per-session outcome/time lookup, not a node tree', () => {
     const { db, room, handlers } = setup();
-    const s1 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'hi', type: 'fact' });
     const tree: any = handlers.getEventTree();
     expect(tree.sessions).toHaveLength(1);
@@ -200,7 +200,7 @@ describe('createRpcHandlers', () => {
 
   it('getUsageSummary delegates to storage.getUsageTotals for the bound room', () => {
     const { db, room, handlers } = setup();
-    const s1 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     finishSession(db, room.id, s1.seq, 'completed', undefined, undefined, {
       inputTokens: 20, outputTokens: 10, cacheReadTokens: null, cacheWriteTokens: null, costUsd: null,
     });
@@ -212,7 +212,7 @@ describe('createRpcHandlers', () => {
 
   it('getSessionDetail reads the raw log file, returns the session messages, and reports wroteMessages', () => {
     const { db, room, handlers } = setup();
-    const s1 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'a finding', type: 'fact' });
     const dir = mkdtempSync(path.join(tmpdir(), 'violetdagger-rawlog-'));
     const rawLogPath = path.join(dir, '1.log');
@@ -235,7 +235,7 @@ describe('createRpcHandlers', () => {
 
   it('terminateAgentSession delegates to orchestrator-core and returns ok', async () => {
     const { db, room, stopSessionProcess, handlers } = setup();
-    const s1 = createSession(db, room.id, 'codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const result = await (handlers.terminateAgentSession as any)({ sessionId: s1.seq });
     expect(stopSessionProcess).toHaveBeenCalledWith(room.id, s1.seq);
     expect(result).toEqual({ ok: true });

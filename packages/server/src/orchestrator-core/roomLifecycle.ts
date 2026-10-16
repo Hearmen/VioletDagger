@@ -3,6 +3,7 @@ import {
   getRoom, setRoomStatus, increaseMaxSessions, getRoomAgents, deleteRoom as deleteRoomRecord,
 } from '../storage';
 import { roomEvents } from '../events';
+import type { NativeDeleteFailure } from '../agent-invocation';
 import { checkAndDispatch, type StartSession } from './dispatch';
 import { terminateAgentSession, type StopSessionProcess } from './sessionLifecycle';
 import type { StuckCounter } from './stuckCounter';
@@ -46,16 +47,17 @@ export interface DeleteRoomDeps {
   startSession: StartSession;
   stuckCounter: StuckCounter;
   failureCounter: FailureCounter;
-  deleteRoomArtifacts: (roomId: number) => Promise<void>;
+  deleteRoomArtifacts: (roomId: number) => Promise<NativeDeleteFailure[]>;
 }
 
 // 只允许删除 completed 房间；confirmCompletion 不终止遗留的 running/stopping session，
 // 删前必须确认它们退出——任一清理失败则中止删除并保留记录与占位供重试（03 §4）。
+// 原生会话原件删除失败不中断删除，失败列表返回给调用方提示人类。
 export async function deleteRoom(
   db: Database.Database,
   roomId: number,
   deps: DeleteRoomDeps,
-): Promise<void> {
+): Promise<{ nativeDeleteFailures: NativeDeleteFailure[] }> {
   const room = getRoom(db, roomId);
   if (!room) throw new Error(`Room ${roomId} not found`);
   if (room.status !== 'completed') {
@@ -71,7 +73,9 @@ export async function deleteRoom(
     }
   }
 
-  await deps.deleteRoomArtifacts(roomId);
+  // 必须先于 deleteRoomRecord：原件定位依赖 sessions 表的 native_* 字段。
+  const nativeDeleteFailures = await deps.deleteRoomArtifacts(roomId);
   deleteRoomRecord(db, roomId);
   roomEvents.emit('roomDeleted', { roomId });
+  return { nativeDeleteFailures };
 }

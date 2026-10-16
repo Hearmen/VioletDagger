@@ -139,7 +139,7 @@ describe('composeApp', () => {
       // Real storage layer: create a room with an agent in a running session,
       // exactly what post_message requires to accept the call.
       const room = createRoom(app.db, 'wiring-check', ['codex'], 'sequential');
-      const session = createSession(app.db, room.id, 'codex');
+      const session = createSession(app.db, room.id, 'codex', 'broadcast', 'room_flag');
       setAgentState(app.db, room.id, 'codex', 'running', session.seq);
 
       const httpPort = portOf(app.httpServer);

@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import type {
-  DispatchScope, Session, SessionEvent, SessionEventKind, SessionExitCause, SessionOutcome, SessionUsage, UsageTotals,
+  DispatchScope, DispatchTrigger, Session, SessionNativeRef, SessionEvent, SessionEventKind, SessionExitCause, SessionOutcome, SessionUsage, UsageTotals,
 } from './types';
 
 function mapSessionRow(row: any): Session {
@@ -24,6 +24,11 @@ function mapSessionRow(row: any): Session {
     cacheWriteTokens: row.cache_write_tokens ?? null,
     costUsd: row.cost_usd ?? null,
     dispatchScope: row.dispatch_scope ?? 'broadcast',
+    dispatchTrigger: row.dispatch_trigger ?? null,
+    nativeSessionId: row.native_session_id ?? null,
+    nativeStorage: row.native_storage ?? null,
+    nativeOriginalPath: row.native_original_path ?? null,
+    nativeCopyPath: row.native_copy_path ?? null,
   };
 }
 
@@ -39,23 +44,27 @@ function mapSessionEventRow(row: any): SessionEvent {
   };
 }
 
-// dispatchScope：'broadcast'（因广播触发型消息派发，默认）/ 'directed'（因定向给它的 @ 消息派发，
-// 见需求 3.3.2），由调用方（checkAndDispatch）按 03 §1.2 的判定结果传入；不传按 'broadcast'
-// 处理，兼容既有调用方（人工终止重试、测试夹具等不关心定向语义的场景）。
+// dispatchScope 与 dispatchTrigger 由调用方（checkAndDispatch）按 03 §1.2 的判定结果传入。
+// 两者对应关系固定：directed_flag ↔ directed，room_flag / continuation ↔ broadcast；不符时抛错。
 export function createSession(
   db: Database.Database,
   roomId: number,
   agentId: string,
-  dispatchScope: DispatchScope = 'broadcast',
+  dispatchScope: DispatchScope,
+  dispatchTrigger: DispatchTrigger,
 ): Session {
+  if ((dispatchTrigger === 'directed_flag') !== (dispatchScope === 'directed')) {
+    throw new Error(`dispatch trigger ${dispatchTrigger} does not match scope ${dispatchScope}`);
+  }
   const startedAt = new Date().toISOString();
   const seq = db.transaction(() => {
     const row = db
       .prepare(`SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM sessions WHERE room_id = ?`)
       .get(roomId) as { nextSeq: number };
     db.prepare(
-      `INSERT INTO sessions (room_id, seq, agent_id, outcome, started_at, dispatch_scope) VALUES (?, ?, ?, 'running', ?, ?)`,
-    ).run(roomId, row.nextSeq, agentId, startedAt, dispatchScope);
+      `INSERT INTO sessions (room_id, seq, agent_id, outcome, started_at, dispatch_scope, dispatch_trigger)
+       VALUES (?, ?, ?, 'running', ?, ?, ?)`,
+    ).run(roomId, row.nextSeq, agentId, startedAt, dispatchScope, dispatchTrigger);
     return row.nextSeq;
   })();
   return getSession(db, roomId, seq)!;
@@ -127,6 +136,7 @@ export function finishSession(
   rawLogPath?: string,
   exit?: { exitCode: number | null; signal: string | null; exitCause: SessionExitCause },
   usage?: SessionUsage,
+  native?: SessionNativeRef,
 ): void {
   const endedAt = new Date().toISOString();
   db.prepare(
@@ -136,7 +146,9 @@ export function finishSession(
        exit_cause = COALESCE(?, exit_cause),
        input_tokens = COALESCE(?, input_tokens), output_tokens = COALESCE(?, output_tokens),
        cache_read_tokens = COALESCE(?, cache_read_tokens), cache_write_tokens = COALESCE(?, cache_write_tokens),
-       cost_usd = COALESCE(?, cost_usd)
+       cost_usd = COALESCE(?, cost_usd),
+       native_session_id = COALESCE(?, native_session_id), native_storage = COALESCE(?, native_storage),
+       native_original_path = COALESCE(?, native_original_path), native_copy_path = COALESCE(?, native_copy_path)
      WHERE room_id = ? AND seq = ?`,
   ).run(
     outcome,
@@ -150,6 +162,10 @@ export function finishSession(
     usage?.cacheReadTokens ?? null,
     usage?.cacheWriteTokens ?? null,
     usage?.costUsd ?? null,
+    native?.sessionId ?? null,
+    native?.storage ?? null,
+    native?.originalPath ?? null,
+    native?.copyPath ?? null,
     roomId,
     seq,
   );

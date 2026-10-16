@@ -228,7 +228,7 @@ describe('attachRoomWebSocket - logs websocket', () => {
   it('replays a JSONL log snapshot and sends end(snapshot-complete) for a finished session', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     dir = mkdtempSync(path.join(tmpdir(), 'violetdagger-logs-'));
     const rawLogPath = path.join(dir, `${session.seq}.jsonl`);
     writeFileSync(rawLogPath, [
@@ -258,7 +258,7 @@ describe('attachRoomWebSocket - logs websocket', () => {
   it('mode=replay reads the disk snapshot without attaching a live handle', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     dir = mkdtempSync(path.join(tmpdir(), 'violetdagger-logs-'));
     const rawLogPath = path.join(dir, `${session.seq}.jsonl`);
     writeFileSync(rawLogPath, 'legacy plain text');
@@ -283,7 +283,7 @@ describe('attachRoomWebSocket - logs websocket', () => {
   it('streams live chunks and sends end(process-exited) without accepting client input', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
 
     let dataCb: ((chunk: any) => void) | undefined;
     let exitCb: ((event: any) => void) | undefined;
@@ -320,7 +320,7 @@ describe('attachRoomWebSocket - logs websocket', () => {
   it('closes log connections when the room is deleted', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const roomEvents = new EventEmitter();
     const handle = {
       snapshot: () => ({ chunks: [], truncated: false }),

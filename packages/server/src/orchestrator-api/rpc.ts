@@ -15,6 +15,7 @@ import {
 } from '../storage';
 import type { CloseReason, MessageType } from '../storage';
 import { buildMemoryView } from '../memory';
+import { getRoomReport, RoomNotFoundError } from '../room-report';
 import {
   submitMessage,
   SubmitMessageError,
@@ -150,6 +151,16 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
     // 按 agent 和整个房间两级聚合用量（见 01-storage.md 的 getUsageTotals/UsageTotals）。
     getUsageSummary() {
       return getUsageTotals(db, roomId);
+    },
+
+    // 任务分析报告（见 10-room-report.md）：即时计算的只读快照，不改变状态、不 emit 事件。
+    async getRoomReport() {
+      try {
+        return await getRoomReport(db, roomId);
+      } catch (err) {
+        if (err instanceof RoomNotFoundError) throw new ApiError(err.message, 404);
+        throw err;
+      }
     },
 
     getSessionDetail(params: { sessionId: number }) {

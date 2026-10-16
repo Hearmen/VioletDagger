@@ -7,7 +7,7 @@ import { createSession, getSession, listSessionEvents } from '../../src/storage/
 import { insertMessage, getMessagesBySession, getActiveExploring } from '../../src/storage/messages';
 import { createStuckCounter } from '../../src/orchestrator-core/stuckCounter';
 import { createFailureCounter } from '../../src/orchestrator-core/failureCounter';
-import { onSessionEnded, terminateAgentSession } from '../../src/orchestrator-core/sessionLifecycle';
+import { onSessionEnded, onSessionExitProgress, terminateAgentSession } from '../../src/orchestrator-core/sessionLifecycle';
 import { setAgentEnabled } from '../../src/orchestrator-core/agentControl';
 import type { SessionExitEvent } from '../../src/agent-invocation';
 import { roomEvents } from '../../src/events';
@@ -29,7 +29,7 @@ describe('onSessionEnded', () => {
   it('marks the session completed when it exited naturally and posted a typed message', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'a fact', type: 'fact' });
 
     onSessionEnded(db, exitEvent(room.id, session.seq, 'codex'), vi.fn(), createStuckCounter(), createFailureCounter());
@@ -40,7 +40,7 @@ describe('onSessionEnded', () => {
   it('marks the session passed when it exited naturally without any typed message, and writes a placeholder message', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'just chatting' });
 
     const messageListener = vi.fn();
@@ -60,7 +60,7 @@ describe('onSessionEnded', () => {
   it('marks the session error, records process_exited, and inserts a placeholder message attributed to the agent', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
 
     const messageListener = vi.fn();
     const roomStatusListener = vi.fn();
@@ -87,7 +87,7 @@ describe('onSessionEnded', () => {
   it('settles a stopping session with stopIntent=terminate as terminated', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'stopping', session.seq);
     db.prepare(`UPDATE sessions SET outcome = 'stopping', stop_intent = 'terminate' WHERE room_id = ? AND seq = ?`)
       .run(room.id, session.seq);
@@ -114,7 +114,7 @@ describe('onSessionEnded', () => {
     const failureCounter = createFailureCounter();
 
     for (let i = 0; i < 3; i += 1) {
-      const session = createSession(db, room.id, 'codex');
+      const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
       setAgentState(db, room.id, 'codex', 'running', session.seq);
       onSessionEnded(
         db, exitEvent(room.id, session.seq, 'codex', { exitCause: 'unexpected' }),
@@ -132,7 +132,7 @@ describe('onSessionEnded', () => {
     setRoomStatus(db, room.id, 'paused_manual');
     const failureCounter = createFailureCounter();
 
-    const failed = createSession(db, room.id, 'codex');
+    const failed = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', failed.seq);
     onSessionEnded(
       db, exitEvent(room.id, failed.seq, 'codex', { exitCause: 'unexpected' }),
@@ -140,7 +140,7 @@ describe('onSessionEnded', () => {
     );
     expect(failureCounter.get(room.id, 'codex')).toBe(1);
 
-    const ok = createSession(db, room.id, 'codex');
+    const ok = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', ok.seq);
     onSessionEnded(db, exitEvent(room.id, ok.seq, 'codex'), vi.fn(), createStuckCounter(), failureCounter);
 
@@ -151,7 +151,7 @@ describe('onSessionEnded', () => {
   it('is idempotent when the session has already finished', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     onSessionEnded(db, exitEvent(room.id, session.seq, 'codex'), vi.fn(), createStuckCounter(), createFailureCounter());
 
     onSessionEnded(db, exitEvent(room.id, session.seq, 'codex', { exitCause: 'unexpected' }), vi.fn(), createStuckCounter(), createFailureCounter());
@@ -162,7 +162,7 @@ describe('onSessionEnded', () => {
   it('triggers a dispatch check after the state transition', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
     setDispatchPending(db, room.id, true, 'human');
     const startSession = vi.fn();
@@ -175,7 +175,7 @@ describe('onSessionEnded', () => {
   it('an errored broadcast session restores the room flag with itself as author, so another agent picks it up', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     const startSession = vi.fn();
 
@@ -192,7 +192,7 @@ describe('onSessionEnded', () => {
   it('an errored directed session restores its own directed flag', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex', 'directed');
+    const session = createSession(db, room.id, 'codex', 'directed', 'directed_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     const startSession = vi.fn();
 
@@ -209,7 +209,7 @@ describe('onSessionEnded', () => {
   it('a completed or passed session does not restore any flag', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     const startSession = vi.fn();
 
@@ -232,7 +232,7 @@ describe('terminateAgentSession', () => {
   it('marks the session terminated, completes active exploring, and frees the agent', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['claude', 'codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'exploring X', type: 'exploring' });
     const stopSessionProcess = stopConfirmed(room.id, session.seq, 'codex');
@@ -257,7 +257,7 @@ describe('terminateAgentSession', () => {
   it('keeps stopping and throws when cleanup cannot be confirmed', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     const stopSessionProcess = vi.fn().mockResolvedValue({ confirmed: false, error: 'still running', rawLogPath: '/logs/x' });
 
@@ -272,7 +272,7 @@ describe('terminateAgentSession', () => {
   it('is idempotent when the session has already finished', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const stopSessionProcess = stopConfirmed(room.id, session.seq, 'codex');
     await terminateAgentSession(db, room.id, session.seq, stopSessionProcess, vi.fn(), createStuckCounter(), createFailureCounter());
 
@@ -285,7 +285,7 @@ describe('terminateAgentSession', () => {
   it('triggers a dispatch check after cleanup', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
     setDispatchPending(db, room.id, true, 'human');
     const startSession = vi.fn();
@@ -322,5 +322,18 @@ describe('setAgentEnabled', () => {
     expect(() =>
       setAgentEnabled(db, room.id, 'ghost', true, vi.fn(), createStuckCounter(), createFailureCounter()),
     ).toThrow(/not found/);
+  });
+});
+
+describe('onSessionExitProgress', () => {
+  it('appends native_session_failed with the step as attempt id, without touching session state', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
+    onSessionExitProgress(db, room.id, session.seq, 'native_session_failed', 'disk full', 'archive');
+    expect(listSessionEvents(db, room.id, session.seq)).toMatchObject([
+      { kind: 'native_session_failed', attemptId: 'archive', detail: 'disk full' },
+    ]);
+    expect(getSession(db, room.id, session.seq)).toMatchObject({ outcome: 'running', cleanupStartedAt: null });
   });
 });

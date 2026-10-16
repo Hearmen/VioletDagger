@@ -19,6 +19,8 @@
         "--settings",
         "{\"skipDangerousModePermissionPrompt\":true}",
         "--dangerously-skip-permissions",
+        "--session-id",
+        "{{nativeSessionId}}",
         "-p",
         "{{prompt}}",
         "--output-format",

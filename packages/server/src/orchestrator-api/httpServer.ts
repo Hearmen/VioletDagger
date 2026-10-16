@@ -3,12 +3,12 @@ import type Database from 'better-sqlite3';
 import {
   ApiError, listRoomsHandler, getRoomHandler, createRoomHandler, listAgentsHandler,
 } from './rest';
-import type { AgentRegistry } from '../agent-invocation';
+import type { AgentRegistry, NativeDeleteFailure } from '../agent-invocation';
 
 export interface HttpServerDeps {
   db: Database.Database;
   registry: AgentRegistry;
-  deleteRoom: (roomId: number) => Promise<void>;
+  deleteRoom: (roomId: number) => Promise<{ nativeDeleteFailures: NativeDeleteFailure[] }>;
 }
 
 function sendJson(res: import('node:http').ServerResponse, status: number, body: unknown): void {
@@ -50,12 +50,14 @@ export function createHttpServer(deps: HttpServerDeps): Server {
         return sendJson(res, 201, createRoomHandler(db, registry, body));
       }
       if (req.method === 'DELETE' && roomIdMatch) {
+        let result: { nativeDeleteFailures: NativeDeleteFailure[] };
         try {
-          await deleteRoom(Number(roomIdMatch[1]));
+          result = await deleteRoom(Number(roomIdMatch[1]));
         } catch (err) {
           throw new ApiError(err instanceof Error ? err.message : 'failed to delete room', 409);
         }
-        return sendJson(res, 200, { ok: true });
+        // 原件删除失败不阻止删除房间，列表交给前端提示（06 §1）。
+        return sendJson(res, 200, { ok: true, nativeDeleteFailures: result.nativeDeleteFailures });
       }
 
       return sendJson(res, 404, { error: { message: 'not found' } });

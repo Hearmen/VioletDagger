@@ -78,6 +78,13 @@ export function formatNumber(n: number, locale: Locale): string {
   return n.toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US');
 }
 
+// 0~1 的比率 → 一位小数的百分比（07-frontend.md §10.3、09-frontend-i18n.md §5.2）；null 由调用方处理。
+export function formatPercent(ratio: number, locale: Locale): string {
+  return ratio.toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US', {
+    style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1,
+  });
+}
+
 // RoomHeader 与 AgentRail 共用的用量明细（悬浮 title）：缓存项 > 0 才出现。
 export function formatUsageParts(usage: UsageTotals, t: TFunction, locale: Locale): string[] {
   const parts = [

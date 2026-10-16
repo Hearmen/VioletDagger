@@ -9,10 +9,11 @@
 | `01-storage.md` | 存储层 | SQLite schema，room/session/message/状态转换记录的持久化 |
 | `02-memory-management.md` | 记忆管理 | 把存储层的原始查询组装成 overview/detail/memoryView 的形状，供派发 prompt 预渲染、MCP Server、编排器对外接口共用 |
 | `03-orchestrator-core.md` | 编排器核心 | 消息写入校验与知识状态转换、事件驱动派发、session 生命周期 |
-| `04-agent-invocation.md` | Agent 调用适配层 | 子进程 spawn/终止、agent 注册表 |
+| `04-agent-invocation.md` | Agent 调用适配层 | 子进程 spawn/终止、agent 注册表、原生会话分析适配器 |
 | `05-mcp-server.md` | MCP Server | 暴露给外部 agent CLI 的工具（post_message/get_overview/...） |
 | `06-orchestrator-api.md` | 编排器对外接口 | REST + WebSocket，服务网页前端 |
 | `07-frontend.md` | Web 前端 | 房间列表、消息流、记忆面板、事件树 |
+| `10-room-report.md` | 任务分析报告 | 按需计算房间各 agent 的量化指标快照，只读、不持久化 |
 
 存储层之上先是记忆管理（纯粹是存储层原始查询的组装层，谁都能调用，不依赖任何其他模块），再定义引擎部分（编排器核心 → Agent 调用适配层），最后是两层对外接口（MCP Server 给 agent、编排器对外接口给前端）和前端——MCP Server 本质上是包装编排器核心调度状态的一层薄接口（session 绑定依赖固定调用凭据及 session 的 `running` 状态，这是编排器核心模块定义的），所以放在核心调度之后设计更合理。
 

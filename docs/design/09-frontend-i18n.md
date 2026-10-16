@@ -48,7 +48,7 @@ export const LOCALE_STORAGE_KEY = 'vd.locale';   // 与 vd.dashboard.layout、vd
 
 ### 2.2 字典
 
-每种语言一个字典模块，扁平的 key → 文案映射。key 用 `区域.含义` 的点分命名，区域取值：`common`、`header`、`roomList`、`agentRail`、`messages`、`composer`、`memory`、`eventTree`、`session`、`log`、`format`。
+每种语言一个字典模块，扁平的 key → 文案映射。key 用 `区域.含义` 的点分命名，区域取值：`common`、`header`、`roomList`、`agentRail`、`messages`、`composer`、`memory`、`eventTree`、`session`、`log`、`format`、`report`。
 
 ```typescript
 // src/i18n/zh.ts —— 中文字典是 key 的唯一来源
@@ -170,6 +170,7 @@ export function LocaleToggle(): JSX.Element;
 | `formatRelative` | `formatRelative(iso, t)` | `刚刚`/`N 分钟前`… 查字典 |
 | `typeLabel` | `typeLabel(type, t)` | 只有 `propose_completion` 查字典（中文"提议完成"，英文 "propose completion"），其余原样返回 type 值 |
 | `formatUsageParts`（新增） | `formatUsageParts(usage, t, locale): string[]` | 收拢 `RoomHeader` 与 `AgentRail` 中重复的 `输入/输出/缓存读/缓存写` 片段构造，规则保持现状（缓存项 `> 0` 才出现） |
+| `formatPercent`（新增） | `formatPercent(ratio, locale): string` | 把 0~1 的比率格式化为一位小数的百分比，内部为 `ratio.toLocaleString(locale === 'zh' ? 'zh-CN' : 'en-US', { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 })`；null 由调用方处理（`07-frontend.md` §10.3 显示 `—`） |
 
 `SessionDetailModal` 的用量行（`输入 N · 输出 N`，判断条件为 `!= null`）规则与上表不同，保持其自身规则，仅把文字改为 `t('session.inputTokens', …)` 等、数字改用 `formatNumber`。
 

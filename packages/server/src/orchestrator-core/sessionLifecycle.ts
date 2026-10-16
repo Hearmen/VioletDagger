@@ -13,11 +13,12 @@ import { FAILURE_THRESHOLD, type FailureCounter } from './failureCounter';
 export type StopSessionProcess = (roomId: number, seq: number) => Promise<StopResult>;
 
 // 人工清理进度事件：由 agent 调用层在清理过程中回调（03 §3 第 5 步），落生命周期表并推送状态。
+// native_session_failed（04 §7.2）同样只追加一条记录，不改变 session 状态。
 export function onSessionExitProgress(
   db: Database.Database,
   roomId: number,
   seq: number,
-  kind: 'cleanup_started' | 'sigterm_sent' | 'sigkill_sent' | 'cleanup_failed',
+  kind: 'cleanup_started' | 'sigterm_sent' | 'sigkill_sent' | 'cleanup_failed' | 'native_session_failed',
   detail?: string,
   cleanupAttemptId?: string,
 ): void {
@@ -83,7 +84,7 @@ export function onSessionEnded(
       exitCode: event.exitCode,
       signal: event.signal,
       exitCause: event.exitCause,
-    }, event.usage);
+    }, event.usage, event.native);
     // error 结束时恢复这次 session 消耗的标记（03 §1.2"置位"第 2 条）：广播派发的恢复房间标记，
     // 标记作者记为失败的 agent，下一次优先派给其他 agent；定向派发的恢复它自己的定向标记。
     if (outcome === 'error') {
@@ -155,7 +156,7 @@ export async function terminateAgentSession(
       exitCode: result.exit.exitCode,
       signal: result.exit.signal,
       exitCause: result.exit.exitCause,
-    }, result.exit.usage);
+    }, result.exit.usage, result.exit.native);
     appendSessionEvent(db, roomId, seq, 'process_exited', undefined, result.exit.cleanupAttemptId);
     appendSessionEvent(db, roomId, seq, 'terminated', undefined, result.exit.cleanupAttemptId);
     releaseAgentIfCurrent(db, roomId, session.agentId, seq);

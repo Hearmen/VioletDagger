@@ -3,7 +3,7 @@ import {
   getRoom, getRoomAgents, setRoomStatus, setAgentState, countSessions, createSession,
   getActiveExploring, countMessages, setDispatchPending, setDirectedPending, getMessagesByType, listSessions,
 } from '../storage';
-import type { DispatchScope, RoomAgentState } from '../storage/types';
+import type { DispatchTrigger, RoomAgentState } from '../storage/types';
 import { roomEvents } from '../events';
 import type { StuckCounter } from './stuckCounter';
 
@@ -39,12 +39,16 @@ function pickContinuationTarget(db: Database.Database, roomId: number, agents: R
   if (!getMessagesByType(db, roomId, 'open_question').some((m) => m.questionStatus === 'OPEN')) return null;
 
   const sessions = listSessions(db, roomId);
+  const last = sessions[sessions.length - 1];
+  // A directed request is scoped to its addressed agent. Once that session ends,
+  // do not turn its still-open question into an automatic broadcast/verification
+  // round; a later human or broadcast trigger can start the room again.
+  if (last?.dispatchScope === 'directed') return null;
   let trailingPassed = 0;
   for (let i = sessions.length - 1; i >= 0 && sessions[i].outcome === 'passed'; i--) trailingPassed++;
   if (trailingPassed >= enabled.length) return null;
 
   const ordered = [...agents].sort((a, b) => a.joinOrder - b.joinOrder);
-  const last = sessions[sessions.length - 1];
   const start = last ? ordered.findIndex((agent) => agent.agentId === last.agentId) + 1 : 0;
   for (let i = 0; i < ordered.length; i++) {
     const agent = ordered[(start + i) % ordered.length];
@@ -81,12 +85,14 @@ export function checkAndDispatch(
     dispatched.has(agent.agentId) || agent.state === 'running' || agent.state === 'stopping';
 
   // "派发"（§1.2）：触及上限时把房间置为 paused_limit 并返回 false，调用方就此结束本次检查、保留剩余标记。
-  const dispatch = (agent: RoomAgentState, scope: DispatchScope): boolean => {
+  // trigger 决定 scope：directed_flag → directed，room_flag / continuation → broadcast（01 sessions.dispatch_trigger）。
+  const dispatch = (agent: RoomAgentState, trigger: DispatchTrigger): boolean => {
+    const scope = trigger === 'directed_flag' ? 'directed' : 'broadcast';
     if (countSessions(db, roomId) >= room.maxSessions) {
       setRoomStatus(db, roomId, 'paused_limit');
       return false;
     }
-    const session = createSession(db, roomId, agent.agentId, scope);
+    const session = createSession(db, roomId, agent.agentId, scope, trigger);
     setAgentState(db, roomId, agent.agentId, 'running', session.seq);
     // 续派不读写房间标记和标记作者（§1.2"续派"）。
     if (scope === 'directed') setDirectedPending(db, roomId, agent.agentId, false);
@@ -114,14 +120,14 @@ export function checkAndDispatch(
 
   const run = (): void => {
     if (continuationTarget) {
-      dispatch(continuationTarget, 'broadcast');
+      dispatch(continuationTarget, 'continuation');
       return;
     }
 
     // 定向阶段。
     for (const agent of agents) {
       if (!agent.dispatchEnabled || !agent.directedPending || isBusy(agent)) continue;
-      if (!dispatch(agent, 'directed')) return;
+      if (!dispatch(agent, 'directed_flag')) return;
     }
 
     // 房间阶段：只在房间标记为 true 时扫描，扫描沿途给忙碌且带 active exploring 的 agent 计 stuckCount（§5）。
@@ -145,7 +151,7 @@ export function checkAndDispatch(
       break;
     }
     const chosen = target ?? fallback;
-    if (chosen) dispatch(chosen, 'broadcast');
+    if (chosen) dispatch(chosen, 'room_flag');
   };
 
   run();

@@ -54,3 +54,24 @@ describe('createTestDb', () => {
     ]);
   });
 });
+
+describe('additive columns (01-storage.md §5.7)', () => {
+  it('adds missing nullable columns in place without dropping data', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'violet-schema-additive-'));
+    const file = join(dir, 'test.db');
+    try {
+      const first = createDb(file);
+      const room = createRoom(first, 'keep', ['codex'], 'sequential');
+      first.exec('ALTER TABLE rooms DROP COLUMN completed_at');
+      for (const column of ['dispatch_trigger', 'native_session_id', 'native_storage', 'native_original_path', 'native_copy_path']) {
+        first.exec(`ALTER TABLE sessions DROP COLUMN ${column}`);
+      }
+      first.close();
+      const reopened = createDb(file);
+      expect(getRoom(reopened, room.id)).toMatchObject({ name: 'keep', completedAt: null });
+      const columns = (reopened.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map((c) => c.name);
+      expect(columns).toEqual(expect.arrayContaining(['dispatch_trigger', 'native_session_id', 'native_copy_path']));
+      reopened.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});

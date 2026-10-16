@@ -2,10 +2,26 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import { createTestDb } from '../../src/storage/db';
 import { createRoom, getRoom } from '../../src/storage/rooms';
-import { createSession, getSession } from '../../src/storage/sessions';
+import { createSession, finishSession, getSession } from '../../src/storage/sessions';
 import { insertMessage } from '../../src/storage/messages';
 import { createAgentInvocation } from '../../src/agent-invocation/agentInvocation';
 import type { AgentRegistry, SpawnProcess, SpawnedProcess } from '../../src/agent-invocation/types';
+import { createNullAdapter, type NativeSessionAdapter } from '../../src/agent-invocation/native-session';
+
+// 测试用适配器：locate/archive/analyze 都可替换，默认定位成功的文件型会话。
+function fakeAdapter(overrides: Partial<NativeSessionAdapter> = {}): NativeSessionAdapter {
+  return {
+    ...createNullAdapter('codex'),
+    preassignSessionId: () => 'pre-id',
+    locate: vi.fn(async () => ({ sessionId: 'thread-1', storage: 'file' as const, originalPath: '/home/.codex/r.jsonl' })),
+    archive: vi.fn(async (_ref, copyDir: string) => ({ storage: 'file' as const, copyPath: copyDir })),
+    analyze: vi.fn(async () => ({
+      usage: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 0, costUsd: null },
+      steps: 1, firstResponseAt: null, toolCalls: [],
+    })),
+    ...overrides,
+  };
+}
 
 vi.mock('node:fs', () => ({
   createWriteStream: vi.fn(() => {
@@ -75,11 +91,11 @@ describe('createAgentInvocation - startSession', () => {
     vi.mocked(createWriteStream).mockClear();
   });
 
-  function setup(reg: AgentRegistry = registry) {
+  function setup(reg: AgentRegistry = registry, getAdapter?: (key: string) => NativeSessionAdapter) {
     const db = createTestDb();
     const roomAgent = Object.keys(reg.agents)[0];
     const room = createRoom(db, 'a', [roomAgent], 'sequential');
-    const session = createSession(db, room.id, roomAgent);
+    const session = createSession(db, room.id, roomAgent, 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
     const fake = createFakeProcess();
     const spawnProcess = vi.fn(() => fake.proc) as unknown as SpawnProcess;
@@ -87,7 +103,7 @@ describe('createAgentInvocation - startSession', () => {
     const onSessionExitProgress = vi.fn();
     const invocation = createAgentInvocation({
       db, registry: reg, onSessionEnded, onSessionExitProgress,
-      logsDir: '/logs', mcpUrl: 'http://127.0.0.1:4201', spawnProcess,
+      logsDir: '/logs', mcpUrl: 'http://127.0.0.1:4201', spawnProcess, getAdapter,
     });
     return { db, room, session, fake, spawnProcess, onSessionEnded, onSessionExitProgress, invocation };
   }
@@ -237,33 +253,77 @@ describe('createAgentInvocation - startSession', () => {
     });
   });
 
-  it('parses usage from the fully-flushed log file and attaches it to the exit event (04-agent-invocation.md §7)', async () => {
-    const { room, session, fake, invocation, onSessionEnded } = setup();
-    const usageEvent = {
-      type: 'turn.completed',
-      usage: { input_tokens: 350549, cached_input_tokens: 297088, cache_write_input_tokens: 0, output_tokens: 4122 },
-    };
-    const rawLog = `${JSON.stringify({ offset: 0, stream: 'stdout', text: `${JSON.stringify(usageEvent)}\n` })}\n`;
-    vi.mocked(readFile).mockResolvedValueOnce(rawLog);
-
+  it('runs locate → archive → analyze after exit and attaches usage and native ref (04-agent-invocation.md §7.2)', async () => {
+    const adapter = fakeAdapter();
+    const { room, session, fake, invocation, onSessionEnded } = setup(registry, () => adapter);
     invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
     await flush();
     fake.emitClose(0);
     await flush();
 
-    expect(onSessionEnded.mock.calls[0][0].usage).toEqual({
-      inputTokens: 350549, outputTokens: 4122, cacheReadTokens: 297088, cacheWriteTokens: 0, costUsd: null,
-    });
+    expect(adapter.locate).toHaveBeenCalledWith(expect.objectContaining({
+      roomId: room.id, seq: session.seq, agentId: 'codex', preassignedId: 'pre-id',
+      rawLogPath: path.join('/logs', String(room.id), `${session.seq}.jsonl`),
+    }));
+    const copyDir = path.join('/logs', String(room.id), 'native', String(session.seq));
+    expect(adapter.archive).toHaveBeenCalledWith(expect.anything(), copyDir);
+    const event = onSessionEnded.mock.calls[0][0];
+    expect(event.usage).toEqual({ inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 0, costUsd: null });
+    expect(event.native).toEqual({ sessionId: 'thread-1', storage: 'file', originalPath: '/home/.codex/r.jsonl', copyPath: copyDir });
   });
 
-  it('does not attach usage when the log file cannot be read (e.g. ENOENT from the default mock)', async () => {
-    const { room, session, fake, invocation, onSessionEnded } = setup();
+  it('injects the preassigned id into {{nativeSessionId}}', async () => {
+    const reg: AgentRegistry = { agents: { codex: { command: ['codex', '--session-id', '{{nativeSessionId}}'] } } };
+    const { room, session, spawnProcess, invocation } = setup(reg, () => fakeAdapter());
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    expect(vi.mocked(spawnProcess).mock.calls[0][1]).toEqual(['--session-id', 'pre-id']);
+  });
+
+  it('reports all-null usage and no native ref when locate finds nothing', async () => {
+    const { room, session, fake, invocation, onSessionEnded } = setup(registry, () => fakeAdapter({ locate: async () => null }));
     invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
     await flush();
     fake.emitClose(0);
     await flush();
+    const event = onSessionEnded.mock.calls[0][0];
+    expect(event.usage).toEqual({ inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null, costUsd: null });
+    expect(event.native).toBeUndefined();
+  });
 
-    expect(onSessionEnded.mock.calls[0][0].usage).toBeUndefined();
+  it('keeps the native ref without a copy when archive fails, and never changes the exit cause', async () => {
+    const adapter = fakeAdapter({ archive: async () => { throw new Error('disk full'); } });
+    const { room, session, fake, invocation, onSessionEnded, onSessionExitProgress } = setup(registry, () => adapter);
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    fake.emitClose(0);
+    await flush();
+    const event = onSessionEnded.mock.calls[0][0];
+    expect(event.exitCause).toBe('natural');
+    expect(event.native).toMatchObject({ sessionId: 'thread-1', copyPath: null });
+    expect(event.usage.inputTokens).toBeNull();
+    expect(adapter.analyze).not.toHaveBeenCalled();
+    expect(onSessionExitProgress).toHaveBeenCalledWith(room.id, session.seq, 'native_session_failed', 'disk full', 'archive');
+  });
+
+  it('records a failed copy (archive returns null) but not a session that locate could not find', async () => {
+    const failing = setup(registry, () => fakeAdapter({ archive: async () => null }));
+    failing.invocation.startSession({ roomId: failing.room.id, seq: failing.session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    failing.fake.emitClose(0);
+    await flush();
+    expect(failing.onSessionExitProgress).toHaveBeenCalledWith(
+      failing.room.id, failing.session.seq, 'native_session_failed', 'copy failed', 'archive',
+    );
+
+    const missing = setup(registry, () => fakeAdapter({ locate: async () => null }));
+    missing.invocation.startSession({ roomId: missing.room.id, seq: missing.session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+    missing.fake.emitClose(0);
+    await flush();
+    expect(missing.onSessionExitProgress).not.toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), 'native_session_failed', expect.anything(), expect.anything(),
+    );
   });
 
   it('does not attempt to parse usage for a spawn-failed session', async () => {
@@ -272,6 +332,7 @@ describe('createAgentInvocation - startSession', () => {
     await flush();
     expect(spawnProcess).not.toHaveBeenCalled();
     expect(onSessionEnded.mock.calls[0][0].usage).toBeUndefined();
+    expect(onSessionEnded.mock.calls[0][0].native).toBeUndefined();
   });
 
   it('reports unexpected exit on nonzero close', async () => {
@@ -286,7 +347,7 @@ describe('createAgentInvocation - startSession', () => {
   it('reports spawn-failed when spawnProcess throws synchronously', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
     const onSessionEnded = vi.fn();
     const invocation = createAgentInvocation({
@@ -357,7 +418,7 @@ describe('createAgentInvocation - startSession', () => {
   it('does not crash when the onSessionEnded handler throws', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
     const fake = createFakeProcess();
     const onSessionEnded = vi.fn(() => { throw new Error('handler boom'); });
@@ -393,7 +454,7 @@ describe('createAgentInvocation - attachSessionLog', () => {
   function setup() {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
     const fake = createFakeProcess();
     const invocation = createAgentInvocation({
@@ -447,16 +508,16 @@ describe('createAgentInvocation - stopSessionProcess', () => {
     vi.mocked(writeFile).mockReset().mockResolvedValue(undefined);
   });
 
-  function setup(stopGraceMs = 20, stopConfirmMs = 30) {
+  function setup(stopGraceMs = 20, stopConfirmMs = 30, getAdapter?: (key: string) => NativeSessionAdapter) {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
     const fake = createFakeProcess();
     const reg: AgentRegistry = { agents: { codex: { command: ['codex'], stopGraceMs, stopConfirmMs } } };
     const invocation = createAgentInvocation({
       db, registry: reg, onSessionEnded: vi.fn(), logsDir: '/logs', mcpUrl: 'http://x',
-      spawnProcess: (() => fake.proc) as unknown as SpawnProcess,
+      spawnProcess: (() => fake.proc) as unknown as SpawnProcess, getAdapter,
     });
     return { db, room, session, fake, invocation };
   }
@@ -479,6 +540,32 @@ describe('createAgentInvocation - stopSessionProcess', () => {
     expect(fake.proc.kill).toHaveBeenCalledWith('SIGTERM');
     expect(fake.proc.kill).not.toHaveBeenCalledWith('SIGKILL');
     expect(result).toMatchObject({ confirmed: true, exit: { exitCause: 'managed-stop', signal: 'SIGTERM' } });
+  });
+
+  it('returns only after native analysis finishes, even when it outlasts the confirm window (04 §5)', async () => {
+    let release!: () => void;
+    const adapter = fakeAdapter({
+      analyze: vi.fn(() => new Promise((resolve) => {
+        release = () => resolve({
+          usage: { inputTokens: 9, outputTokens: 9, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: null },
+          steps: 1, firstResponseAt: null, toolCalls: [],
+        });
+      })),
+    });
+    const { room, session, fake, invocation } = setup(5, 10, () => adapter);
+    invocation.startSession({ roomId: room.id, seq: session.seq, agentId: 'codex', registryKey: 'codex' });
+    await flush();
+
+    let settled = false;
+    const pending = invocation.stopSessionProcess(room.id, session.seq).then((result) => { settled = true; return result; });
+    fake.emitClose(null, 'SIGTERM');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(settled).toBe(false);
+    expect(fake.proc.kill).not.toHaveBeenCalledWith('SIGKILL');
+    release();
+    await expect(pending).resolves.toMatchObject({
+      confirmed: true, exit: { exitCause: 'managed-stop', usage: { inputTokens: 9 }, native: { sessionId: 'thread-1' } },
+    });
   });
 
   it('escalates to SIGKILL when still alive after the grace period', async () => {
@@ -504,7 +591,7 @@ describe('createAgentInvocation - stopSessionProcess', () => {
   it('cancels startup (not-started) when terminated during the prompt-write window', async () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
     let releasePrepare: () => void = () => {};
     vi.mocked(writeFile).mockImplementationOnce(() => new Promise<void>((resolve) => { releasePrepare = resolve; }));
@@ -559,5 +646,34 @@ describe('createAgentInvocation - deleteRoomArtifacts', () => {
     ]);
     expect(vi.mocked(unlink)).toHaveBeenCalledWith('/logs/prompts/violetdagger-1-1.prompt.txt');
     expect(vi.mocked(unlink)).not.toHaveBeenCalledWith('/logs/prompts/other.txt');
+  });
+
+  it('deletes native originals recorded on sessions and returns per-original failures without stopping', async () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex', 'claude', 'kimi'], 'sequential');
+    const native = (sessionId: string) => ({ sessionId, storage: 'file' as const, originalPath: `/orig/${sessionId}`, copyPath: null });
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
+    finishSession(db, room.id, s1.seq, 'completed', undefined, undefined, undefined, native('a'));
+    const s2 = createSession(db, room.id, 'claude', 'broadcast', 'room_flag');
+    finishSession(db, room.id, s2.seq, 'completed', undefined, undefined, undefined, native('b'));
+    const s3 = createSession(db, room.id, 'kimi', 'broadcast', 'room_flag');
+    finishSession(db, room.id, s3.seq, 'error'); // 没有原生会话引用：跳过
+
+    const deleted: string[] = [];
+    const getAdapter = (key: string) => fakeAdapter({
+      deleteOriginal: async (ref) => {
+        if (key === 'codex') throw new Error('codex delete timed out');
+        deleted.push(`${key}:${ref.sessionId}`);
+      },
+    });
+    const invocation = createAgentInvocation({
+      db, registry, onSessionEnded: vi.fn(), logsDir: '/logs', mcpUrl: 'http://x', promptDir: '/logs/prompts', getAdapter,
+    });
+
+    const failures = await invocation.deleteRoomArtifacts(room.id);
+
+    expect(deleted).toEqual(['claude:b']);
+    expect(failures).toEqual([{ seq: s1.seq, agentId: 'codex', target: '/orig/a', error: 'codex delete timed out' }]);
+    expect(vi.mocked(rm)).toHaveBeenCalledWith(`/logs/${room.id}`, { recursive: true, force: true });
   });
 });

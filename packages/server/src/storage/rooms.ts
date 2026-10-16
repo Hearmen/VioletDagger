@@ -14,6 +14,7 @@ function mapRoomRow(row: any): Room {
     dispatchPending: row.dispatch_pending !== 0,
     pendingAuthorId: row.pending_author_id ?? null,
     createdAt: row.created_at,
+    completedAt: row.completed_at ?? null,
   };
 }
 
@@ -90,8 +91,13 @@ export function listRooms(db: Database.Database): RoomSummary[] {
   }));
 }
 
+// status 为 'completed' 时同时写入 completed_at（分析报告的房间总时长终点，见 10-room-report.md §4.2）。
 export function setRoomStatus(db: Database.Database, roomId: number, status: RoomStatus): void {
-  db.prepare(`UPDATE rooms SET status = ? WHERE id = ?`).run(status, roomId);
+  if (status === 'completed') {
+    db.prepare(`UPDATE rooms SET status = ?, completed_at = ? WHERE id = ?`).run(status, new Date().toISOString(), roomId);
+  } else {
+    db.prepare(`UPDATE rooms SET status = ? WHERE id = ?`).run(status, roomId);
+  }
 }
 
 export function increaseMaxSessions(db: Database.Database, roomId: number, additional: number): void {
@@ -99,6 +105,7 @@ export function increaseMaxSessions(db: Database.Database, roomId: number, addit
 }
 
 // 级联删除一个 room 的全部数据（见 docs/design/01-storage.md）。只删 DB，不碰磁盘文件。
+// 原生会话原件与副本由 04 的 deleteRoomArtifacts 处理，它依赖 native_* 字段，必须先于本函数执行（03 §4）。
 export function deleteRoom(db: Database.Database, roomId: number): void {
   db.transaction(() => {
     db.prepare(`DELETE FROM message_references WHERE room_id = ?`).run(roomId);

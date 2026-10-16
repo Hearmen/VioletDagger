@@ -14,7 +14,7 @@ describe('getStuckAgents', () => {
   it('excludes an agent below the stuck threshold', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'exploring X', type: 'exploring' });
 
     const stuckCounter = createStuckCounter();
@@ -27,7 +27,7 @@ describe('getStuckAgents', () => {
   it('includes an agent at/above the threshold with an active exploring message', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'exploring X', type: 'exploring' });
 
     const stuckCounter = createStuckCounter();
@@ -41,7 +41,7 @@ describe('getStuckAgents', () => {
   it('excludes an agent with a high stuck count but no active exploring message', () => {
     const db = createTestDb();
     const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const session = createSession(db, room.id, 'codex');
+    const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const message = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'exploring X', type: 'exploring' });
     completeExploring(db, room.id, message.id, { reason: 'explicit', resultSummary: 'done' });
 

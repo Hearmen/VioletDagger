@@ -21,7 +21,7 @@ function setup(agents: string[] = ['codex', 'claude']) {
   const submit = (input: Omit<SubmitMessageInput, 'roomId'>) =>
     submitMessage(db, { roomId: room.id, ...input }, startSession, stuckCounter);
   const human = (input: Omit<SubmitMessageInput, 'roomId' | 'author'>) => submit({ author: { kind: 'human' }, ...input }).message;
-  const agentSession = (agentId: string) => createSession(db, room.id, agentId).seq;
+  const agentSession = (agentId: string) => createSession(db, room.id, agentId, 'broadcast', 'room_flag').seq;
   const agent = (agentId: string, sessionSeq: number, input: Omit<SubmitMessageInput, 'roomId' | 'author'>) =>
     submit({ author: { kind: 'agent', agentId, sessionSeq }, ...input }).message;
   return { db, room, startSession, stuckCounter, submit, human, agent, agentSession };
@@ -302,7 +302,7 @@ describe('submitMessage — events and dispatch', () => {
     const goal = human({ content: 'goal' });
     db.prepare(`UPDATE room_agents SET state = 'idle', current_session_seq = NULL`).run();
     startSession.mockClear();
-    const directed = createSession(db, room.id, 'claude', 'directed').seq;
+    const directed = createSession(db, room.id, 'claude', 'directed', 'directed_flag').seq;
     expect(getSession(db, room.id, directed)!.dispatchScope).toBe('directed');
     agent('claude', directed, { content: 'h', type: 'hypothesis', targetMessageId: goal.id });
     expect(startSession).not.toHaveBeenCalled();

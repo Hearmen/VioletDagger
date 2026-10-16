@@ -10,7 +10,7 @@ import { McpToolError } from '../../src/mcp-server/validation';
 function setup() {
   const db = createTestDb();
   const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
-  const session = createSession(db, room.id, 'codex');
+  const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
   setAgentState(db, room.id, 'codex', 'running', session.seq);
   const roomEvents = new EventEmitter();
   const resetStuckCount = vi.fn();
@@ -68,7 +68,7 @@ describe('createCompleteExploringHandler', () => {
 
   it('rejects an exploring message owned by a different author', () => {
     const { db, room, completeExploring } = setup();
-    const s2 = createSession(db, room.id, 'claude');
+    const s2 = createSession(db, room.id, 'claude', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'claude', 'running', s2.seq);
     const message = insertMessage(db, {
       roomId: room.id, sessionSeq: s2.seq, authorId: 'claude', content: 'exploring Y', type: 'exploring',

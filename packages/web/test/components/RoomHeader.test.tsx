@@ -7,7 +7,7 @@ import type { Room, RoomStatusPayload } from '../../src/api/types';
 
 const room: Room = {
   id: 1, name: 'room a', schedulingMode: 'sequential', status: 'active',
-  maxSessions: 20, workdir: '/tmp/work', createdAt: 'now',
+  maxSessions: 20, workdir: '/tmp/work', createdAt: 'now', completedAt: null,
 };
 
 function status(overrides: Partial<RoomStatusPayload> = {}): RoomStatusPayload {
@@ -39,6 +39,15 @@ describe('RoomHeader', () => {
     renderHeader();
     expect(screen.getByText('room a')).toBeInTheDocument();
     expect(screen.getByText('3/20 sessions')).toBeInTheDocument();
+  });
+
+  it('shows a Report button in every room state and opens the report', () => {
+    const onOpenReport = vi.fn();
+    renderHeader({ onOpenReport, status: status({ status: 'completed' }) });
+    const button = screen.getByRole('button', { name: 'Report' });
+    expect(button).toHaveAttribute('title', '生成分析报告');
+    fireEvent.click(button);
+    expect(onOpenReport).toHaveBeenCalled();
   });
 
   it('calls onPause when active and Pause is clicked', () => {

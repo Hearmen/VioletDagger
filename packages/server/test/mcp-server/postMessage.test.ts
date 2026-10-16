@@ -12,7 +12,7 @@ function setup() {
   const db = createTestDb();
   const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
   const goal = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
-  const session = createSession(db, room.id, 'codex');
+  const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
   setAgentState(db, room.id, 'codex', 'running', session.seq);
   const startSession = vi.fn();
   const submit = vi.fn((input) => submitMessage(db, input, startSession, createStuckCounter()));

@@ -1,6 +1,6 @@
 # Agent 调用适配层设计
 
-负责非交互式 CLI 的启动、实时只读日志、退出事实及人工终止。需求依据见 requirements.md 3.3、3.3.1；生命周期由 03 编排器核心结算。所有正式协作内容通过 MCP 写入，日志不解析成答案或 fact（**用量遥测是例外**：token/费用统计需要解析日志 JSON 才能拿到，但它只产出运营数字，不产出消息、不写入记忆、不参与 outcome 判定，跟"业务内容不从日志解析"防的是两件事，不冲突，见 §7）。交互式 PTY 模式属于下一版本，本版本不做设计。
+负责非交互式 CLI 的启动、实时只读日志、退出事实及人工终止。需求依据见 requirements.md 3.3、3.3.1；生命周期由 03 编排器核心结算。所有正式协作内容通过 MCP 写入，日志不解析成答案或 fact，也不用于任何统计。token、费用、模型调用步数与工具调用统计只从 CLI 原生会话（副本或原数据库）解析（见 §7）；这些数字只用于展示，不产出消息、不写入记忆、不参与 outcome 判定。交互式 PTY 模式属于下一版本，本版本不做设计。
 
 ## 1. Agent 注册表与接入条件
 
@@ -101,7 +101,9 @@ roomId：{{roomId}}
 
 ### 2.4 Prompt 落盘
 
-prompt 副本位于 <logsDir>/prompts/violetdagger-<roomId>-<seq>.prompt.txt；日志根锚定 server 包 logs/，可用 VIOLETDAGGER_LOGS_DIR 覆盖。占位符保留 {{prompt}}、{{promptFile}}、{{mcpUrl}}、{{mcpFile}}。
+prompt 副本位于 <logsDir>/prompts/violetdagger-<roomId>-<seq>.prompt.txt；日志根锚定 server 包 logs/，可用 VIOLETDAGGER_LOGS_DIR 覆盖。占位符保留 {{prompt}}、{{promptFile}}、{{mcpUrl}}、{{mcpFile}}、{{nativeSessionId}}。
+
+`{{nativeSessionId}}` 是编排器在启动前为本次 session 生成的会话标识（由该 agent 适配器的 `preassignSessionId` 给出，见 §7.1），用于需要由调用方指定会话标识的 CLI（claude：`--session-id {{nativeSessionId}}`）。`command` 中禁止使用关闭会话持久化的参数（claude `--no-session-persistence`、codex `--ephemeral`），否则没有原生会话可供分析。
 
 每次启动签发随机凭据，固定绑定 roomId/agentId/sessionSeq。MCP 配置默认写到 <logsDir>/mcp/<roomId>/<seq>.json，仅当前用户可读写，不修改用户/项目共享 MCP 文件；**kimi 是例外**：它没有 per-invocation 的 MCP 配置 flag，只认 user 级 `~/.kimi-code/mcp.json`（或 `$KIMI_CODE_HOME/mcp.json`），因此它的 `mcpFile` 配置 `path` 指向该文件并 `merge: true`，编排器读取已有 JSON 后深合并（保留其它 server，不整文件覆盖）。CLI 具体凭据注入语法须实测；不能按 agent 当前 session 猜测归属。进程收尾撤销凭据、删除临时配置；重启后旧凭据失效。
 
@@ -145,7 +147,7 @@ function stopSessionProcess(roomId: number, seq: number): Promise<StopResult>;
 - 已退出返回保存事实；确认从未启动则取消启动并返回 not-started；缺失句柄不等于从未启动。
 - 先订阅退出事件，按平台验证的进程组机制发 SIGTERM，默认等待最多 2 秒（可用 `stopGraceMs` 覆盖）；退出则立即收尾。
 - 尚未退出则发 SIGKILL，再等待最多 3 秒确认（可用 `stopConfirmMs` 覆盖）；信号发送成功或 ESRCH 本身不算退出确认。
-- 确认主进程退出后返回事实；无法确认返回失败，保留订阅供迟到退出事件结算，保持 stopping 与占位。可由人类重试，不自动无限重试。
+- 确认主进程退出后，先完成 §7.2 第 2 步（locate → archive → analyze），再返回事实；返回的 `exit` 已带 `usage` 与 `native`。无法确认返回失败，保留订阅供迟到退出事件结算，保持 stopping 与占位。可由人类重试，不自动无限重试。
 - 确认范围是主进程；逃离进程组的后代可能残留。重启失联时不凭旧 PID 盲目发信号。
 - 日志尽力刷盘；已确认主进程退出但后代仍持有管道时可关闭日志订阅并注明截断，不无限等管道。
 
@@ -158,33 +160,154 @@ type SessionExitEvent = {
   exitCause: 'natural' | 'unexpected' | 'spawn-failed' | 'not-started' | 'managed-stop';
   rawLogPath: string;
   cleanupAttemptId?: string;
-  usage?: SessionUsage; // 见 §7；spawn-failed/not-started 没有日志可读，不带这个字段
+  usage?: SessionUsage; // 见 §7.2；spawn-failed/not-started 不带这个字段
+  native?: SessionNativeRef; // 见 01-storage.md；数据库型 originalPath 为数据库文件、copyPath 恒为 null；spawn-failed/not-started 不带
 };
 function startSession(params: {
   roomId: number; seq: number; agentId: string; registryKey: string;
 }): void;
-function deleteRoomArtifacts(roomId: number): Promise<void>;
+function deleteRoomArtifacts(roomId: number): Promise<NativeDeleteFailure[]>;
+// NativeDeleteFailure 见 §7.1
 // 核心注入 onSessionEnded(event: SessionExitEvent)
 // 核心注入 onSessionExitProgress(roomId, seq, kind, detail?, cleanupAttemptId?)
-// kind: cleanup_started / sigterm_sent / sigkill_sent / cleanup_failed
+// kind: cleanup_started / sigterm_sent / sigkill_sent / cleanup_failed / native_session_failed
 ```
 
 退出监听和清理 Promise 共用同一退出事实，由核心幂等结算。正常零退出为 natural，独立异常为 unexpected，启动失败为 spawn-failed；人工清理的结果由 terminate 意图判定，不把它误算成自然完成。运行记录不含答案提取缓冲。
 
-deleteRoomArtifacts 清理房间日志、prompt 和独立 MCP 配置，不触碰共享用户配置。历史 PTY 文本日志可由只读回放按旧格式显示，不追溯生成消息。
+deleteRoomArtifacts 清理房间日志（含原生会话副本）、prompt 和独立 MCP 配置，并对每个记录了原生会话标识的 session 调用适配器的 `deleteOriginal` 删除原件（§7.2），不触碰共享用户配置中与本房间无关的内容。历史 PTY 文本日志可由只读回放按旧格式显示，不追溯生成消息。
 
-## 7. 用量统计（token / 费用）解析
+## 7. 原生会话分析适配器
 
-确认进程退出、日志文件已完整落盘之后（第 6 节报告 `SessionExitEvent` 之前），按这次 session 的 `registryKey` 读取完整 `rawLogPath` 文件，分发到对应的提取函数，得到 `SessionUsage`（见 `01-storage.md`）：
+每种 agent 的原生会话格式、位置和删除方式各不相同，统一抽象为一个适配器接口，每个 registryKey 一个实现，彼此独立。编排器只通过接口调用，不出现按 registryKey 分支的逻辑。
 
-| registryKey | 提取方式 | 拿到什么 |
-|---|---|---|
-| `claude` | 找 `type == "result"` 事件（`-p` 单次调用只有一条，防御性地对多条求和） | `usage.input_tokens` / `usage.output_tokens` / `usage.cache_creation_input_tokens` / `usage.cache_read_input_tokens`，`total_cost_usd` |
-| `opencode` | 累加所有 `type == "step_finish"` 事件 | 各自 `part.tokens.{input,output,cache.read,cache.write}` 和 `part.cost` 求和 |
-| `codex` | 找 `type == "turn.completed"` 事件（同样对多条求和） | `usage.{input_tokens,output_tokens,cached_input_tokens,cache_write_input_tokens}`；**没有费用字段，`costUsd` 恒为 null** |
-| `kimi` | 无对应事件 | 全部字段恒为 null |
-| 其他/未来新增的 registryKey | 无对应提取器 | 全部字段恒为 null，不报错 |
+### 7.1 接口
 
-提取失败（JSON 解析异常、字段缺失）按该字段取 null 处理，不抛错、不影响 outcome 结算——用量数据从来不是"结果判定"的一部分，解析器内部的 try/catch 只降级为 null，绝不让这一步的异常波及 `SessionExitEvent` 的其余部分。**不做任何费用估算**：codex 只有 token 数据、没有美元费用字段，`costUsd` 就是 null，不用硬编码定价表去猜——定价会变，猜错比没有更误导人。
+```typescript
+interface LocatedNativeSession {
+  sessionId: string;
+  storage: 'file' | 'database';
+  originalPath: string; // 文件型为会话文件或目录；数据库型为数据库文件
+}
+type NativeSessionSource =
+  | { storage: 'file'; copyPath: string }
+  | { storage: 'database'; originalPath: string; sessionId: string };
+interface LocateContext {
+  roomId: number; seq: number; agentId: string; cwd: string;
+  startedAt: string; endedAt: string;
+  preassignedId: string | null; // preassignSessionId 的返回值
+  rawLogPath: string;           // 只用于读取会话标识，不用于统计
+}
+interface NativeToolCall {
+  name: string;            // isRoomMcp 为 true 时为去掉 server 前缀的工具名（如 post_message）；否则为该 CLI 自己的工具名
+  isRoomMcp: boolean;
+  failed: boolean | null;  // null 表示成败未知
+}
+interface NativeSessionStats {
+  usage: SessionUsage;            // inputTokens 为非缓存输入；outputTokens 含推理/思考 token
+  steps: number | null;           // 模型调用次数
+  firstResponseAt: string | null; // 第一次模型调用完成时间（ISO）
+  toolCalls: NativeToolCall[] | null;
+}
+interface NativeSessionAdapter {
+  readonly registryKey: string;
+  preassignSessionId(): string | null;          // 启动前；非 null 时注入 {{nativeSessionId}}
+  locate(ctx: LocateContext): Promise<LocatedNativeSession | null>;
+  archive(ref: LocatedNativeSession, copyDir: string): Promise<NativeSessionSource | null>;
+  analyze(source: NativeSessionSource, signal?: AbortSignal): Promise<NativeSessionStats>;
+  deleteOriginal(ref: LocatedNativeSession): Promise<void>;
+}
+interface NativeDeleteFailure { seq: number; agentId: string; target: string; error: string }
+function getNativeSessionAdapter(registryKey: string): NativeSessionAdapter;
+```
 
-新增 registryKey 时默认没有提取器（全 null），要支持用量统计需要显式给它加一条上表的规则，不会因为漏配置而报错或显示假数据。
+**接口约定**：
+- **未注册的 registryKey** 返回空适配器：`locate` 返回 null，`analyze` 返回全 null，`deleteOriginal` 不做任何事。新增 agent 要支持统计，就新增一个适配器实现，不改编排器。
+- **`archive`**：文件型复制到 `copyDir`（`<logsDir>/<roomId>/native/<seq>/`），返回 `{storage:'file', copyPath}`；数据库型不复制，直接返回指向原库的 source。复制失败时删除不完整的副本，返回 null。
+- **`analyze`**：只读。文件型读副本；数据库型以只读模式打开原库，读完即关闭。字段解析失败时取 null，不抛错，不做费用估算。`signal` 被 abort 时立即停止读取、关闭已打开的文件或数据库句柄，并以 abort 错误结束。
+- **`isRoomMcp`**：本系统 MCP server `violetdagger` 的工具为 true，此时 `name` 去掉各 CLI 的 server 前缀（`mcp__violetdagger__`、`violetdagger_`），只保留工具名，使不同 CLI 的同一工具在报告中合并为一行。
+- **子 agent**：各适配器都不统计子 agent 的记录。
+
+代码位于 `packages/server/src/agent-invocation/native-session/`：
+- `adapter.ts`：接口与空适配器
+- `claude.ts`、`codex.ts`、`opencode.ts`、`kimi.ts`：各 agent 的实现
+- `index.ts`：注册表
+
+### 7.2 调用时机
+
+1. **启动前**：调用 `preassignSessionId`，返回值注入 `{{nativeSessionId}}`。
+2. **结束后**：确认主进程退出后、报告 `SessionExitEvent` 前，依次调用 `locate` → `archive` → `analyze`。
+   - `analyze(...).usage` 随 `SessionExitEvent.usage` 上报入库，其余统计不入库；没有可读的原生会话时用量全为 null。
+   - natural、unexpected、managed-stop 都执行；spawn-failed、not-started 跳过。
+   - 任一步失败只写入生命周期记录：经 `onSessionExitProgress(roomId, seq, 'native_session_failed', <错误信息>, <步骤名 locate/archive/analyze>)` 追加一条事件；后续字段记 null，不改变 outcome。locate 未找到会话（返回 null）不算失败，不记录。
+   - 外部命令超时默认 10 秒。
+3. **生成分析报告时**：按 session 记录重建 `NativeSessionSource`，再调用 `analyze`。
+4. **删除房间时**：对每个记录了会话标识的 session 调用 `deleteOriginal`。
+   - 原件不存在时视为成功。
+   - 失败收集为 `{ seq, agentId, target, error }[]` 返回，由 06 接口提示人类。
+   - 副本随房间日志目录一起删除。
+
+### 7.3 claude 适配器（文件型）
+
+- **preassignSessionId**：生成 UUID，command 中以 `--session-id {{nativeSessionId}}` 传入。
+- **locate**：查找 `<claudeHome>/projects/*/<id>.jsonl`；`claudeHome` 为 `$CLAUDE_CONFIG_DIR`，未设置时为 `~/.claude`。
+- **archive**：复制 `<id>.jsonl` 与同名目录 `<id>/`。
+- **analyze**：
+  - 取 `type=assistant`、`isSidechain=false` 的条目，按 `message.id` 去重：同一响应按内容块拆成多条，取最后一条。
+  - **token**：`usage` 的 `input_tokens` / `output_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` 求和。
+  - **费用**：取最后一条 `type=cost-state` 条目的 `totalCostUSD`（累计值，不求和）。没有该条目，或 `hasUnknownModelCost=true` 时，`costUsd` 为 null。
+  - **步数**：去重后的 `message.id` 数。
+  - **首次响应**：第一条 assistant 的 `timestamp`。
+  - **工具调用**：content 中的 `tool_use` 块，前缀 `mcp__violetdagger__` 的是本系统工具；对应 `tool_result.is_error=true` 为失败。
+- **deleteOriginal**：删除 `<id>.jsonl` 与 `<id>/`。
+
+### 7.4 codex 适配器（文件型）
+
+- **preassignSessionId**：null。
+- **locate**：从 rawLog 的 stdout 中第一个 `thread.started` 事件取 `thread_id`，再查找 `<codexHome>/sessions/*/*/*/rollout-*-<id>.jsonl`；`codexHome` 为 `$CODEX_HOME`，未设置时为 `~/.codex`。
+- **archive**：复制 rollout 文件。
+- **analyze**：
+  - **token**：`token_usage_record.usage` 求和：input = `input_tokens − cached_input_tokens`，cacheRead = `cached_input_tokens`，cacheWrite = `cache_write_input_tokens`，output = `output_tokens`。
+  - **费用**：rollout 中没有费用字段，`costUsd` 为 null。
+  - **步数**：`token_usage_record` 条数。
+  - **首次响应**：第一条 `token_usage_record` 的 `timestamp`。
+  - **工具调用**：`item_completed` 中带 `status` 字段、且 `item.type` 不是 UserMessage / AgentMessage / Reasoning 的条目；没有 `status` 字段的条目（如 SubAgentActivity、ContextCompaction）不是工具调用。
+    - McpToolCall 取 `tool` 为名称，`server=violetdagger` 为本系统工具；其余类型以 `item.type` 为名称。
+    - 不统计 `custom_tool_call`：它是 code mode 的 `exec` 外壳，统计它会重复计数。
+    - `status = "failed"` 为失败，`status = "completed"` 为成功，其他取值为成败未知。
+- **deleteOriginal**：执行 `codex delete --force <id>`（不带 `--force` 会交互式询问确认），codex 会同时清理自己的线程索引。
+
+### 7.5 opencode 适配器（数据库型）
+
+- **preassignSessionId**：null。
+- **locate**：从 rawLog 的 stdout 中第一个带 `sessionID` 的事件取标识；原始位置为 `<opencodeData>/opencode.db`（`opencodeData` 为 `$XDG_DATA_HOME/opencode`，未设置时为 `~/.local/share/opencode`），并确认 `session` 表中有该 id。
+- **archive**：不复制，返回数据库 source。
+- **analyze**：只读打开数据库，读取 `part` 表中 `session_id=<id>` 的行，解析 `data` JSON。
+  - **token 与费用**：`type=step-finish` 的 `tokens.input`、`tokens.output + tokens.reasoning`、`tokens.cache.read`、`tokens.cache.write`、`cost` 求和。
+  - **步数**：`step-finish` 的条数。
+  - **首次响应**：`message` 表中该会话第一条 `role=assistant` 消息的 `time.completed`。
+  - **工具调用**：`type=tool` 的部件，名称取 `tool`，前缀 `violetdagger_` 的是本系统工具；`state.status=error` 为失败。
+  - **表结构不符**（opencode 升级后变化）：全部字段取 null。
+- **deleteOriginal**：执行 `opencode session delete <id>`。
+
+### 7.6 kimi 适配器（文件型）
+
+- **preassignSessionId**：null。
+- **locate**：stdout 里没有会话标识。在 `<kimiHome>/session_index.jsonl` 中查找满足以下全部条件的条目；`kimiHome` 为 `$KIMI_CODE_HOME`，未设置时为 `~/.kimi-code`：
+  - `workDir` 等于本 session 的 cwd；
+  - 该会话 `state.json` 的 `createdAt` 落在本 session 启动与结束之间；
+  - `agents/main/wire.jsonl` 中 `turn.prompt` 的文本同时包含本 session 的 `roomId` 与 `agentId`。
+
+  恰好一条匹配才算成功。
+- **archive**：复制整个会话目录。
+- **analyze**（读 `agents/main/wire.jsonl`）：
+  - **token**：`usage.record` 的 `inputOther` / `output` / `inputCacheRead` / `inputCacheCreation` 求和。
+  - **费用**：没有费用字段，`costUsd` 为 null。
+  - **步数**：`usage.record` 条数。
+  - **首次响应**：第一条 `usage.record` 的 `time`。
+  - **工具调用**：`context.append_loop_event` 中 `event.type=tool.call` 的事件，名称取 `name`，前缀 `mcp__violetdagger__` 的是本系统工具。
+  - **失败**：按 `toolCallId` 找到对应的 `tool.result`，`result.isError === true` 为失败，否则为成功；找不到对应 `tool.result` 时成败未知。
+- **deleteOriginal**：
+  - 删除会话目录。
+  - 从 `session_index.jsonl` 中移除 `sessionId` 等于该会话的行，其他行原样保留：读取后写入同目录临时文件，再原子 rename 覆盖。
+  - 已知限制：kimi 恰好在读取与 rename 之间追加的新行会丢失。删除只针对已结束的房间，此时这些 session 都已不在运行，但同一台机器上其他 kimi 进程的写入无法排除。

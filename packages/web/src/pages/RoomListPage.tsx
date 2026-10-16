@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { fetchRooms, fetchAgents, createRoom, deleteRoom } from '../api/rest';
-import type { AgentInfo, RoomSummary, RoomStatus } from '../api/types';
+import type { AgentInfo, NativeDeleteFailure, RoomSummary, RoomStatus } from '../api/types';
 import { LocaleToggle } from '../components/LocaleToggle';
 import { useI18n } from '../i18n/LocaleProvider';
 import { errorText, renderText, type LocalizedText } from '../i18n/types';
@@ -14,6 +14,33 @@ const STATUS_LABELS: Record<RoomStatus, MessageKey> = {
   paused_manual: 'roomList.statusPaused',
   completed: 'roomList.statusCompleted',
 };
+
+const COLLAPSED_FAILURES = 5;
+
+// 原生会话原件未删除提示（07-frontend.md §11）：只在本次页面状态中存在，刷新后消失。
+function NativeDeleteFailuresBanner(props: { failures: NativeDeleteFailure[]; onClose: () => void }) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const shown = expanded ? props.failures : props.failures.slice(0, COLLAPSED_FAILURES);
+  return (
+    <div role="alert" className="banner banner--warn native-failures">
+      <div className="native-failures__head">
+        {t('roomList.nativeDeleteFailures', { count: props.failures.length })}
+        <button className="ghost banner__close" onClick={props.onClose}>{t('common.close')}</button>
+      </div>
+      <ul className="native-failures__list">
+        {shown.map((failure) => (
+          <li key={`${failure.agentId}:${failure.seq}:${failure.target}`}>
+            {failure.agentId} #{failure.seq} · <span className="mono">{failure.target}</span> · {failure.error}
+          </li>
+        ))}
+      </ul>
+      {!expanded && props.failures.length > COLLAPSED_FAILURES && (
+        <button className="ghost" onClick={() => setExpanded(true)}>{t('roomList.showAllFailures')}</button>
+      )}
+    </div>
+  );
+}
 
 // 与后端 createRoom 的实例标识规则一致（见 docs/design/01-storage.md），仅用于表单预览。
 export function previewInstanceIds(registryKeys: string[]): string[] {
@@ -31,7 +58,12 @@ export function previewInstanceIds(registryKeys: string[]): string[] {
 export function RoomListPage() {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const location = useLocation();
   const [rooms, setRooms] = useState<RoomSummary[]>([]);
+  // RoomHeader 删除后带过来的导航状态，或本页卡片删除的结果。
+  const [deleteFailures, setDeleteFailures] = useState<NativeDeleteFailure[]>(
+    () => (location.state as { nativeDeleteFailures?: NativeDeleteFailure[] } | null)?.nativeDeleteFailures ?? [],
+  );
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [name, setName] = useState('');
   const [maxSessions, setMaxSessions] = useState('');
@@ -94,7 +126,7 @@ export function RoomListPage() {
     }
     setError(null);
     try {
-      await deleteRoom(room.id);
+      setDeleteFailures(await deleteRoom(room.id));
       await refreshRooms();
     } catch (err) {
       setError(errorText(err));
@@ -117,6 +149,9 @@ export function RoomListPage() {
         <section>
           <h2 className="section-title">{t('roomList.rooms')}</h2>
           {error && <p role="alert" className="error-inline">{renderText(error, t)}</p>}
+          {deleteFailures.length > 0 && (
+            <NativeDeleteFailuresBanner failures={deleteFailures} onClose={() => setDeleteFailures([])} />
+          )}
           {rooms.length === 0 ? (
             <p className="placeholder">{t('roomList.empty')}</p>
           ) : (

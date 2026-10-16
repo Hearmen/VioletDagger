@@ -8,17 +8,20 @@
 GET    /api/rooms       → RoomSummary[]
 GET    /api/rooms/:id   → Room
 POST   /api/rooms       { name: string; agentIds: string[]; schedulingMode: 'sequential'; maxSessions?: number; workdir?: string } → Room
-DELETE /api/rooms/:id   → { ok: true }        // 仅 completed 房间可删；级联删除，见 03-orchestrator-core.md 第 4 节
+DELETE /api/rooms/:id   → { ok: true, nativeDeleteFailures: NativeDeleteFailure[] }  // 仅 completed 房间可删；级联删除，见 03-orchestrator-core.md 第 4 节
 GET    /api/agents      → { agentId: string; available: boolean; unavailableReason?: string }[]
 ```
 
-`GET /api/rooms/:id` 返回完整的 `Room`（含 `name`/`schedulingMode`/`maxSessions`/`workdir`）——直接刷新或直接打开某个房间的 URL 时，前端需要这个接口拿房间头部信息；`getRoomStatus`（第 4 节）只有运行时状态，不带这些创建时字段。
+`GET /api/rooms/:id` 返回完整的 `Room`（含 `name`/`schedulingMode`/`maxSessions`/`workdir`/`completedAt`）——直接刷新或直接打开某个房间的 URL 时，前端需要这个接口拿房间头部信息；`getRoomStatus`（第 4 节）只有运行时状态，不带这些创建时字段。
 
 `GET /api/agents` 返回 agent 注册表（`04-agent-invocation.md` 的 `AgentRegistry`，服务启动时从 `agents.config.json` 加载进内存）里所有的 key，供建房间表单渲染可勾选的 agent 列表（见 `07-frontend.md` 第 11 节）。**这里的 `agentId` 指的是注册表 key（如 `"codex"`），不是房间内的 agent 实例标识**——它是建房间表单这一处的输入，跟 `getRoomStatus` 里 `agentId`（实例标识，见 `00-overview.md`）分属两个层次，不要混用。
 
 `POST /api/rooms` 校验：`agentIds` 非空，且每个都存在于 agent 注册表、已通过 session 身份隔离适配校验（available=true）（见 `04-agent-invocation.md` 第 1 节）；**允许重复**——同一个 agent 出现多次表示要加入多个实例（需求 3.2，数组里是注册表 key；实例标识由 `storage.createRoom` 按 `01-storage.md` 的规则生成）；`schedulingMode` v1 只接受 `'sequential'`；`maxSessions` **可选**，给了就必须是正整数（否则报错），不传则用服务端默认值 20（见 `01-storage.md` §5.1）。`workdir` **可选**（该 room 所有 agent CLI 的 spawn cwd，见 `01-storage.md` §5.4）：给了就做 `~` 展开 + 绝对化；不传则默认取服务端配置 `VIOLETDAGGER_WORKDIR`，再退回 server 进程 cwd。解析出的路径：**不存在时递归创建**（等价 `mkdir -p`）；已存在且是目录时直接使用；已存在但不是目录时报错 `workdir is not a directory: <path>`；创建失败时报错 `failed to create workdir <path>: <系统错误信息>`。目录创建放在其余字段全部校验通过之后、`createRoom` 之前，校验失败的请求不会留下目录；`createRoom` 本身失败时已创建的目录不回删（空目录无害，回删有误删用户指定路径的风险）。解析后的绝对路径写入 `rooms.workdir`。随后 `storage.createRoom(name, agentIds, schedulingMode, { maxSessions, workdir })`（`room_agents` 的 `join_order` 按传入数组顺序写入，在 `createRoom` 内部完成；实例标识撞名时 `createRoom` 抛错，转为表单错误返回）。创建时不触发任何派发——房间里还没有消息，第一次派发要等人类发第一条消息（见需求 3.1）。
 
-`DELETE /api/rooms/:id`：调用 `orchestratorCore.deleteRoom(roomId)`（见 `03-orchestrator-core.md` 第 4 节）——会先确认遗留 running/stopping session 已退出，再删除磁盘日志和级联删除 DB；清理未确认则返回错误并保留数据，最后 emit `roomDeleted`。非 `completed` 状态会收到 RPC 错误/HTTP 4xx，前端应提示"只有已结束的房间才能删除"。
+`DELETE /api/rooms/:id`：调用 `orchestratorCore.deleteRoom(roomId)`（见 `03-orchestrator-core.md` 第 4 节）。它先确认遗留的 running/stopping session 已退出，再删除磁盘日志、原生会话副本与原件，并级联删除 DB；最后 emit `roomDeleted`。
+- **session 清理未确认**：返回错误，保留数据。
+- **原生会话原件删除失败**：不阻止删除房间。响应照常 `ok: true`，并在 `nativeDeleteFailures` 中列出每个未删除的原件（`{ seq, agentId, target, error }`，见 `04-agent-invocation.md` §7.2），前端据此提示人类哪些原件未删除。全部成功时为空数组。
+- **非 `completed` 状态**：返回 RPC 错误/HTTP 4xx，前端应提示"只有已结束的房间才能删除"。
 
 ## 2. WebSocket：`/api/rooms/:roomId/ws`
 
@@ -135,8 +138,13 @@ getSessionDetail(params: { sessionId: number }): {
 };
 
 // 房间用量汇总：按 agent 和整个房间两级聚合（见 01-storage.md 的 getUsageTotals/UsageTotals）
-// 用量字段的数据来源与解析规则见 04-agent-invocation.md §7；聚合口径（只统计已结束 session、明确区分"没数据"与"是 0"）见 01-storage.md。
+// 用量字段由各 agent 的原生会话分析适配器在 session 结束时解析入库（见 04-agent-invocation.md §7）；聚合口径（只统计已结束 session、明确区分"没数据"与"是 0"）见 01-storage.md。
 getUsageSummary(): { byAgent: Record<string, UsageTotals>; room: UsageTotals };
+
+// 任务分析报告：人类点击"生成分析报告"时调用，即时计算、不缓存、不推送（见 10-room-report.md）。
+// 异步：需要读取各 session 的原生会话；room 不存在返回 RPC error，其余局部失败只让对应指标为空。
+// 任何房间状态都可调用；不改变任何状态，不 emit 事件。
+getRoomReport(): RoomReport; // roomReport.getRoomReport(roomId)
 
 // 控制操作
 terminateAgentSession(params: { sessionId: number }): { ok: true }; // 仅确认退出或已终态时成功；清理未确认返回 RPC error  // orchestratorCore.terminateAgentSession(roomId, sessionId)
@@ -164,6 +172,9 @@ buildMemoryView(roomId: number): MemoryViewPayload
 // 编排器核心
 submitMessage, pauseRoom, resumeRoom, confirmCompletion, deleteRoom,
 terminateAgentSession, getStuckAgents, getAgentFailures, setAgentEnabled
+
+// 任务分析报告（见 10-room-report.md）
+getRoomReport(roomId: number): Promise<RoomReport>
 
 // Agent 调用适配层（见 04-agent-invocation.md）
 AgentRegistry（GET /api/agents 直接读取启动时加载好的注册表，不经过编排器核心）
