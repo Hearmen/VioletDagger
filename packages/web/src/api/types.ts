@@ -139,8 +139,7 @@ export interface RoomStatusPayload {
   }[];
 }
 
-// 不再是节点树，只是一张 session 结果/时间的查表——供 EventTreePanel 给每条消息的
-// session 标签追加 outcome。消息本身来自已加载的 messages 状态，不在这里下发。
+// 事件树数据源（07-frontend.md §9）：session 结果/时间查表 + 房间全部消息（按 id 升序，不分页）。
 export interface EventTreePayload {
   sessions: {
     seq: number;
@@ -154,6 +153,7 @@ export interface EventTreePayload {
     cacheWriteTokens: number | null;
     costUsd: number | null;
   }[];
+  messages: Message[];
 }
 
 export interface SessionDetailPayload {

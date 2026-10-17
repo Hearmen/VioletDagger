@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { createTestDb } from '../../src/storage/db';
 import { createRoom } from '../../src/storage/rooms';
 import {
-  createSession, setSessionPgid, finishSession, getSession, listSessions, countSessions, getUsageTotals,
+  createSession, setSessionPgid, finishSession, setSessionNative, getSession, listSessions, countSessions, getUsageTotals,
 } from '../../src/storage/sessions';
 
 describe('sessions', () => {
@@ -46,6 +46,25 @@ describe('sessions', () => {
     });
     expect(getSession(db, room.id, s.seq)).toMatchObject({
       nativeSessionId: 'thread-1', nativeStorage: 'file', nativeOriginalPath: '/home/r.jsonl', nativeCopyPath: '/logs/1/native/1',
+    });
+  });
+
+  it('setSessionNative writes the native ref and overwrites every usage field, nulls included', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const s = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
+    finishSession(db, room.id, s.seq, 'completed', '/logs/1.jsonl', undefined, {
+      inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4, costUsd: 0.5,
+    });
+    setSessionNative(
+      db, room.id, s.seq,
+      { sessionId: 'thread-1', storage: 'file', originalPath: '/home/r.jsonl', copyPath: '/logs/1/native/1' },
+      { inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 0, costUsd: null },
+    );
+    expect(getSession(db, room.id, s.seq)).toMatchObject({
+      outcome: 'completed', rawLogPath: '/logs/1.jsonl',
+      nativeSessionId: 'thread-1', nativeStorage: 'file', nativeOriginalPath: '/home/r.jsonl', nativeCopyPath: '/logs/1/native/1',
+      inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 0, costUsd: null,
     });
   });
 

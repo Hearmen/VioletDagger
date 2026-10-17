@@ -4,7 +4,7 @@ import type { Room, RoomStatusPayload, RoomStatus, UsageTotals } from '../api/ty
 import type { ConnectionState } from '../hooks/useRoomSocket';
 import { useI18n } from '../i18n/LocaleProvider';
 import type { MessageKey } from '../i18n/zh';
-import { formatCostUsd, formatTokens, formatUsageParts } from '../utils/format';
+import { formatCostUsd, formatTokens, formatUsageParts, totalTokens } from '../utils/format';
 import { LocaleToggle } from './LocaleToggle';
 
 // 房间总用量（07-frontend.md §4，格式同 AgentRail 的用量行）：sessionCount === 0 时不显示；
@@ -15,7 +15,7 @@ function RoomUsageSummary({ usage }: { usage: UsageTotals }) {
   const title = formatUsageParts(usage, t, locale).join(' · ');
   return (
     <span className="mono room-header__usage" title={title}>
-      {formatTokens(usage.inputTokens + usage.outputTokens)}
+      {formatTokens(totalTokens(usage))}
       {usage.costUsd != null && (
         <>
           {' '}· {formatCostUsd(usage.costUsd)}
@@ -95,12 +95,10 @@ export function RoomHeader(props: {
         <span className={`status-pill status-pill--${status.status}`}>{t(ROOM_STATUS_LABELS[status.status])}</span>
         <span className="mono">{t('header.sessionCount', { current: status.currentSessionCount, max: room.maxSessions })}</span>
         {props.roomUsage && <RoomUsageSummary usage={props.roomUsage} />}
-        {room.workdir && (
-          <span className="mono room-header__workdir" title={room.workdir}>
-            {room.workdir}
-          </span>
-        )}
-        <span className="room-header__spacer" />
+        {/* 工作目录占满剩余空间，放不下时保留路径末尾截断（07 §4）；没有 workdir 时留一个空占位把控件推到右侧。 */}
+        <span className="mono room-header__workdir" title={room.workdir || undefined}>
+          {room.workdir && <span dir="ltr">{room.workdir}</span>}
+        </span>
         <span className={`conn-dot conn-dot--${connectionState}`} title={connectionState} />
         {readOnly ? (
           <div className="room-header__controls">

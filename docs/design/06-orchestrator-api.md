@@ -110,9 +110,8 @@ getRoomStatus(): {
   }[];
 };
 
-// 事件树：不再是节点树，只是一张 session 结果/时间的查表——供前端给每条消息的 session
-// 标签追加 outcome（见 07-frontend.md §9）。消息本身（含 sessionId）由前端已持有的
-// listMessages/newMessage 状态提供，不由本接口下发。
+// 事件树数据源：房间全部消息 + 一张 session 结果/时间的查表（见 07-frontend.md §9）。
+// 事件树不复用消息流的分页窗口，每次调用都返回房间完整历史，保证重新进入房间后事件树仍完整。
 getEventTree(): {
   sessions: {
     seq: number; agentId: string; outcome: SessionOutcome;
@@ -120,8 +119,9 @@ getEventTree(): {
     inputTokens: number | null; outputTokens: number | null;
     cacheReadTokens: number | null; cacheWriteTokens: number | null; costUsd: number | null;
   }[]; // 按 seq 升序；纯查表，不是时间线结构。用量字段让事件树的 session 标签不用再单独请求就能显示 token 数（见 07 §9）
+  messages: Message[]; // 房间全部消息（含 referencedMessageIds），按 id 升序；不分页
 };
-// 依赖 01-storage.md 的 listSessions(roomId): Session[]
+// 依赖 01-storage.md 的 listSessions(roomId): Session[] 与 getRoomMessages(roomId): Message[]
 
 // 单 session 详情（事件树复盘视图 SessionDetailModal 用：头部元数据 + 消息列表 + 只读日志）
 getSessionDetail(params: { sessionId: number }): {
@@ -156,7 +156,7 @@ confirmCompletion(): { ok: true };                                    // orchest
 
 ## 5. 事件树依赖的存储函数
 
-`getEventTree`（第 4 节）依赖 `01-storage.md` 的 `listSessions(roomId): Session[]`（按 seq 升序列出一个 room 的全部 session，供事件树给每条消息的 session 标签查出 outcome/起止时间；消息本身不再由 `getEventTree` 提供，由前端已加载的 `messages` 状态承担）。
+`getEventTree`（第 4 节）依赖 `01-storage.md` 的两个函数：`listSessions(roomId): Session[]`（按 seq 升序列出一个 room 的全部 session，供事件树给每条消息的 session 标签查出 outcome/起止时间/用量）；`getRoomMessages(roomId): Message[]`（按 id 升序批量读取房间全部消息，作为事件树的消息来源，与消息流的 `listMessages` 分页互不相干）。
 
 ## 6. 对外依赖
 

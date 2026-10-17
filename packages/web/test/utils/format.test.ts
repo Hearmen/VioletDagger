@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { createT } from '../../src/i18n/translate';
 import {
-  authorInitial, authorLabel, formatCostUsd, formatRelative, formatTokens, formatUsageParts, outcomeLabel, typeLabel,
+  authorInitial, authorLabel, formatCostUsd, formatRelative, formatTokens, formatUsageParts, outcomeLabel, sessionTagLabel,
+  totalTokens, typeLabel,
 } from '../../src/utils/format';
 
 describe('formatTokens', () => {
@@ -15,6 +16,28 @@ describe('formatTokens', () => {
 
   it('shows one decimal in m for millions', () => {
     expect(formatTokens(2_500_000)).toBe('2.5m tok');
+  });
+});
+
+describe('totalTokens', () => {
+  it('sums input, output, cache read and cache write, treating null cache fields as 0', () => {
+    expect(totalTokens({ inputTokens: 1, outputTokens: 2, cacheReadTokens: 30, cacheWriteTokens: 400 })).toBe(433);
+    expect(totalTokens({ inputTokens: 1, outputTokens: 2, cacheReadTokens: null, cacheWriteTokens: null })).toBe(3);
+  });
+});
+
+describe('sessionTagLabel token suffix', () => {
+  const meta = {
+    seq: 1, agentId: 'kimi', outcome: 'completed' as const,
+    startedAt: 'bad', endedAt: 'bad', costUsd: null,
+  };
+  it('shows the cache-inclusive total', () => {
+    expect(sessionTagLabel({ ...meta, inputTokens: 1000, outputTokens: 500, cacheReadTokens: 20_000, cacheWriteTokens: null }, 'kimi', 1))
+      .toBe('kimi #1 · done · 21.5k tok');
+  });
+  it('omits the suffix when input or output is unknown', () => {
+    expect(sessionTagLabel({ ...meta, inputTokens: null, outputTokens: 500, cacheReadTokens: 20_000, cacheWriteTokens: 0 }, 'kimi', 1))
+      .toBe('kimi #1 · done');
   });
 });
 

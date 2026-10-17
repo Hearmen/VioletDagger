@@ -5,7 +5,7 @@ export {
   getRoomAgents, setAgentState, setAgentEnabled, setDispatchPending, setDirectedPending,
 } from './rooms';
 export {
-  createSession, setSessionPgid, setSessionRawLogPath, finishSession, getSession, listSessions, countSessions,
+  createSession, setSessionPgid, setSessionRawLogPath, finishSession, setSessionNative, getSession, listSessions, countSessions,
   markSessionTerminating, markSessionCleanupStarted, appendSessionEvent, listSessionEvents,
   getUsageTotals,
 } from './sessions';

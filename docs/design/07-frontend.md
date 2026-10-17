@@ -28,6 +28,8 @@ React + Vite。只消费 `06-orchestrator-api.md` 的 REST + WebSocket 接口，
 | `--panel-head` | `#151a24` | 面板标题栏 |
 | `--border` | `#1f2733` | 常规分隔线/边框 |
 | `--border-strong` | `#2c3646` | 选中/hover 边框 |
+| `--scrollbar-thumb` | `#4d5766` | 滚动条滑块 |
+| `--scrollbar-thumb-hover` | `#7b8797` | 滚动条滑块 hover/拖动 |
 | `--text` | `#d7dee8` | 主文本 |
 | `--text-muted` | `#7b8797` | 次要文本 |
 | `--text-faint` | `#4d5766` | 时间戳/占位 |
@@ -93,10 +95,11 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - 断点：`<1280px` 默认列宽收窄（200/340）；`<1024px` 退化为单列纵向堆叠（**隐藏分隔条**、取消固定高、页面恢复滚动），消息列表固定高 `55vh`，AgentRail 变横向滚动条。堆叠顺序：header → agents → memory → messages → events。
 - 每个面板 = `.panel`（标题栏 + 可滚动 body，`min-height: 0; overflow: auto`）。面板之间靠分隔条/边框分隔，不叠加卡片阴影。
 - 面板 body 的滚动条**始终可见**，避免 macOS 覆盖式滚动条导致"看不到还有内容"。实现注意：Chromium 只要看到 `scrollbar-width` 就会**忽略 `::-webkit-scrollbar` 自定义样式**、退回覆盖式滚动条；所以 `scrollbar-width`/`scrollbar-color` 只能用 **Firefox 专属的 `@supports (-moz-appearance: none)`** 包住，Chromium/Safari 一律走 `::-webkit-scrollbar` 自定义样式。**不要再写 `@supports not selector(::-webkit-scrollbar)`**——Chromium 对该条件判定为真，会误加 `scrollbar-width`，正是"记忆面板没有滚动条"这个 bug 的成因。
+- 滚动条样式（全局 `::-webkit-scrollbar` 与面板 body、`.session-lanes` 共用同一套）：宽/高 10px；轨道用 `--panel-head` 底色，让滚动区域的边界本身可见；滑块 `--scrollbar-thumb`、圆角 5px、2px 同轨道色的内边框，hover/拖动时 `--scrollbar-thumb-hover`；横向与纵向交汇角（`::-webkit-scrollbar-corner`）同轨道色。Firefox 分支的 `scrollbar-color` 用 `var(--scrollbar-thumb) var(--panel-head)`。
 
 ## 4. RoomHeader
 
-顶栏，`grid-area: header`，`position: sticky`。左侧：返回房间列表的链接、房间名（`GET /api/rooms/:id`）、状态徽标、`currentSessionCount / maxSessions`（`--mono`）、房间总用量（`getUsageSummary().room`，格式见 §5 AgentRail 用量行；`sessionCount === 0` 时不显示这一项）、以及该房间的工作目录 `workdir`（`--mono`、`--text-faint`、单行截断 + 悬浮 `title` 给完整路径）。房间总用量随 `roomStatus` 推送后的重拉节奏一起刷新，不单独轮询。右侧按状态渲染控制：
+顶栏，`grid-area: header`，`position: sticky`。左侧：返回房间列表的链接、房间名（`GET /api/rooms/:id`）、状态徽标、`currentSessionCount / maxSessions`（`--mono`）、房间总用量（`getUsageSummary().room`，格式见 §5 AgentRail 用量行；`sessionCount === 0` 时不显示这一项）、以及该房间的工作目录 `workdir`（`--mono`、`--text-faint`）。工作目录占据左侧信息与右侧控件之间的全部剩余空间，不设固定最大宽度，放得下就完整显示；只有剩余空间不够时才单行截断。截断时保留路径**末尾**、省略号在开头（如 `…/AI_generate/teke`），因为末尾的目录名最能区分房间。悬浮 `title` 始终给完整路径。房间总用量随 `roomStatus` 推送后的重拉节奏一起刷新，不单独轮询。右侧按状态渲染控制：
 
 - `active`：`Pause`；其余非 `completed`：`Resume`（`paused_limit` 时弹输入框要求填 `additionalSessions`，必填不可提交；`paused_manual` 直接调用，见 `03-orchestrator-core.md` 第 4 节）；非 `completed` 恒有 `Confirm Completion`（`--danger` 描边 + 二次确认弹窗）。
 - `completed`：pause/resume/confirm 控制隐藏，顶栏显示"已结束 · 只读"，并保留一个 `Delete Room` 按钮（`--danger` 描边 + 二次确认弹窗，文案同第 11 节）——只有 completed 房间可删；删除成功后跳回 `/`，`nativeDeleteFailures` 非空时随导航带给 RoomListPage 展示（第 11 节）。
@@ -119,7 +122,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 ```
 
 - 状态点用身份色/状态色；`state` 徽标 `running`/`stopping`/`idle`。
-- **用量行**：来自 `getUsageSummary().byAgent[agentId]`（`UsageTotals`，见 `01-storage.md`）。`sessionCount === 0`（这个 agent 在本房间还没跑完过一次）时不显示这一行；否则显示 `inputTokens + outputTokens` 的紧凑数字（如 `12.3k tok`，`cacheReadTokens`/`cacheWriteTokens` 悬浮显示明细，不占卡片空间）；`costUsd` 非 null 时接一个 `· $0.28`，为 null 时（这个 agent 完全不提供费用数据，如 codex、kimi）不显示 `$` 部分；`sessionsWithoutCost > 0` 且 `costUsd` 非 null 时（部分 session 有费用、部分没有）在后面加一个 `*`，悬浮提示"N 个 session 无费用数据，未计入"——不静默让总数显得比实际更精确。
+- **用量行**：来自 `getUsageSummary().byAgent[agentId]`（`UsageTotals`，见 `01-storage.md`）。`sessionCount === 0`（这个 agent 在本房间还没跑完过一次）时不显示这一行；否则显示 token 总量 `inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens` 的紧凑数字（如 `12.3k tok`），与任务分析报告（`10-room-report.md`）`tokens.total` 的口径相同；输入、输出、缓存读、缓存写四项明细悬浮显示，不占卡片空间；`costUsd` 非 null 时接一个 `· $0.28`，为 null 时（这个 agent 完全不提供费用数据，如 codex、kimi）不显示 `$` 部分；`sessionsWithoutCost > 0` 且 `costUsd` 非 null 时（部分 session 有费用、部分没有）在后面加一个 `*`，悬浮提示"N 个 session 无费用数据，未计入"——不静默让总数显得比实际更精确。
 - `running`/`stopping` 且 `sessionStartedAt` 存在时，本地每秒 tick 显示 `已运行 HH:mm:ss`（系统不做超时判定，这是人类判断"跑太久"的唯一依据，需求 3.3）。
 - `sessionId` 徽标可点击（`running`/`stopping` 才有）→ `LiveSessionModal`（实时只读日志，见 §10.1）；`终止` 按钮调用 `terminateAgentSession({ sessionId })`（需求 3.5：操作对象是具体 session，不是 agent）。只要 session 仍为 running/stopping 就保留"终止"，包括已 completed 的房间。
 - `stuck` 时整卡描边 `--warn` + `⚠` 图标，`title="这个 agent 可能卡住了，要不要看看"`（不自动处理，只提示）。
@@ -207,7 +210,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 
 **session 边界标记**（两个标签页共用）：除消息外，时间轴上还有两种只标时间点的条目——**开始标记**（时间取 `startedAt`）和**结束标记**（时间取 `endedAt`，只有到达终态、`endedAt` 非 null 时才有；running/stopping 的 session 只有开始标记）。数据全部来自 `getEventTree().sessions`，不需要新接口：派发和结算都会推送 `roomStatus`，前端据此重拉 `getEventTree()`，标记实时出现（§13）。
 
-- **哪些 session 有标记**：只有"可见 session"才有，它们是已加载消息里 `sessionSeq` 出现过的 session 与 `outcome` 为 `running`/`stopping` 的 session 的并集（§9.3 的 session 列用的就是这个集合）。已加载窗口之外的历史 session 不显示标记；可见 session 的开始时间早于已加载的最早一条消息时，它的开始标记照样显示，位置在最顶部。
+- **哪些 session 有标记**：`getEventTree().sessions` 里的每个 session 都有开始标记，到达终态的再有结束标记。没有发过任何消息的 session（如 `passed`）同样显示标记。
 - **排序**：消息与标记合并成一条序列，按时间升序排列；时间相同时开始标记在前、消息居中、结束标记在后；同一类型内再按消息 `id`、session `seq` 升序。
 - **结束标记的文案与配色**沿用 session 标签的 outcome 规则（`completed`→`done`/`--ok`、`passed`→`--warn`、`error`→`--danger`、`terminated`→`--accent`）。
 - 标记不是消息：不计入标题栏计数，不带 `data-message-id`，不参与关联线，也不会被定位到消息流。点击标记上的 session 文案打开 `SessionDetailModal`。
@@ -215,21 +218,21 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 ### 9.1 标签页
 
 - 标签放在面板标题栏的 `actions` 位（`Panel` 的 `actions` 插槽），`role="tablist"`，两个 `role="tab"` 按钮"时间线"/"Session"，`aria-selected` 标出当前页；选中态用 `--accent` 下边框 + `--accent-soft` 背景。
-- 两页的数据源完全相同：MessageStreamPanel 持有的 `messages` 状态 + `getEventTree().sessions`，实时更新规则（§13）不变，切换标签页不重新拉取。标题栏计数 `count` 两页都是已加载的消息条数。
+- 两页的数据源完全相同：EventTreePanel 自己的事件树消息状态 `treeMessages` + `getEventTree().sessions`，二者都来自 `getEventTree()`，与 MessageStreamPanel 的分页 `messages` 状态相互独立——消息流向上翻页与否不影响事件树。实时更新规则见 §13，切换标签页不重新拉取。标题栏计数 `count` 两页都是 `treeMessages` 的条数，即房间消息总数。
 - 当前选中的标签页写入 `localStorage`（key `vd.eventTree.tab`，值 `timeline` / `sessions`），刷新后沿用；读不到或值非法时回到 `timeline`。读写包在 try/catch 里，失败时只是不记忆，不影响渲染。
 - 未选中的那一页不渲染（不是 `display:none` 隐藏），切回时重新挂载并贴底。
 
 ### 9.2 时间线页
 
-时间线上不存在把消息收拢在其下的 session 节点——每条消息各占一行（agent 在 session 里发的，或人类发的），session 只以开始/结束两个边界标记出现在各自的时间点上；直接复用 MessageStreamPanel 已持有的那份 `messages` 状态，按 `createdAt` 升序排成一条**竖直时间线**（新在下），默认贴底；`newMessage` 推送追加后自动同步。`listMessages` 是分页的，时间线只覆盖已加载窗口内的历史。
+时间线上不存在把消息收拢在其下的 session 节点——每条消息各占一行（agent 在 session 里发的，或人类发的），session 只以开始/结束两个边界标记出现在各自的时间点上；消息来自 `treeMessages`（房间全部消息），按 `createdAt` 升序排成一条**竖直时间线**（新在下），默认贴底；`newMessage` 推送追加后自动同步。时间线覆盖房间完整历史，不受消息流分页影响。
 
 - **消息节点**：类型徽标 + 作者（身份色）+ `HH:mm:ss` + 内容摘要，仅包含 `messages` 表里的正式房间消息（不含原始日志行）。
 - **session 标签**：agent 消息额外带一个 `agentId #seq` 标签（`sessionId` 见需求 4.2）；running/stopping 时只显示 `agentId #seq`，到达终态后从 `getEventTree().sessions` 按 `(agentId, seq)` 查到 outcome 追加显示。**展示文案与底层 `outcome` 值不是同一个词**——`outcome === 'completed'` 显示为 `done`，例如 `codex #1 · done`、`kimi #2 · passed`、`kimi #3 · error`；这是刻意的改写，房间级 `status === 'completed'`（房间头部状态徽标、房间列表卡片，见 §4/§11）在事件树里满屏都是 session 标签的情况下太容易和"这次 session 正常结束、发过实质消息"混成一回事，改用 `done` 避免视觉/语义撞车，底层数据和 API 字段名不变。点击这个标签 → `getSessionDetail({ sessionId })` 打开 `SessionDetailModal`（**复盘视图**，元数据 + 消息列表 + 只读日志回放；running session 也走这里，只是日志为当前快照，见 §10.2）。注意与 AgentRail 的 `LiveSessionModal`（§10.1，实时只读日志）是**两个不同的入口、两种不同的内容**。**人类消息没有这个标签**（没有 `sessionId`），用 human 色 + "人类"标签代替，与 agent 消息在样式上明显区分（需求 3.5）。
 - outcome 展示文案与配色：`completed`→`done`/`--ok`、`passed`→`passed`/`--warn`、`error`→`error`/`--danger`、`terminated`→`terminated`/`--accent`、`running`→身份色呼吸、`stopping`→等待色。
 - **运行时长后缀**：session 到达终态（`endedAt` 非 null）后，在 outcome 之后追加 `· 03:25`，值为 `getEventTree().sessions` 里这条 session 的 `endedAt − startedAt`，用 `formatDuration` 格式化（不足 1 小时显示 `mm:ss`，否则 `h:mm:ss`）。running/stopping 时不显示——正在运行的 session 的实时时长只在 AgentRail 的"已运行 HH:mm:ss"里展示（§5），事件树不每秒 tick。任一时间戳无法解析时不追加，不摆占位符。例如 `codex #1 · done · 03:25 · 12.3k tok`。
-- **用量后缀**：跟在运行时长之后，`getEventTree().sessions` 里这条 session 的 `inputTokens`/`outputTokens` 都非 null 时追加 `· 12.3k tok`（两者之和的紧凑数字）；只要有一个是 null（没有可读的原生会话）就什么都不追加，不摆占位符。费用不放进这个标签（太挤），要看费用和 cache read/write 拆分点进 `SessionDetailModal`（见 §10.2）。
+- **用量后缀**：跟在运行时长之后，`getEventTree().sessions` 里这条 session 的 `inputTokens`/`outputTokens` 都非 null 时追加 `· 12.3k tok`（token 总量 `inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens` 的紧凑数字，口径同 §5；`cacheReadTokens`/`cacheWriteTokens` 为 null 时按 0 计）；只要有一个是 null（没有可读的原生会话）就什么都不追加，不摆占位符。费用不放进这个标签（太挤），要看费用和 cache read/write 拆分点进 `SessionDetailModal`（见 §10.2）。
 - `passed`/报错/人工终止且此前没有实质消息的情况，由编排器核心补写的系统占位消息（见需求 3.5、`03-orchestrator-core.md` §2）会作为一条普通消息节点出现在时间线上，旁边的 session 标签同样按上面规则显示 `· passed`/`· error`/`· terminated`——不需要额外的展示逻辑。
-- **关联线**：每个消息节点带 `data-message-id`；反应类消息（`challenge`/`verify`）和带 `referencedMessageIds` 的 `chain`，在节点旁用一层绝对定位的 SVG（贝塞尔曲线）连到目标节点；目标不在当前时间线内（未加载）时跳过。连线颜色取源消息类型徽标色，选中目标时高亮。主轴就是真实时间，源节点和目标节点通常本就相邻，连线不再需要跨越远距离的容器。
+- **关联线**：每个消息节点带 `data-message-id`；反应类消息（`challenge`/`verify`）和带 `referencedMessageIds` 的 `chain`，在节点旁用一层绝对定位的 SVG（贝塞尔曲线）连到目标节点；目标消息不存在时跳过。连线颜色取源消息类型徽标色，选中目标时高亮。主轴就是真实时间，源节点和目标节点通常本就相邻，连线不再需要跨越远距离的容器。
 - **边界标记行**：按上面的合并排序穿插在消息行之间。它比消息行更矮，只占一行，没有内容区；左边框用该 session 的身份色，但画成**虚线**，和消息行的实线左边框区分开。行内依次是 `HH:mm:ss`（`--text-faint`），然后是 `▶ codex #1 开始`（开始标记，`--text-muted`），或者 `■ codex #1 结束 · done · 03:25 · 12.3k tok`（结束标记，文案来自 `sessionTagLabel` 并加上"结束"字样，颜色按 outcome）。session 文案是按钮，点击打开 `SessionDetailModal`。
 - 空态：没有任何消息、也没有任何边界标记时显示"还没有任何事件"。
 
@@ -240,8 +243,8 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - **事件**：只包括 `messages` 里的消息（与时间线页的条目完全相同，不含生命周期记录和原始日志行），一条消息就是一个事件。
 - **列**：
   - 最左是固定的时间列（`HH:mm:ss`，`--text-faint`、`--mono`），横向滚动时 `position: sticky; left: 0` 固定不动。
-  - 然后是"人类"列：已加载的消息里至少有一条人类消息（`sessionSeq == null`）时才出现，放所有人类消息。
-  - 然后每个 session 一列，按 `seq` 升序从左到右排列。出现的 session 是以下两部分的并集：已加载消息里 `sessionSeq` 出现过的 session，以及 `getEventTree().sessions` 里 `outcome` 为 `running`/`stopping` 的 session（刚启动、还没发消息的 session 也会立刻出现一个空列）。已加载窗口之外、在窗口内没有任何消息的历史 session 不占列。
+  - 然后是"人类"列：`treeMessages` 里至少有一条人类消息（`sessionSeq == null`）时才出现，放所有人类消息。
+  - 然后每个 session 一列，按 `seq` 升序从左到右排列。每个 `getEventTree().sessions` 里的 session 都占一列，包括没有发过任何消息的 session（只有开始/结束标记的空列），以及刚启动、还没发消息的 running session。
   - 列宽固定 120px，超出面板宽度时面板 body 横向滚动（纵向与横向滚动条都常显，同 §3）。
 - **列头**（`position: sticky; top: 0`，`--panel-head` 背景）：
   - session 列：按钮，身份色（`colorForAgent(agentId)`）描边，文案与 §9.2 的 session 标签完全一致（`codex #1 · done · 03:25 · 12.3k tok`，outcome 文案/配色、时长后缀、用量后缀规则都相同，同一个函数生成）；列宽放不下时省略号截断，`title` 显示完整文案。点击 → 打开 `SessionDetailModal`（与 §9.2 的 session 标签是同一个入口）。
@@ -249,7 +252,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - **行**：消息与边界标记按 §9 开头的合并排序，每个条目占一个全局行，块只出现在所属的列里，同一行的其他列留空——各列共用同一条时间轴，并发的 session 在纵向上如实交错。行高固定、紧凑（22px），行与行之间用 `--border` 细线分隔。
 - **事件块**：`MessageTypeBadge`（无 type 的消息用中性灰"消息"徽标）+ `#N`（`--mono`、`--text-muted`）。不显示内容、作者、状态徽标、@ 定向徽标。块左侧 2px 竖条取所在列的颜色（session 列用身份色，人类列用 human 色）。点击 → `onJumpToMessage(message.id)`，在消息流中定位并高亮（与 §9.2 点击时间/内容的行为一致）。
 - **边界标记块**：画在所属 session 列里。开始标记是 `▶ 开始`（`--text-muted`）；结束标记是 `■ done`、`■ passed` 等 outcome 文案，按 outcome 配色，完整的时长和用量放在 `title` 里。点击打开 `SessionDetailModal`。人类列没有边界标记。
-- **运行区间竖线**：在每个 session 列里，从开始标记所在行到结束标记所在行，沿块的左边缘画一条 2px 身份色竖线，这个区间内的事件块都落在线上。running/stopping 的 session 没有结束标记，竖线一直延伸到最后一行。开始标记在已加载窗口之前的 session，竖线从第一行开始。
+- **运行区间竖线**：在每个 session 列里，从开始标记所在行到结束标记所在行，沿块的左边缘画一条 2px 身份色竖线，这个区间内的事件块都落在线上。running/stopping 的 session 没有结束标记，竖线一直延伸到最后一行。
 - **不画关联线**：泳道视图里源和目标常常跨列，贝塞尔连线会横穿整张表、干扰阅读；要看引用关系就切回时间线页。
 - **贴底**：同 §9.2，默认滚到最底部（最新事件）；用户往上滚动后，新事件到来时不强制拉回底部；滚回底部附近（距底 ≤ 24px）后恢复自动贴底。
 - 空态：没有任何消息、也没有任何边界标记时显示"还没有任何事件"（与 §9.2 相同）。只要有一个正在运行的 session，就会显示它的开始标记，不显示空态。
@@ -355,9 +358,9 @@ function useSessionLog(roomId: number, seq: number, mode: 'live' | 'replay'): {
 
 四种推送事件的消费方式不同（`data` 格式见 `06-orchestrator-api.md` 第 2 节——WS 连接本身已按房间绑定，推送都不重复携带 `roomId`）：
 
-- **`newMessage`**：`data` 是完整 `Message` 对象——MessageStreamPanel 直接 append 到列表末尾（同一份 `messages` 状态也让 EventTreePanel 的人类消息节点同步更新）；若 `message.type != null`，MemoryPanel 增量刷新（直接重新调用一次 `getMemoryView()`），并重新拉一次 `getEventTree()`。
-- **`memoryUpdate`**：`data` 是 `{ messageId }`（某条已有消息的 type 或状态变了）——收到后重新调用 `getMemoryView()`；若该消息在已加载的 `messages` 中，用 `getMemoryView()` 返回的同 id 消息替换它，使消息流与事件树的徽标同步更新。
-- **`roomStatus`**：`data` 是 `{}`（纯信号）——收到后重新调用 `getRoomStatus()`，并刷新 `GET /api/rooms/:id`、`getEventTree()`。session 结束时 `roomStatus` 一定会到，但 `newMessage` 不一定（`passed` 不产生消息，`error` 会插入一条 system 消息）。人工终止请求、清理进度/失败、`setAgentEnabled` 也触发 roomStatus；当前打开的 SessionDetailModal 按该信号重拉详情；LiveSessionModal 按 08 第 2/8 节刷新固定目标状态。
+- **`newMessage`**：`data` 是完整 `Message` 对象——MessageStreamPanel 直接 append 到 `messages` 末尾；同时 append 到 EventTreePanel 的 `treeMessages`（按 id 去重，已存在则忽略），事件树立即出现该消息。若 `message.type != null`，MemoryPanel 增量刷新（直接重新调用一次 `getMemoryView()`），并重新拉一次 `getEventTree()`。
+- **`memoryUpdate`**：`data` 是 `{ messageId }`（某条已有消息的 type 或状态变了）——收到后重新调用 `getMemoryView()`；该消息若在 `messages` 或 `treeMessages` 中，分别用 `getMemoryView()` 返回的同 id 消息替换，使消息流与事件树的徽标同步更新。
+- **`roomStatus`**：`data` 是 `{}`（纯信号）——收到后重新调用 `getRoomStatus()`，并刷新 `GET /api/rooms/:id`、`getEventTree()`。session 结束时 `roomStatus` 一定会到，但 `newMessage` 不一定（`passed` 不产生消息，`error` 会插入一条 system 消息）。人工终止请求、清理进度/失败、`setAgentEnabled` 也触发 roomStatus；当前打开的 SessionDetailModal 按该信号重拉详情；LiveSessionModal 按 08 第 2/8 节刷新固定目标状态。每次 `getEventTree()` 重拉（进入房间、重连、带 type 的 `newMessage`、`roomStatus`）都整体替换 `treeMessages` 与 `sessions`。
 - **`roomDeleted`**：`data` 是 `{}`——终态推送。收到后若 `LiveSessionModal`/`SessionDetailModal`（日志）还开着先关闭，然后 `navigate('/')` 回房间列表。
 
 这个设计是刻意的：高频、体积小、已经现成的数据（单条消息）直接推全量内容；低频、需要聚合计算的数据（房间状态、记忆视图、事件树）只推信号，由前端按需拉。日志输出是另一条独立的高频数据通道（日志 WS），刻意不混进这条房间 WS。

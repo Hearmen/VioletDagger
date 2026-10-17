@@ -176,10 +176,12 @@ describe('createRpcHandlers', () => {
     expect(() => (handlers.setAgentEnabled as any)({})).toThrow();
   });
 
-  it('getEventTree returns a lean per-session outcome/time lookup, not a node tree', () => {
+  it('getEventTree returns a lean per-session outcome/time lookup plus every room message', () => {
     const { db, room, handlers } = setup();
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
-    insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'hi', type: 'fact' });
+    const first = insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'hi', type: 'fact' });
+    // 超过 listMessages 默认页大小（30），确认事件树不受分页影响。
+    for (let i = 0; i < 40; i++) insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: `m${i}` });
     const tree: any = handlers.getEventTree();
     expect(tree.sessions).toHaveLength(1);
     expect(tree.sessions[0]).toEqual({
@@ -196,6 +198,9 @@ describe('createRpcHandlers', () => {
     });
     expect(tree.sessions[0].messages).toBeUndefined();
     expect(tree.sessions[0].lifecycleEvents).toBeUndefined();
+    expect(tree.messages).toHaveLength(41);
+    expect(tree.messages[0]).toEqual(first);
+    expect(tree.messages.map((m: any) => m.id)).toEqual([...tree.messages.map((m: any) => m.id)].sort((a: number, b: number) => a - b));
   });
 
   it('getUsageSummary delegates to storage.getUsageTotals for the bound room', () => {

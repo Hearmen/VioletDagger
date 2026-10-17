@@ -59,8 +59,10 @@ function renderPage() {
 describe('RoomDashboardPage', () => {
   const call = vi.fn();
   const handlers: Record<string, (data: any) => void> = {};
+  // 同一事件可能有多个订阅者（如 roomStatus），触发时依次调用全部。
   const subscribe = vi.fn((event: string, handler: (data: any) => void) => {
-    handlers[event] = handler;
+    const previous = handlers[event];
+    handlers[event] = previous ? (data) => { previous(data); handler(data); } : handler;
     return () => {};
   });
 
@@ -70,7 +72,7 @@ describe('RoomDashboardPage', () => {
     }
     if (method === 'listMessages') return Promise.resolve({ messages: [], nextCursor: null });
     if (method === 'getMemoryView') return Promise.resolve(emptyMemory);
-    if (method === 'getEventTree') return Promise.resolve({ sessions: [] });
+    if (method === 'getEventTree') return Promise.resolve({ sessions: [], messages: [] });
     if (method === 'getUsageSummary') return Promise.resolve({ byAgent: {}, room: emptyUsageTotals });
     return Promise.resolve({ ok: true });
   }
@@ -141,6 +143,46 @@ describe('RoomDashboardPage', () => {
       const row = document.querySelector('[data-message-id="2"]')!;
       expect(row.querySelector('.type-badge')).toHaveTextContent('fact');
     });
+  });
+
+  it('feeds the event tree the full room history even when the message stream only loaded the newest page', async () => {
+    window.localStorage.setItem('vd.eventTree.tab', 'sessions');
+    const now = new Date().toISOString();
+    const old = makeMessage({ id: 1, sessionSeq: 1, authorId: 'codex', type: 'fact', content: 'old fact', createdAt: now });
+    const latest = makeMessage({ id: 2, sessionSeq: 3, authorId: 'kimi', type: 'fact', content: 'latest fact', createdAt: now });
+    const pushed = makeMessage({ id: 3, sessionSeq: 3, authorId: 'kimi', type: null, content: 'more', createdAt: now });
+    let treeMessages = [old, latest];
+    call.mockImplementation((method: string) => {
+      if (method === 'getEventTree') {
+        return Promise.resolve({
+          sessions: [
+            { seq: 1, agentId: 'codex', outcome: 'completed', startedAt: now, endedAt: now },
+            { seq: 2, agentId: 'claude', outcome: 'passed', startedAt: now, endedAt: now },
+            { seq: 3, agentId: 'kimi', outcome: 'completed', startedAt: now, endedAt: now },
+          ],
+          messages: treeMessages,
+        });
+      }
+      // 消息流只拿到最新一页，更早的 session #1 消息不在其中。
+      if (method === 'listMessages') return Promise.resolve({ messages: [latest], nextCursor: 1 });
+      return defaultCall(method);
+    });
+    renderPage();
+
+    await waitFor(() => {
+      const heads = [...document.querySelectorAll('.lane-head')].map((el) => el.textContent);
+      expect(heads).toEqual(['codex #1 · done · 00:00', 'claude #2 · passed · 00:00', 'kimi #3 · done · 00:00']);
+    });
+    expect(document.querySelector('[data-lane-message-id="1"]')).not.toBeNull();
+
+    // 事件树重拉已带回这条消息后，newMessage 推送再到也不重复追加。
+    treeMessages = [old, latest, pushed];
+    handlers.roomStatus({});
+    await waitFor(() => expect(document.querySelector('[data-lane-message-id="3"]')).not.toBeNull());
+    handlers.newMessage(pushed);
+    await screen.findByText('more');
+    await waitFor(() => expect(document.querySelectorAll('[data-lane-message-id="3"]')).toHaveLength(1));
+    window.localStorage.clear();
   });
 
   it('shows a toast when postHumanMessage fails', async () => {
@@ -225,22 +267,19 @@ describe('RoomDashboardPage', () => {
 
   it('opens the read-only session detail from a message row\'s session tag', async () => {
     const now = new Date().toISOString();
+    const placeholder = makeMessage({
+      id: 1, sessionSeq: 4, authorId: 'codex', type: null,
+      content: 'Agent codex 的 session #4 未发出任何实质消息', createdAt: now,
+    });
     call.mockImplementation((method: string) => {
       if (method === 'getEventTree') {
         return Promise.resolve({
           sessions: [{ seq: 4, agentId: 'codex', outcome: 'passed', startedAt: now, endedAt: now }],
+          messages: [placeholder],
         });
       }
       if (method === 'listMessages') {
-        return Promise.resolve({
-          messages: [
-            makeMessage({
-              id: 1, sessionSeq: 4, authorId: 'codex', type: null,
-              content: 'Agent codex 的 session #4 未发出任何实质消息', createdAt: now,
-            }),
-          ],
-          nextCursor: null,
-        });
+        return Promise.resolve({ messages: [placeholder], nextCursor: null });
       }
       if (method === 'getSessionDetail') {
         return Promise.resolve({

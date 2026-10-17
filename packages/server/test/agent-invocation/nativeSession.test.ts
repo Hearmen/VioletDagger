@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
@@ -285,6 +285,55 @@ describe('kimi adapter', () => {
     vi.stubEnv('KIMI_CODE_HOME', home());
     writeIndex([writeSession('session_a', {}), writeSession('session_b', {})]);
     expect(await getNativeSessionAdapter('kimi').locate(ctx())).toBeNull();
+  });
+
+  it('locates by the stdout session.resume_hint even when several sessions would match', async () => {
+    vi.stubEnv('KIMI_CODE_HOME', home());
+    const a = writeSession('session_a', {});
+    const b = writeSession('session_b', {});
+    writeIndex([a, b]);
+    const rawLogPath = writeRawLog([
+      { role: 'meta', type: 'system.version', version: '2.1.1' },
+      { role: 'assistant', content: 'done' },
+      { role: 'meta', type: 'session.resume_hint', session_id: 'session_b', command: 'kimi -r session_b' },
+    ]);
+    expect(await getNativeSessionAdapter('kimi').locate(ctx({ rawLogPath })))
+      .toEqual({ sessionId: 'session_b', storage: 'file', originalPath: b.sessionDir });
+  });
+
+  it('falls back to matching when the hinted session is not in the index', async () => {
+    vi.stubEnv('KIMI_CODE_HOME', home());
+    const a = writeSession('session_a', {});
+    writeIndex([a]);
+    const rawLogPath = writeRawLog([{ role: 'meta', type: 'session.resume_hint', session_id: 'session_gone' }]);
+    expect(await getNativeSessionAdapter('kimi').locate(ctx({ rawLogPath })))
+      .toEqual({ sessionId: 'session_a', storage: 'file', originalPath: a.sessionDir });
+  });
+
+  it('matches the work directory through symlinks', async () => {
+    vi.stubEnv('KIMI_CODE_HOME', home());
+    const real = path.join(root, 'real-work');
+    const link = path.join(root, 'link-work');
+    mkdirSync(real);
+    symlinkSync(real, link);
+    // kimi 记录解析后的路径，房间配置的是符号链接路径。
+    const a = writeSession('session_a', { workDir: real });
+    writeIndex([a]);
+    expect(await getNativeSessionAdapter('kimi').locate(ctx({ cwd: link })))
+      .toEqual({ sessionId: 'session_a', storage: 'file', originalPath: a.sessionDir });
+  });
+
+  it('resolves a deleted work directory through its nearest existing (symlinked) ancestor', async () => {
+    vi.stubEnv('KIMI_CODE_HOME', home());
+    const realParent = path.join(root, 'real-parent');
+    const linkParent = path.join(root, 'link-parent');
+    mkdirSync(realParent);
+    symlinkSync(realParent, linkParent);
+    // 房间配置的 link-parent/gone 已被删除；kimi 当时记录的是解析后的 real-parent/gone。
+    const a = writeSession('session_a', { workDir: path.join(realParent, 'gone') });
+    writeIndex([a]);
+    expect(await getNativeSessionAdapter('kimi').locate(ctx({ cwd: path.join(linkParent, 'gone') })))
+      .toEqual({ sessionId: 'session_a', storage: 'file', originalPath: a.sessionDir });
   });
 
   it('deletes the session directory and only its index line', async () => {

@@ -106,6 +106,14 @@ export function truncate(text: string, max = 120): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+// token 总量（07-frontend.md §5/§9.2）：输入 + 输出 + 缓存读 + 缓存写，与任务分析报告 tokens.total 同口径；
+// 缓存项为 null 时按 0 计。
+export function totalTokens(usage: {
+  inputTokens: number; outputTokens: number; cacheReadTokens: number | null; cacheWriteTokens: number | null;
+}): number {
+  return usage.inputTokens + usage.outputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0);
+}
+
 // 用量展示（07-frontend.md §9/§5/§4）：调用方负责在 token/costUsd 为 null 时完全不渲染，
 // 这两个函数只管把已知的数字格式化成紧凑文案，不处理"没有数据"的情况。
 export function formatTokens(n: number): string {
@@ -142,16 +150,17 @@ function sessionDuration(meta: SessionMeta): string | null {
 }
 
 // 用量后缀（07-frontend.md §9.2）：时间线页的 session 标签与 Session 页的列头（§9.3）共用本函数。
-// inputTokens/outputTokens 都非 null 才追加，只要有一个是 null
-// （如 kimi）就什么都不追加，不摆占位符；费用不放进这个标签，太挤，见 SessionDetailModal。
+// inputTokens/outputTokens 都非 null 才追加 token 总量，只要有一个是 null
+// （没有可读的原生会话）就什么都不追加，不摆占位符；费用不放进这个标签，太挤，见 SessionDetailModal。
 export function sessionTagLabel(meta: SessionMeta | undefined, agentId: string, seq: number): string {
   const base = `${agentId} #${seq}`;
   if (!meta || meta.outcome === 'running' || meta.outcome === 'stopping') return base;
   const parts = [base, OUTCOME_LABELS[meta.outcome] ?? meta.outcome];
   const duration = sessionDuration(meta);
   if (duration != null) parts.push(duration);
-  if (meta.inputTokens != null && meta.outputTokens != null) {
-    parts.push(formatTokens(meta.inputTokens + meta.outputTokens));
+  const { inputTokens, outputTokens } = meta;
+  if (inputTokens != null && outputTokens != null) {
+    parts.push(formatTokens(totalTokens({ ...meta, inputTokens, outputTokens })));
   }
   return parts.join(' · ');
 }

@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  asRecord, copyInto, emptyStats, homeDir, isMissing, numberOrNull, parseJsonl, readJsonl, ROOM_MCP_SERVER,
-  stringOrNull, sumOrNull, toIso,
-  type NativeSessionAdapter, type NativeToolCall,
+  asRecord, copyInto, emptyStats, homeDir, isMissing, numberOrNull, parseJsonl, readJsonl, readStdoutEvents,
+  ROOM_MCP_SERVER, stringOrNull, sumOrNull, toIso,
+  type JsonRecord, type LocateContext, type LocatedNativeSession, type NativeSessionAdapter, type NativeToolCall,
 } from './adapter';
 
 // kimi 适配器（04-agent-invocation.md §7.6，文件型）。
@@ -28,6 +28,84 @@ async function readText(file: string): Promise<string | null> {
   }
 }
 
+async function isDirectory(dir: string): Promise<boolean> {
+  try {
+    return (await stat(dir)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// kimi 记录的是解析后的路径（如 macOS 上 /tmp/x 记为 /private/tmp/x）。路径已不存在时解析最近一个
+// 仍存在的上级目录再拼回剩余部分；一路到根目录都解析不了时用原字符串比较。
+async function resolvePath(dir: string): Promise<string> {
+  let existing = path.resolve(dir);
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      return path.join(await realpath(existing), ...rest);
+    } catch {
+      const parent = path.dirname(existing);
+      if (parent === existing) return dir;
+      rest.unshift(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+// prompt 模式结束时 stdout 的 session.resume_hint 带会话标识；没有 rawLog 或没有该事件时为 null。
+async function resumeHintSessionId(rawLogPath: string): Promise<string | null> {
+  let events: JsonRecord[];
+  try {
+    events = await readStdoutEvents(rawLogPath);
+  } catch {
+    return null;
+  }
+  for (let i = events.length - 1; i >= 0; i -= 1) {
+    const event = events[i];
+    if (event.role === 'meta' && event.type === 'session.resume_hint') return stringOrNull(event.session_id);
+  }
+  return null;
+}
+
+// 在索引中查找会话标识对应的条目，并确认会话目录存在。
+async function locateById(index: JsonRecord[], sessionId: string): Promise<LocatedNativeSession | null> {
+  for (const entry of index) {
+    if (entry.sessionId !== sessionId) continue;
+    const sessionDir = stringOrNull(entry.sessionDir);
+    if (sessionDir && (await isDirectory(sessionDir))) return { sessionId, storage: 'file', originalPath: sessionDir };
+  }
+  return null;
+}
+
+// 回退匹配：按工作目录、创建时间与 prompt 内容在索引中匹配，恰好一条才算成功。
+async function locateByMatch(index: JsonRecord[], ctx: LocateContext): Promise<LocatedNativeSession | null> {
+  const cwd = await resolvePath(ctx.cwd);
+  const startMs = Date.parse(ctx.startedAt);
+  const endMs = Date.parse(ctx.endedAt);
+  const matches: { sessionId: string; sessionDir: string }[] = [];
+  for (const entry of index) {
+    const sessionId = stringOrNull(entry.sessionId);
+    const sessionDir = stringOrNull(entry.sessionDir);
+    const workDir = stringOrNull(entry.workDir);
+    if (!sessionId || !sessionDir || !workDir || (await resolvePath(workDir)) !== cwd) continue;
+    const state = await readText(path.join(sessionDir, 'state.json'));
+    if (state == null) continue;
+    let createdAt: number | null;
+    try {
+      createdAt = numberOrNull(asRecord(JSON.parse(state)).createdAt);
+    } catch {
+      continue;
+    }
+    if (createdAt == null || createdAt < startMs || createdAt > endMs) continue;
+    const wire = await readText(path.join(sessionDir, WIRE));
+    if (wire == null || !promptMatches(wire, ctx.roomId, ctx.agentId)) continue;
+    matches.push({ sessionId, sessionDir });
+  }
+  if (matches.length !== 1) return null;
+  return { sessionId: matches[0].sessionId, storage: 'file', originalPath: matches[0].sessionDir };
+}
+
 // turn.prompt 的文本是否是本 session 的 prompt（prompt.ts 写入的 roomId / authorId 两行）。
 function promptMatches(wire: string, roomId: number, agentId: string): boolean {
   for (const event of parseJsonl(wire)) {
@@ -44,32 +122,14 @@ export const kimiAdapter: NativeSessionAdapter = {
 
   preassignSessionId: () => null,
 
-  // stdout 里没有会话标识：按工作目录、创建时间与 prompt 内容在索引中匹配，恰好一条才算成功。
+  // 优先用 stdout 的 session.resume_hint 精确定位；没有该事件或索引里查不到时回退匹配。
   async locate(ctx) {
-    const index = await readText(indexPath());
-    if (index == null) return null;
-    const startMs = Date.parse(ctx.startedAt);
-    const endMs = Date.parse(ctx.endedAt);
-    const matches: { sessionId: string; sessionDir: string }[] = [];
-    for (const entry of parseJsonl(index)) {
-      const sessionId = stringOrNull(entry.sessionId);
-      const sessionDir = stringOrNull(entry.sessionDir);
-      if (!sessionId || !sessionDir || entry.workDir !== ctx.cwd) continue;
-      const state = await readText(path.join(sessionDir, 'state.json'));
-      if (state == null) continue;
-      let createdAt: number | null;
-      try {
-        createdAt = numberOrNull(asRecord(JSON.parse(state)).createdAt);
-      } catch {
-        continue;
-      }
-      if (createdAt == null || createdAt < startMs || createdAt > endMs) continue;
-      const wire = await readText(path.join(sessionDir, WIRE));
-      if (wire == null || !promptMatches(wire, ctx.roomId, ctx.agentId)) continue;
-      matches.push({ sessionId, sessionDir });
-    }
-    if (matches.length !== 1) return null;
-    return { sessionId: matches[0].sessionId, storage: 'file', originalPath: matches[0].sessionDir };
+    const text = await readText(indexPath());
+    if (text == null) return null;
+    const index = parseJsonl(text);
+    const hinted = await resumeHintSessionId(ctx.rawLogPath);
+    const byId = hinted ? await locateById(index, hinted) : null;
+    return byId ?? locateByMatch(index, ctx);
   },
 
   async archive(ref, copyDir) {

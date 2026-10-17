@@ -56,6 +56,8 @@ export function RoomDashboardPage() {
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [memory, setMemory] = useState<MemoryViewPayload | null>(null);
   const [eventTree, setEventTree] = useState<EventTreePayload | null>(null);
+  // 事件树自己的全量消息（07 §9.1），与消息流的分页 messages 相互独立。
+  const [treeMessages, setTreeMessages] = useState<Message[]>([]);
   const [usageSummary, setUsageSummary] = useState<UsageSummaryPayload | null>(null);
   const [sessionDetail, setSessionDetail] = useState<SessionDetailPayload | null>(null);
   const [liveSession, setLiveSession] = useState<LiveSessionTarget | null>(null);
@@ -73,7 +75,12 @@ export function RoomDashboardPage() {
   }
 
   const refreshMemory = () => socket.call<MemoryViewPayload>('getMemoryView').then(setMemory).catch(reportLoadError);
-  const refreshEventTree = () => socket.call<EventTreePayload>('getEventTree').then(setEventTree).catch(reportLoadError);
+  // 每次重拉都整体替换 sessions 与 treeMessages（07 §13）。
+  function applyEventTree(tree: EventTreePayload) {
+    setEventTree(tree);
+    setTreeMessages(tree.messages);
+  }
+  const refreshEventTree = () => socket.call<EventTreePayload>('getEventTree').then(applyEventTree).catch(reportLoadError);
   const refreshStatus = () => socket.call<RoomStatusPayload>('getRoomStatus').then(setStatus).catch(reportLoadError);
   const refreshUsageSummary = () =>
     socket.call<UsageSummaryPayload>('getUsageSummary').then(setUsageSummary).catch(reportLoadError);
@@ -83,7 +90,7 @@ export function RoomDashboardPage() {
     fetchRoom(roomIdNum).then(setRoom).catch(reportLoadError);
     socket.call<RoomStatusPayload>('getRoomStatus').then(setStatus).catch(reportLoadError);
     socket.call<MemoryViewPayload>('getMemoryView').then(setMemory).catch(reportLoadError);
-    socket.call<EventTreePayload>('getEventTree').then(setEventTree).catch(reportLoadError);
+    socket.call<EventTreePayload>('getEventTree').then(applyEventTree).catch(reportLoadError);
     socket.call<UsageSummaryPayload>('getUsageSummary').then(setUsageSummary).catch(reportLoadError);
     socket
       .call<MessagesPage>('listMessages', {})
@@ -98,19 +105,24 @@ export function RoomDashboardPage() {
   useEffect(() => {
     const unsubMessage = socket.subscribe('newMessage', (message: Message) => {
       setMessages((prev) => [...prev, message]);
+      setTreeMessages((prev) => (prev.some((item) => item.id === message.id) ? prev : [...prev, message]));
       if (message.type != null) {
         refreshMemory();
         refreshEventTree();
       }
     });
-    // 重拉记忆视图；若该消息在已加载的消息流中，用新版本替换它，使消息流与事件树的徽标同步更新（07 §13）。
+    // 重拉记忆视图；该消息若在消息流或事件树的消息中，用新版本替换它，使两边的徽标同步更新（07 §13）。
     const unsubMemory = socket.subscribe('memoryUpdate', ({ messageId }: { messageId: number }) => {
       socket
         .call<MemoryViewPayload>('getMemoryView')
         .then((view) => {
           setMemory(view);
           const updated = findInMemory(view, messageId);
-          if (updated) setMessages((prev) => prev.map((message) => (message.id === messageId ? updated : message)));
+          if (updated) {
+            const replace = (prev: Message[]) => prev.map((message) => (message.id === messageId ? updated : message));
+            setMessages(replace);
+            setTreeMessages(replace);
+          }
         })
         .catch(reportLoadError);
     });
@@ -317,7 +329,7 @@ export function RoomDashboardPage() {
         {eventTree ? (
           <EventTreePanel
             sessions={eventTree.sessions}
-            messages={messages}
+            messages={treeMessages}
             transitions={memory?.transitions}
             onOpenSession={(sessionId) =>
               socket.call<SessionDetailPayload>('getSessionDetail', { sessionId }).then(setSessionDetail).catch(reportActionError)

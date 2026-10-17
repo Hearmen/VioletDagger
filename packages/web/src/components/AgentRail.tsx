@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { RoomStatusPayload, UsageTotals } from '../api/types';
 import { useI18n } from '../i18n/LocaleProvider';
-import { colorForAgent, formatCostUsd, formatElapsed, formatTokens, formatUsageParts } from '../utils/format';
+import { colorForAgent, formatCostUsd, formatElapsed, formatTokens, formatUsageParts, totalTokens } from '../utils/format';
 
 // 用量行（07-frontend.md §5）：sessionCount === 0（这个 agent 在本房间还没跑完过一次）时不显示；
 // cacheRead/cacheWrite 只放悬浮 title，不占卡片空间；costUsd 为 null 时（如 kimi）不显示 $ 部分；
@@ -12,7 +12,7 @@ function AgentUsageLine({ usage }: { usage: UsageTotals }) {
   const title = formatUsageParts(usage, t, locale).join(' · ');
   return (
     <p className="agent-card__usage mono" title={title}>
-      {formatTokens(usage.inputTokens + usage.outputTokens)}
+      {formatTokens(totalTokens(usage))}
       {usage.costUsd != null && (
         <>
           {' '}· {formatCostUsd(usage.costUsd)}

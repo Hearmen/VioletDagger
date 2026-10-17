@@ -372,6 +372,8 @@ function finishSession(roomId: number, seq: number,
   usage?: SessionUsage, native?: SessionNativeRef): void;
 // usage 与 native 来自 SessionExitEvent（04-agent-invocation.md §7.2：locate → archive → analyze）；
 // spawn-failed/not-started 不传，对应字段落 NULL
+function setSessionNative(roomId: number, seq: number, native: SessionNativeRef, usage: SessionUsage): void;
+// 只供历史 session 补录（04 §7.7）：写入原生会话四个字段，并用 usage 整体覆盖五个用量字段（null 也写入，不 COALESCE）
 function markSessionTerminating(roomId: number, seq: number): { changed: boolean; session: Session };
 function markSessionCleanupStarted(roomId: number, seq: number, attemptId: string): void;
 function appendSessionEvent(roomId: number, seq: number, kind: SessionEvent['kind'], detail?: string, attemptId?: string): void;
@@ -394,7 +396,7 @@ function countMessages(roomId: number): number;          // postHumanMessage 判
 function getMessagesBySession(roomId: number, seq: number): Message[]; // 供 SessionDetailModal 渲染该 session 的消息列表，也用于核心判断该 session 是否产出过带 type 的消息
 function listMessages(roomId: number, cursor?: number, limit?: number): { messages: Message[]; nextCursor: number | null };
 function getMessagesByType(roomId: number, type: MessageType): Message[]; // 按当前 type
-function getRoomMessages(roomId: number): Message[]; // 批量读取 room 全部消息，供记忆投影一次性建表，避免逐条查询
+function getRoomMessages(roomId: number): Message[]; // 批量读取 room 全部消息（按 id 升序），供记忆投影一次性建表、事件树（06 getEventTree）一次取全量，避免逐条查询
 function getRecentRawMessages(roomId: number, n: number): Message[];
 function getActiveExploring(roomId: number): Message[];
 function getActiveExploringByAuthor(roomId: number, authorId: string): Message | null; // 核心校验"exploring 不可叠加"用

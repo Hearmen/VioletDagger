@@ -75,19 +75,13 @@ function entryTieBreak(entry: TreeEntry): number {
   return entry.seq;
 }
 
-// 可见 session = 已加载消息里出现过的 session ∪ running/stopping session；只有可见 session 有边界标记。
+// 每个 session 都有开始标记，到达终态的再有结束标记（07-frontend.md §9）；
 // 消息与标记合并成一条按时间升序的序列，两个标签页共用。
 function buildEntries(
   messages: Message[],
   sessions: SessionMeta[],
   transitions: Record<number, StateTransition[]> = {},
 ): TreeEntry[] {
-  const visible = new Set<number>();
-  for (const message of messages) if (message.sessionSeq != null) visible.add(message.sessionSeq);
-  for (const session of sessions) {
-    if (session.outcome === 'running' || session.outcome === 'stopping') visible.add(session.seq);
-  }
-
   const entries: TreeEntry[] = messages.map((message) => ({
     kind: 'message', key: `m-${message.id}`, time: message.createdAt, message,
   }));
@@ -97,7 +91,6 @@ function buildEntries(
     }
   }
   for (const meta of sessions) {
-    if (!visible.has(meta.seq)) continue;
     entries.push({ kind: 'start', key: `s-${meta.seq}`, time: meta.startedAt, seq: meta.seq, agentId: meta.agentId, meta });
     if (meta.endedAt != null) {
       entries.push({ kind: 'end', key: `e-${meta.seq}`, time: meta.endedAt, seq: meta.seq, agentId: meta.agentId, meta });

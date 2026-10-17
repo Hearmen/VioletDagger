@@ -293,12 +293,12 @@ describe('EventTreePanel tabs and session lanes', () => {
     expect(screen.getByRole('tab', { name: '时间线' })).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('builds lanes: human first, then loaded or running sessions by seq', () => {
+  it('builds lanes: human first, then every session by seq', () => {
     window.localStorage.setItem('vd.eventTree.tab', 'sessions');
     const { container } = renderPanel();
     const heads = [...container.querySelectorAll('.lane-head')].map((el) => el.textContent);
-    // seq 4 既没有已加载的消息也不在运行，不占列；seq 3 在运行，即使没有消息也占列。
-    expect(heads).toEqual(['人类', 'codex #1 · done', 'kimi #2 · passed', 'claude #3']);
+    // 没有消息的 session（运行中的 seq 3、已结束的 seq 4）同样占列。
+    expect(heads).toEqual(['人类', 'codex #1 · done', 'kimi #2 · passed', 'claude #3', 'opencode #4 · done']);
   });
 
   it('puts every event on its own global row, in its session column, ordered by time', () => {
@@ -339,7 +339,7 @@ describe('EventTreePanel session boundary markers', () => {
   const sessions = [
     makeSession({ seq: 1, agentId: 'codex', outcome: 'completed', startedAt: 't2', endedAt: 't5' }),
     makeSession({ seq: 2, agentId: 'kimi', outcome: 'running', startedAt: 't3', endedAt: null }),
-    // 已加载窗口之外、也不在运行：不可见，不出标记。
+    // 没有发过消息的已结束 session：同样有开始/结束标记。
     makeSession({ seq: 3, agentId: 'claude', outcome: 'completed', startedAt: 't0', endedAt: 't0' }),
   ];
   const messages: Message[] = [
@@ -358,14 +358,15 @@ describe('EventTreePanel session boundary markers', () => {
   it('merges start/end markers into the timeline by time, start before and end after same-time messages', () => {
     const { container } = render(<EventTreePanel sessions={sessions} messages={messages} onOpenSession={vi.fn()} />);
     expect(order(container, '.tree-row, .tree-marker', 'data-message-id', 'data-marker')).toEqual([
-      'm1', 'start-1', 'm2', 'start-2', 'm3', 'end-1',
+      'start-3', 'end-3', 'm1', 'start-1', 'm2', 'start-2', 'm3', 'end-1',
     ]);
     expect(screen.getByText('▶ codex #1 开始')).toBeInTheDocument();
     expect(screen.getByText('■ codex #1 结束 · done')).toBeInTheDocument();
     // 运行中的 session 只有开始标记。
     expect(screen.getByText('▶ kimi #2 开始')).toBeInTheDocument();
     expect(screen.queryByText(/kimi #2 结束/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/claude #3/)).not.toBeInTheDocument();
+    expect(screen.getByText('▶ claude #3 开始')).toBeInTheDocument();
+    expect(screen.getByText('■ claude #3 结束 · done')).toBeInTheDocument();
     // 标记不计入计数。
     expect(container.querySelector('.panel__count')).toHaveTextContent('3');
   });
@@ -383,19 +384,21 @@ describe('EventTreePanel session boundary markers', () => {
     const { container } = render(<EventTreePanel sessions={sessions} messages={messages} onOpenSession={onOpenSession} />);
     const rows = [...container.querySelectorAll<HTMLElement>('.lane-row:not(.lane-row--head)')];
     expect(rows.map((row) => row.dataset.laneMarker ?? `m${row.dataset.laneMessageId}`)).toEqual([
-      'm1', 'start-1', 'm2', 'start-2', 'm3', 'end-1',
+      'start-3', 'end-3', 'm1', 'start-1', 'm2', 'start-2', 'm3', 'end-1',
     ]);
-    // codex #1（第 3 列）的竖线从开始行（1）到结束行（5）；kimi #2（第 4 列）从开始行（3）延伸到最后一行。
+    // codex #1（第 3 列）的竖线从开始行（3）到结束行（7）；kimi #2（第 4 列）从开始行（5）延伸到最后一行；
+    // 没有消息的 claude #3（第 5 列）只覆盖自己的开始、结束两行。
     const railRows = (column: string) =>
       rows.flatMap((row, index) =>
         [...row.querySelectorAll<HTMLElement>('.lane-rail')].some((rail) => rail.style.gridColumn === column) ? [index] : [],
       );
-    expect(railRows('3')).toEqual([1, 2, 3, 4, 5]);
-    expect(railRows('4')).toEqual([3, 4, 5]);
-    expect(rows[1].querySelector('.lane-rail')).toHaveClass('lane-rail--start');
-    expect(within(rows[5]).getByText('■ done')).toHaveClass('outcome-text--completed');
+    expect(railRows('3')).toEqual([3, 4, 5, 6, 7]);
+    expect(railRows('4')).toEqual([5, 6, 7]);
+    expect(railRows('5')).toEqual([0, 1]);
+    expect(rows[3].querySelector('.lane-rail')).toHaveClass('lane-rail--start');
+    expect(within(rows[7]).getByText('■ done')).toHaveClass('outcome-text--completed');
 
-    fireEvent.click(within(rows[3]).getByText('▶ 开始'));
+    fireEvent.click(within(rows[5]).getByText('▶ 开始'));
     expect(onOpenSession).toHaveBeenCalledWith(2);
   });
 

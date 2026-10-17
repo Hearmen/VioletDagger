@@ -134,30 +134,15 @@ body.is-resizing-y {
   .panel__body,
   .session-lanes {
     scrollbar-width: thin;
-    scrollbar-color: var(--border-strong) transparent;
+    scrollbar-color: var(--scrollbar-thumb) var(--panel-head);
   }
-}
-
-.panel__body::-webkit-scrollbar,
-.session-lanes::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-.panel__body::-webkit-scrollbar-thumb,
-.session-lanes::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: 4px;
-}
-
-.panel__body::-webkit-scrollbar-track,
-.session-lanes::-webkit-scrollbar-track {
-  background: transparent;
 }
 
 /* ---- room header ---- */
 .room-header {
   grid-area: header;
+  /* 网格项默认不小于内容宽度；不加这一行，单列布局里完整的工作目录会把整列撑宽（07 §4）。 */
+  min-width: 0;
   background: var(--panel-head);
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -182,16 +167,25 @@ body.is-resizing-y {
   font-size: 15px;
 }
 
-.room-header__workdir {
-  color: var(--text-faint);
-  max-width: 280px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+/* 工作目录之外的条目保持单行、不被压缩；工作目录只分到剩余空间（07 §4）。 */
+.room-header__bar > * {
+  flex-shrink: 0;
   white-space: nowrap;
 }
 
-.room-header__spacer {
-  margin-left: auto;
+.room-header__bar > .room-header__workdir {
+  flex: 1 1 0;
+}
+
+.room-header__workdir {
+  min-width: 0;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 省略号放在开头、保留路径末尾（07 §4）；内层 dir="ltr" 保证斜杠顺序不被 rtl 打乱。 */
+  direction: rtl;
+  text-align: left;
 }
 
 .room-header__controls {

@@ -171,6 +171,34 @@ export function finishSession(
   );
 }
 
+// 只供历史 session 补录（04 §7.7）：写入原生会话四个字段，并用 usage 整体覆盖五个用量字段（null 也写入，不 COALESCE）。
+export function setSessionNative(
+  db: Database.Database,
+  roomId: number,
+  seq: number,
+  native: SessionNativeRef,
+  usage: SessionUsage,
+): void {
+  db.prepare(
+    `UPDATE sessions SET
+       native_session_id = ?, native_storage = ?, native_original_path = ?, native_copy_path = ?,
+       input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, cost_usd = ?
+     WHERE room_id = ? AND seq = ?`,
+  ).run(
+    native.sessionId,
+    native.storage,
+    native.originalPath,
+    native.copyPath,
+    usage.inputTokens,
+    usage.outputTokens,
+    usage.cacheReadTokens,
+    usage.cacheWriteTokens,
+    usage.costUsd,
+    roomId,
+    seq,
+  );
+}
+
 export function getSession(db: Database.Database, roomId: number, seq: number): Session | null {
   const row = db.prepare(`SELECT * FROM sessions WHERE room_id = ? AND seq = ?`).get(roomId, seq);
   return row ? mapSessionRow(row) : null;

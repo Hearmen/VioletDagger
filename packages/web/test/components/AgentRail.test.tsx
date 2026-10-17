@@ -105,10 +105,11 @@ describe('AgentRail', () => {
   it('shows a compact usage line with cost when the agent has completed sessions with usage data', () => {
     renderRail([makeAgent()], {
       usageByAgent: {
-        codex: makeUsage({ inputTokens: 8000, outputTokens: 4345, sessionCount: 2, costUsd: 0.28 }),
+        codex: makeUsage({ inputTokens: 8000, outputTokens: 4345, cacheReadTokens: 30_000, cacheWriteTokens: 655, sessionCount: 2, costUsd: 0.28 }),
       },
     });
-    expect(screen.getByTestId('agent-codex')).toHaveTextContent('12.3k tok');
+    // 总量含缓存读写：8000 + 4345 + 30000 + 655。
+    expect(screen.getByTestId('agent-codex')).toHaveTextContent('43.0k tok');
     expect(screen.getByTestId('agent-codex')).toHaveTextContent('$0.28');
   });
 

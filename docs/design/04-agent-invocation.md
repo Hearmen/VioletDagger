@@ -293,12 +293,14 @@ function getNativeSessionAdapter(registryKey: string): NativeSessionAdapter;
 ### 7.6 kimi 适配器（文件型）
 
 - **preassignSessionId**：null。
-- **locate**：stdout 里没有会话标识。在 `<kimiHome>/session_index.jsonl` 中查找满足以下全部条件的条目；`kimiHome` 为 `$KIMI_CODE_HOME`，未设置时为 `~/.kimi-code`：
-  - `workDir` 等于本 session 的 cwd；
-  - 该会话 `state.json` 的 `createdAt` 落在本 session 启动与结束之间；
-  - `agents/main/wire.jsonl` 中 `turn.prompt` 的文本同时包含本 session 的 `roomId` 与 `agentId`。
+- **locate**：
+  1. **优先读 stdout**：从 rawLog 的 stdout 中取最后一个 `role=meta`、`type=session.resume_hint` 事件的 `session_id`（kimi 在 prompt 模式结束时输出）。在 `<kimiHome>/session_index.jsonl` 中查找 `sessionId` 等于它的条目，取其 `sessionDir`，并确认目录存在；`kimiHome` 为 `$KIMI_CODE_HOME`，未设置时为 `~/.kimi-code`。
+  2. **回退匹配**：stdout 里没有该事件（如 CLI 中途崩溃），或索引中查不到该标识时，在索引中查找满足以下全部条件的条目：
+     - `workDir` 与本 session 的 cwd 指向同一目录：两者都先经 `realpath` 解析后再比较（kimi 记录的是解析后的路径，如 macOS 上 `/tmp/x` 记为 `/private/tmp/x`）；路径本身已不存在时（如房间的工作目录后来被删除），解析其最近一个仍存在的上级目录，再拼回剩余部分（`/tmp/memos` 不存在时解析 `/tmp` 得 `/private/tmp`，结果为 `/private/tmp/memos`）；根目录都无法解析时退回原字符串比较；
+     - 该会话 `state.json` 的 `createdAt` 落在本 session 启动与结束之间；
+     - `agents/main/wire.jsonl` 中 `turn.prompt` 的文本同时包含本 session 的 `roomId` 与 `agentId`。
 
-  恰好一条匹配才算成功。
+     恰好一条匹配才算成功。
 - **archive**：复制整个会话目录。
 - **analyze**（读 `agents/main/wire.jsonl`）：
   - **token**：`usage.record` 的 `inputOther` / `output` / `inputCacheRead` / `inputCacheCreation` 求和。
@@ -311,3 +313,14 @@ function getNativeSessionAdapter(registryKey: string): NativeSessionAdapter;
   - 删除会话目录。
   - 从 `session_index.jsonl` 中移除 `sessionId` 等于该会话的行，其他行原样保留：读取后写入同目录临时文件，再原子 rename 覆盖。
   - 已知限制：kimi 恰好在读取与 rename 之间追加的新行会丢失。删除只针对已结束的房间，此时这些 session 都已不在运行，但同一台机器上其他 kimi 进程的写入无法排除。
+
+### 7.7 历史 session 补录
+
+原生会话分析上线之前结束的 session 没有原生会话记录。一次性补录脚本为它们补做 locate → archive → analyze，用法：`npx tsx scripts/backfill-native-sessions.ts [--room <roomId>] [--dry-run]`（在 `packages/server` 下运行）。
+
+- **对象**：`outcome` 不是 `running`/`stopping`、`native_session_id` 为空、且其 agent 的 registryKey 有适配器的 session；`--room` 只处理指定房间。已有原生会话记录的 session 跳过，所以脚本可以重复运行。
+- **流程**：与 §7.2 结束后的流程相同，使用同一套适配器与同一副本目录 `<logsDir>/<roomId>/native/<seq>`。`preassignedId` 传 null，因此依赖预分配标识的适配器（claude）定位不到历史 session，会被跳过。
+- **写入**：locate 成功时，经 `01-storage.md` 的 `setSessionNative` 写入原生会话标识、存储类型、原始位置、副本路径，以及 analyze 得到的用量。用量**整体覆盖**旧值（包括旧版从 stdout 提取的数值），使所有 session 的用量都来自原生会话、口径一致。locate 未找到，或 archive/analyze 失败时，不改动该 session，原有用量保留。
+- **不做**：不改 outcome、时间、生命周期记录，不 emit 任何事件。运行中的服务端不受影响：前端下次拉取用量或报告时即可看到新值。
+- **`--dry-run`**：照常 locate；文件型复制到系统临时目录下的一次性目录再 analyze，分析完立即删除（各适配器的 analyze 都按副本目录读取，不能直接读原件）；数据库型直接只读原库。不写入日志目录、不写库，打印将写入的数值。
+- **输出**：每个 session 一行（房间、seq、agent、结果：已写入 / 未定位 / 失败及原因），最后打印汇总计数。

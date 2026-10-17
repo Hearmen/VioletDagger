@@ -4,6 +4,8 @@
   --panel-head: #151a24;
   --border: #1f2733;
   --border-strong: #2c3646;
+  --scrollbar-thumb: #4d5766;
+  --scrollbar-thumb-hover: #7b8797;
   --text: #d7dee8;
   --text-muted: #7b8797;
   --text-faint: #4d5766;
@@ -145,16 +147,19 @@ textarea:disabled {
   height: 10px;
 }
 
-::-webkit-scrollbar-track {
-  background: transparent;
+/* 滚动条样式（07-frontend.md §3）：轨道可见、滑块与背景拉开对比，面板与泳道共用这一套。 */
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: var(--panel-head);
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #232c3b;
-  border: 2px solid var(--panel);
-  border-radius: 6px;
+  background: var(--scrollbar-thumb);
+  border: 2px solid var(--panel-head);
+  border-radius: 5px;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #303b4e;
+::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background: var(--scrollbar-thumb-hover);
 }

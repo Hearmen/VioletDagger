@@ -27,7 +27,7 @@ interface Lane {
 }
 
 // 列的组成（07-frontend.md §9.3）：有人类消息才出现人类列；session 列就是条目里出现过的 session
-// （即可见 session，见 EventTreePanel 的 buildEntries），按 seq 升序。
+// （即 getEventTree().sessions 的全部 session，见 EventTreePanel 的 buildEntries），按 seq 升序。
 function buildLanes(entries: SessionTreeEntry[]): Lane[] {
   let hasHuman = false;
   const infoBySeq = new Map<number, { agentId: string; meta?: SessionMeta; start?: number; end?: number }>();

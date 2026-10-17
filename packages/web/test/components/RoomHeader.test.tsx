@@ -92,16 +92,32 @@ describe('RoomHeader', () => {
     expect(screen.getByText('已结束 · 只读')).toBeInTheDocument();
   });
 
-  it('shows the room total usage next to the session count when provided', () => {
+  it('shows the room total usage (cache included) next to the session count when provided', () => {
     renderHeader({
       roomUsage: {
-        inputTokens: 8000, outputTokens: 4345, cacheReadTokens: 0, cacheWriteTokens: 0,
+        inputTokens: 8000, outputTokens: 4345, cacheReadTokens: 1_000_000, cacheWriteTokens: 200_000,
         costUsd: 0.28, sessionCount: 3, sessionsWithoutTokens: 0, sessionsWithoutCost: 0,
       },
     });
     expect(screen.getByText('room a')).toBeInTheDocument();
-    expect(document.querySelector('.room-header__usage')?.textContent).toContain('12.3k tok');
+    // 8000 + 4345 + 1,000,000 + 200,000，与任务分析报告 tokens.total 同口径。
+    expect(document.querySelector('.room-header__usage')?.textContent).toContain('1.2m tok');
     expect(document.querySelector('.room-header__usage')?.textContent).toContain('$0.28');
+  });
+
+  it('shows the full workdir with a title, in a left-to-right inner span so it truncates from the start', () => {
+    const long = '/Users/someone/Projects/a/very/long/path/to/the/room/workdir';
+    renderHeader({ room: { ...room, workdir: long } });
+    const workdir = document.querySelector('.room-header__workdir')!;
+    expect(workdir).toHaveAttribute('title', long);
+    expect(workdir.querySelector('[dir="ltr"]')).toHaveTextContent(long);
+  });
+
+  it('keeps an empty workdir slot without a title when the room has no workdir', () => {
+    renderHeader({ room: { ...room, workdir: '' } });
+    const workdir = document.querySelector('.room-header__workdir')!;
+    expect(workdir).not.toHaveAttribute('title');
+    expect(workdir).toBeEmptyDOMElement();
   });
 
   it('shows no room usage summary when no session has finished yet', () => {
