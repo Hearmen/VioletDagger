@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { RoomStatusPayload, UsageTotals } from '../api/types';
+import type { RoomStatus, RoomStatusPayload, UsageTotals } from '../api/types';
 import { useI18n } from '../i18n/LocaleProvider';
 import { colorForAgent, formatCostUsd, formatElapsed, formatTokens, formatUsageParts, totalTokens } from '../utils/format';
 
@@ -25,8 +25,16 @@ function AgentUsageLine({ usage }: { usage: UsageTotals }) {
   );
 }
 
+// sequential 房间的轮次标记输入（07-frontend.md §5）；parallel 房间不传。
+export interface TurnInfo {
+  nextTurnAgentId: string | null;
+  roomStatus: RoomStatus;
+  dispatchIdle: boolean;
+}
+
 export function AgentRail(props: {
   agents: RoomStatusPayload['agents'];
+  turn?: TurnInfo;
   usageByAgent?: Record<string, UsageTotals>;
   onTerminate: (sessionId: number) => void;
   onOpenSession: (sessionId: number) => void;
@@ -39,6 +47,10 @@ export function AgentRail(props: {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // 轮次已停止（房间不为 active，或 dispatchIdle）时不显示"下一位"。
+  const nextTurnAgentId =
+    props.turn && props.turn.roomStatus === 'active' && !props.turn.dispatchIdle ? props.turn.nextTurnAgentId : null;
 
   return (
     <div className="agent-rail">
@@ -57,6 +69,8 @@ export function AgentRail(props: {
               <span className={`agent-card__dot ${agent.state === 'idle' ? 'agent-card__dot--idle' : ''}`} />
               <span className="agent-card__name">{agent.agentId}</span>
               <span className="agent-card__state">{agent.state}</span>
+              {props.turn && active && <span className="turn-badge turn-badge--speaking">{t('agentRail.speaking')}</span>}
+              {agent.agentId === nextTurnAgentId && <span className="turn-badge">{t('agentRail.nextTurn')}</span>}
               {agent.stuck && (
                 <span className="stuck-flag" title={t('agentRail.stuck')}>⚠</span>
               )}

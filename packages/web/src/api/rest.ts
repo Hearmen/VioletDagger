@@ -1,4 +1,4 @@
-import type { AgentInfo, NativeDeleteFailure, Room, RoomSummary } from './types';
+import type { AgentInfo, NativeDeleteFailure, Room, RoomSummary, SchedulingMode } from './types';
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   try {
@@ -32,7 +32,7 @@ export async function fetchAgents(): Promise<AgentInfo[]> {
 export async function createRoom(body: {
   name: string;
   agentIds: string[];
-  schedulingMode: 'sequential';
+  schedulingMode: SchedulingMode;
   maxSessions?: number;
   workdir?: string;
 }): Promise<Room> {

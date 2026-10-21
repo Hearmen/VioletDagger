@@ -9,7 +9,7 @@ import { McpToolError } from '../../src/mcp-server/validation';
 describe('createGetOverviewHandler', () => {
   it('returns the room overview without requiring session binding', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'human', content: 'the goal', type: 'open_question' });
 
@@ -21,7 +21,7 @@ describe('createGetOverviewHandler', () => {
 
   it('returns a business error when the room has no goal yet', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const getOverview = createGetOverviewHandler(db);
     expect(() => getOverview({ roomId: room.id })).toThrow(McpToolError);
     expect(() => getOverview({ roomId: room.id })).toThrow('room has no goal yet');
@@ -37,7 +37,7 @@ describe('createGetOverviewHandler', () => {
 describe('createGetDetailHandler', () => {
   it('returns a single message detail when messageId is given', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const message = insertMessage(db, {
       roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'a fact', type: 'fact',
@@ -50,7 +50,7 @@ describe('createGetDetailHandler', () => {
 
   it('returns all records for a type, including completed exploring', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'exploring A', type: 'exploring' });
     const s2 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
@@ -63,21 +63,21 @@ describe('createGetDetailHandler', () => {
 
   it('rejects when both messageId and type are given', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const getDetail = createGetDetailHandler(db);
     expect(() => getDetail({ roomId: room.id, messageId: 1, type: 'fact' })).toThrow(McpToolError);
   });
 
   it('rejects when neither messageId nor type is given', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const getDetail = createGetDetailHandler(db);
     expect(() => getDetail({ roomId: room.id })).toThrow(McpToolError);
   });
 
   it('rejects a non-existent messageId in an existing room as McpToolError, not an opaque internal error', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const getDetail = createGetDetailHandler(db);
     expect(() => getDetail({ roomId: room.id, messageId: 999999 })).toThrow(McpToolError);
   });

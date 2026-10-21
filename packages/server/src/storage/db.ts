@@ -4,7 +4,7 @@ export const TABLES_SQL = `
 CREATE TABLE IF NOT EXISTS rooms (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  scheduling_mode TEXT NOT NULL DEFAULT 'sequential',
+  scheduling_mode TEXT NOT NULL DEFAULT 'parallel',
   status TEXT NOT NULL DEFAULT 'active',
   max_sessions INTEGER NOT NULL,
   workdir TEXT NOT NULL DEFAULT '',
@@ -141,10 +141,32 @@ export function createDb(path: string): Database.Database {
   // SQLite 默认不启用外键；不打开的话 messages 对 rooms 的外键形同虚设。
   db.pragma('foreign_keys = ON');
   // 必须在建表之前检查：CREATE TABLE IF NOT EXISTS 会先把缺失的 state_transition_log 建出来，掩盖旧 schema。
-  if (hasIncompatibleSchema(db)) rebuild(db);
+  let fresh = !hasTable(db, 'rooms');
+  if (hasIncompatibleSchema(db)) {
+    rebuild(db);
+    fresh = true;
+  }
   db.exec(SCHEMA_SQL);
   addMissingColumns(db);
+  if (fresh) db.pragma(`user_version = ${SCHEMA_USER_VERSION}`);
+  else migrateSchedulingMode(db);
   return db;
+}
+
+// scheduling_mode 取值的一次性改写（见 01-storage.md §5.8）：user_version < 1 的库里 'sequential'
+// 表示并行房间，改写为 'parallel'；user_version 与改写在同一事务内提交，保证只改写一次。
+const SCHEMA_USER_VERSION = 1;
+
+function migrateSchedulingMode(db: Database.Database): void {
+  if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_USER_VERSION) return;
+  db.transaction(() => {
+    db.prepare(`UPDATE rooms SET scheduling_mode = 'parallel' WHERE scheduling_mode = 'sequential'`).run();
+    db.pragma(`user_version = ${SCHEMA_USER_VERSION}`);
+  })();
+}
+
+function hasTable(db: Database.Database, name: string): boolean {
+  return !!db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name);
 }
 
 // 新增的可空列原地补齐（见 01-storage.md §5.7）：缺失就 ALTER TABLE ADD COLUMN，不删数据。
@@ -200,5 +222,6 @@ export function createTestDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA_SQL);
+  db.pragma(`user_version = ${SCHEMA_USER_VERSION}`);
   return db;
 }

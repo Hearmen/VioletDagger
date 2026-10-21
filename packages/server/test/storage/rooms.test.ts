@@ -10,7 +10,7 @@ import { insertMessage, getMessagesByType, getRoomMessages } from '../../src/sto
 describe('rooms', () => {
   it('createRoom sets defaults and getRoom reads them back', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'test room', ['codex', 'claude'], 'sequential');
+    const room = createRoom(db, 'test room', ['codex', 'claude'], 'parallel');
     expect(room.name).toBe('test room');
     expect(room.status).toBe('active');
     expect(room.maxSessions).toBe(20);
@@ -19,42 +19,42 @@ describe('rooms', () => {
 
   it('createRoom uses the default maxSessions when not provided', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     expect(room.maxSessions).toBe(20);
   });
 
   it('createRoom honors an explicit maxSessions', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential', { maxSessions: 5 });
+    const room = createRoom(db, 'a', ['codex'], 'parallel', { maxSessions: 5 });
     expect(room.maxSessions).toBe(5);
   });
 
   it('createRoom rejects a non-positive / non-integer maxSessions', () => {
     const db = createTestDb();
-    expect(() => createRoom(db, 'a', ['codex'], 'sequential', { maxSessions: 0 })).toThrow(/maxSessions/);
-    expect(() => createRoom(db, 'a', ['codex'], 'sequential', { maxSessions: -3 })).toThrow(/maxSessions/);
-    expect(() => createRoom(db, 'a', ['codex'], 'sequential', { maxSessions: 2.5 })).toThrow(/maxSessions/);
+    expect(() => createRoom(db, 'a', ['codex'], 'parallel', { maxSessions: 0 })).toThrow(/maxSessions/);
+    expect(() => createRoom(db, 'a', ['codex'], 'parallel', { maxSessions: -3 })).toThrow(/maxSessions/);
+    expect(() => createRoom(db, 'a', ['codex'], 'parallel', { maxSessions: 2.5 })).toThrow(/maxSessions/);
   });
 
   it('createRoom stores an explicit workdir and defaults to an empty string', () => {
     const db = createTestDb();
-    const withDir = createRoom(db, 'a', ['codex'], 'sequential', { workdir: '/tmp/room-work' });
+    const withDir = createRoom(db, 'a', ['codex'], 'parallel', { workdir: '/tmp/room-work' });
     expect(withDir.workdir).toBe('/tmp/room-work');
-    const withoutDir = createRoom(db, 'b', ['codex'], 'sequential');
+    const withoutDir = createRoom(db, 'b', ['codex'], 'parallel');
     expect(withoutDir.workdir).toBe('');
   });
 
   it('listRooms returns summaries for all rooms', () => {
     const db = createTestDb();
-    createRoom(db, 'a', ['codex'], 'sequential');
-    createRoom(db, 'b', ['claude'], 'sequential');
+    createRoom(db, 'a', ['codex'], 'parallel');
+    createRoom(db, 'b', ['claude'], 'parallel');
     const summaries = listRooms(db);
     expect(summaries.map((r) => r.name)).toEqual(['a', 'b']);
   });
 
   it('setRoomStatus writes completed_at only when completing', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     setRoomStatus(db, room.id, 'paused_manual');
     expect(getRoom(db, room.id)!.completedAt).toBeNull();
     setRoomStatus(db, room.id, 'completed');
@@ -63,21 +63,21 @@ describe('rooms', () => {
 
   it('setRoomStatus updates status', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     setRoomStatus(db, room.id, 'paused_manual');
     expect(getRoom(db, room.id)!.status).toBe('paused_manual');
   });
 
   it('increaseMaxSessions adds to the existing limit', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     increaseMaxSessions(db, room.id, 5);
     expect(getRoom(db, room.id)!.maxSessions).toBe(25);
   });
 
   it('getRoomAgents returns agents ordered by join order', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'parallel');
     const agents = getRoomAgents(db, room.id);
     expect(agents.map((a) => a.agentId)).toEqual(['codex', 'claude']);
     expect(agents[0]).toMatchObject({ joinOrder: 0, state: 'idle', currentSessionSeq: null });
@@ -85,7 +85,7 @@ describe('rooms', () => {
 
   it('setAgentState updates state and current session', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     setAgentState(db, room.id, 'codex', 'running', 1);
     expect(getRoomAgents(db, room.id)[0]).toMatchObject({ state: 'running', currentSessionSeq: 1 });
     setAgentState(db, room.id, 'codex', 'idle');
@@ -94,7 +94,7 @@ describe('rooms', () => {
 
   it('records the registryKey alongside the instance id', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex', 'codex', 'claude'], 'sequential');
+    const room = createRoom(db, 'a', ['codex', 'codex', 'claude'], 'parallel');
     expect(getRoomAgents(db, room.id).map((a) => ({ agentId: a.agentId, registryKey: a.registryKey }))).toEqual([
       { agentId: 'codex-1', registryKey: 'codex' },
       { agentId: 'codex-2', registryKey: 'codex' },
@@ -104,14 +104,14 @@ describe('rooms', () => {
 
   it('a new room starts with no pending flags', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     expect(room).toMatchObject({ dispatchPending: false, pendingAuthorId: null });
     expect(getRoomAgents(db, room.id)[0].directedPending).toBe(false);
   });
 
   it('setDispatchPending records the latest author while set and clears both columns when unset', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     setDispatchPending(db, room.id, true, 'human');
     setDispatchPending(db, room.id, true, 'codex');
     expect(getRoom(db, room.id)).toMatchObject({ dispatchPending: true, pendingAuthorId: 'codex' });
@@ -121,7 +121,7 @@ describe('rooms', () => {
 
   it('setDirectedPending only touches the given agent', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'parallel');
     setDirectedPending(db, room.id, 'claude', true);
     expect(getRoomAgents(db, room.id).map((a) => a.directedPending)).toEqual([false, true]);
     setDirectedPending(db, room.id, 'claude', false);
@@ -147,7 +147,7 @@ describe('assignInstanceIds', () => {
 describe('deleteRoom', () => {
   it('cascade-deletes messages, references, sessions, agents and the room', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const first = insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'fact', type: 'fact' });
     const chain = insertMessage(db, {

@@ -16,7 +16,7 @@ afterEach(() => {
 
 function setup(agents: string[]) {
   const db = createTestDb();
-  const room = createRoom(db, 'a', agents, 'sequential');
+  const room = createRoom(db, 'a', agents, 'parallel');
   const startSession = vi.fn();
   const stuckCounter = createStuckCounter();
   const check = () => checkAndDispatch(db, room.id, startSession, stuckCounter);
@@ -334,7 +334,7 @@ describe('checkAndDispatch — continuation without flags (03-orchestrator-core.
 
   it('pauses the room at the session limit instead of continuing', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential', { maxSessions: 1 });
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'parallel', { maxSessions: 1 });
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
     const seq = createSession(db, room.id, 'codex', 'broadcast', 'room_flag').seq;
     finishSession(db, room.id, seq, 'completed');

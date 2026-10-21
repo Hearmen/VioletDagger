@@ -27,6 +27,7 @@ import {
   setAgentEnabled as orchestratorSetAgentEnabled,
   getStuckAgents,
   isDispatchIdle,
+  getNextTurnAgent,
   type StopSessionProcess,
   type FailureCounter,
 } from '../orchestrator-core';
@@ -101,6 +102,7 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
         status: room.status,
         dispatchIdle: isDispatchIdle(db, roomId),
         disabledAgentCount: roomAgents.filter((agent) => !agent.dispatchEnabled).length,
+        nextTurnAgentId: getNextTurnAgent(db, roomId),
         agents: roomAgents.map((agent) => {
           const active = agent.state === 'running' || agent.state === 'stopping';
           const session =

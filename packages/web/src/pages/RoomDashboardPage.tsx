@@ -283,6 +283,11 @@ export function RoomDashboardPage() {
         />
         <AgentRail
           agents={status.agents}
+          turn={
+            room.schedulingMode === 'sequential'
+              ? { nextTurnAgentId: status.nextTurnAgentId, roomStatus: status.status, dispatchIdle: status.dispatchIdle }
+              : undefined
+          }
           usageByAgent={usageSummary?.byAgent}
           onTerminate={(sessionId) =>
             socket.call('terminateAgentSession', { sessionId }).catch(reportActionError)

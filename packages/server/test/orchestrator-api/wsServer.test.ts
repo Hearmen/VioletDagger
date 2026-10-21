@@ -102,7 +102,7 @@ describe('attachRoomWebSocket', () => {
 
   it('answers an RPC call over the room-scoped connection', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     httpServer = createServer();
     attachRoomWebSocket(httpServer, baseDeps({ db }));
     const port = await listen(httpServer);
@@ -117,8 +117,8 @@ describe('attachRoomWebSocket', () => {
 
   it('forwards a roomEvents "message" emit to the matching room connection only', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
-    const otherRoom = createRoom(db, 'b', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
+    const otherRoom = createRoom(db, 'b', ['codex'], 'parallel');
     httpServer = createServer();
     const roomEvents = new EventEmitter();
     attachRoomWebSocket(httpServer, baseDeps({ db, roomEvents }));
@@ -137,7 +137,7 @@ describe('attachRoomWebSocket', () => {
 
   it('drops an unparsable message silently and keeps the connection open', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     httpServer = createServer();
     attachRoomWebSocket(httpServer, baseDeps({ db }));
     const port = await listen(httpServer);
@@ -154,7 +154,7 @@ describe('attachRoomWebSocket', () => {
 
   it('drops a JSON `null` frame silently and keeps the connection open', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     httpServer = createServer();
     attachRoomWebSocket(httpServer, baseDeps({ db }));
     const port = await listen(httpServer);
@@ -171,7 +171,7 @@ describe('attachRoomWebSocket', () => {
 
   it('responds with the unknown-method error for an inherited Object.prototype name instead of crashing', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     httpServer = createServer();
     attachRoomWebSocket(httpServer, baseDeps({ db }));
     const port = await listen(httpServer);
@@ -187,7 +187,7 @@ describe('attachRoomWebSocket', () => {
 
   it('pushes roomDeleted to the matching room and then closes the connection', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     httpServer = createServer();
     const roomEvents = new EventEmitter();
     attachRoomWebSocket(httpServer, baseDeps({ db, roomEvents }));
@@ -227,7 +227,7 @@ describe('attachRoomWebSocket - logs websocket', () => {
 
   it('replays a JSONL log snapshot and sends end(snapshot-complete) for a finished session', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     dir = mkdtempSync(path.join(tmpdir(), 'violetdagger-logs-'));
     const rawLogPath = path.join(dir, `${session.seq}.jsonl`);
@@ -257,7 +257,7 @@ describe('attachRoomWebSocket - logs websocket', () => {
 
   it('mode=replay reads the disk snapshot without attaching a live handle', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     dir = mkdtempSync(path.join(tmpdir(), 'violetdagger-logs-'));
     const rawLogPath = path.join(dir, `${session.seq}.jsonl`);
@@ -282,7 +282,7 @@ describe('attachRoomWebSocket - logs websocket', () => {
 
   it('streams live chunks and sends end(process-exited) without accepting client input', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
 
     let dataCb: ((chunk: any) => void) | undefined;
@@ -319,7 +319,7 @@ describe('attachRoomWebSocket - logs websocket', () => {
 
   it('closes log connections when the room is deleted', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const roomEvents = new EventEmitter();
     const handle = {

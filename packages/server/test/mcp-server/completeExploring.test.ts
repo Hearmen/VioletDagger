@@ -9,7 +9,7 @@ import { McpToolError } from '../../src/mcp-server/validation';
 
 function setup() {
   const db = createTestDb();
-  const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+  const room = createRoom(db, 'a', ['codex', 'claude'], 'parallel');
   const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
   setAgentState(db, room.id, 'codex', 'running', session.seq);
   const roomEvents = new EventEmitter();

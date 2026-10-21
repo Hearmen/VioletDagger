@@ -7,13 +7,13 @@ import { buildMemoryView } from '../../src/memory/memoryView';
 describe('buildMemoryView', () => {
   it('returns an empty view with a null goal for an empty room', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     expect(buildMemoryView(db, room.id)).toMatchObject({ goalMessageId: null, openQuestions: [], transitions: {} });
   });
 
   it('groups full messages by current type, keeps all exploring, and indexes transitions', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const goal = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
     const h = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'h', type: 'hypothesis', targetMessageId: goal.id });
     const v = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'v', type: 'verify', targetMessageId: h.id, verifyVerdict: false });

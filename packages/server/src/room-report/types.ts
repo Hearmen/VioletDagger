@@ -14,7 +14,7 @@ export interface ReportRow {
     completionRate: Ratio;
     passRate: Ratio;
     errorRate: Ratio;
-    byTrigger: { room_flag: number; directed_flag: number; continuation: number; unknown: number };
+    byTrigger: { room_flag: number; directed_flag: number; continuation: number; turn: number; unknown: number };
   };
   time: {
     totalExecMs: number | null;

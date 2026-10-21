@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import type { Room, RoomStatusPayload, RoomStatus, UsageTotals } from '../api/types';
+import type { Room, RoomStatusPayload, RoomStatus, SchedulingMode, UsageTotals } from '../api/types';
 import type { ConnectionState } from '../hooks/useRoomSocket';
 import { useI18n } from '../i18n/LocaleProvider';
 import type { MessageKey } from '../i18n/zh';
@@ -27,6 +27,12 @@ function RoomUsageSummary({ usage }: { usage: UsageTotals }) {
     </span>
   );
 }
+
+// 调度模式说明（07-frontend.md §4、§11）：RoomListPage 的单选项说明与这里的徽标 title 共用。
+export const SCHEDULING_MODE_HINTS: Record<SchedulingMode, MessageKey> = {
+  parallel: 'common.schedulingParallelHint',
+  sequential: 'common.schedulingSequentialHint',
+};
 
 export const ROOM_STATUS_LABELS: Record<RoomStatus, MessageKey> = {
   active: 'header.statusActive',
@@ -93,6 +99,7 @@ export function RoomHeader(props: {
         </Link>
         <h1 className="room-header__name">{room.name}</h1>
         <span className={`status-pill status-pill--${status.status}`}>{t(ROOM_STATUS_LABELS[status.status])}</span>
+        <span className="mode-badge" title={t(SCHEDULING_MODE_HINTS[room.schedulingMode])}>{room.schedulingMode}</span>
         <span className="mono">{t('header.sessionCount', { current: status.currentSessionCount, max: room.maxSessions })}</span>
         {props.roomUsage && <RoomUsageSummary usage={props.roomUsage} />}
         {/* 工作目录占满剩余空间，放不下时保留路径末尾截断（07 §4）；没有 workdir 时留一个空占位把控件推到右侧。 */}

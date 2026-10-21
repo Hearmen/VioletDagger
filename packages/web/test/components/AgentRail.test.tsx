@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { AgentRail } from '../../src/components/AgentRail';
 import type { RoomStatusPayload, UsageTotals } from '../../src/api/types';
+import type { TurnInfo } from '../../src/components/AgentRail';
 
 const noop = () => {};
 
@@ -18,12 +19,13 @@ function makeUsage(overrides: Partial<UsageTotals> = {}): UsageTotals {
 
 function renderRail(
   agents: RoomStatusPayload['agents'],
-  handlers: { onTerminate?: any; onOpenSession?: any; onSetAgentEnabled?: any; usageByAgent?: Record<string, UsageTotals> } = {},
+  handlers: { onTerminate?: any; onOpenSession?: any; onSetAgentEnabled?: any; usageByAgent?: Record<string, UsageTotals>; turn?: TurnInfo } = {},
 ) {
   return render(
     <AgentRail
       agents={agents}
       usageByAgent={handlers.usageByAgent}
+      turn={handlers.turn}
       onTerminate={handlers.onTerminate ?? vi.fn()}
       onOpenSession={handlers.onOpenSession ?? noop}
       onSetAgentEnabled={handlers.onSetAgentEnabled ?? vi.fn()}
@@ -135,5 +137,41 @@ describe('AgentRail', () => {
       usageByAgent: { kimi: makeUsage({ sessionCount: 0 }) },
     });
     expect(screen.queryByText(/tok/)).not.toBeInTheDocument();
+  });
+
+  describe('turn badges (sequential rooms)', () => {
+    const agents = () => [
+      makeAgent({ agentId: 'codex', state: 'running', sessionId: 1, sessionStartedAt: new Date().toISOString() }),
+      makeAgent({ agentId: 'claude' }),
+    ];
+    const turn = (overrides: Partial<TurnInfo> = {}): TurnInfo =>
+      ({ nextTurnAgentId: 'claude', roomStatus: 'active', dispatchIdle: false, ...overrides });
+
+    it('marks the running agent as speaking and the next agent as next', () => {
+      renderRail(agents(), { turn: turn() });
+      expect(screen.getByTestId('agent-codex')).toHaveTextContent('发言中');
+      expect(screen.getByTestId('agent-claude')).toHaveTextContent('下一位');
+      expect(screen.getByTestId('agent-codex')).not.toHaveTextContent('下一位');
+    });
+
+    it('hides the next badge when the room is idle or not active', () => {
+      const { unmount } = renderRail(agents(), { turn: turn({ dispatchIdle: true }) });
+      expect(screen.getByTestId('agent-claude')).not.toHaveTextContent('下一位');
+      unmount();
+      renderRail(agents(), { turn: turn({ roomStatus: 'paused_manual' }) });
+      expect(screen.getByTestId('agent-claude')).not.toHaveTextContent('下一位');
+    });
+
+    it('shows both badges on one card when the running agent is also next', () => {
+      renderRail([agents()[0]], { turn: turn({ nextTurnAgentId: 'codex' }) });
+      expect(screen.getByTestId('agent-codex')).toHaveTextContent('发言中');
+      expect(screen.getByTestId('agent-codex')).toHaveTextContent('下一位');
+    });
+
+    it('shows no turn badges in parallel rooms', () => {
+      renderRail(agents());
+      expect(screen.getByTestId('agent-codex')).not.toHaveTextContent('发言中');
+      expect(screen.getByTestId('agent-claude')).not.toHaveTextContent('下一位');
+    });
   });
 });

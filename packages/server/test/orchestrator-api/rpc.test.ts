@@ -13,7 +13,7 @@ import { roomEvents as realRoomEvents } from '../../src/events';
 
 function setup() {
   const db = createTestDb();
-  const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+  const room = createRoom(db, 'a', ['codex', 'claude'], 'parallel');
   const roomEvents = new EventEmitter();
   const startSession = vi.fn();
   const stopSessionProcess = vi.fn().mockResolvedValue({
@@ -61,7 +61,7 @@ describe('createRpcHandlers', () => {
   it('postHumanMessage turns core validation errors into 400 ApiErrors', () => {
     const { db, handlers } = setup();
     handlers.postHumanMessage({ content: 'goal' });
-    const other = createRoom(db, 'other', ['codex'], 'sequential');
+    const other = createRoom(db, 'other', ['codex'], 'parallel');
     const otherMessage = insertMessage(db, { roomId: other.id, sessionSeq: null, authorId: 'human', content: 'x', type: 'fact' });
 
     expect(() =>
@@ -130,6 +130,22 @@ describe('createRpcHandlers', () => {
     expect(codexStatus.stuck).toBe(true);
     expect(codexStatus.enabled).toBe(true);
     expect(codexStatus.failureCount).toBe(0);
+  });
+
+  it('getRoomStatus reports nextTurnAgentId: null for parallel rooms, the next speaker for sequential rooms', () => {
+    const { handlers } = setup();
+    expect((handlers.getRoomStatus() as any).nextTurnAgentId).toBeNull();
+
+    const db = createTestDb();
+    const room = createRoom(db, 'seq', ['codex', 'claude'], 'sequential');
+    const seqHandlers = createRpcHandlers({
+      db, roomId: room.id, roomEvents: new EventEmitter(), startSession: vi.fn(), stopSessionProcess: vi.fn(),
+      stuckCounter: createStuckCounter(), failureCounter: createFailureCounter(),
+    });
+    expect((seqHandlers.getRoomStatus() as any).nextTurnAgentId).toBe('codex');
+    const s1 = createSession(db, room.id, 'codex', 'broadcast', 'turn');
+    setAgentState(db, room.id, 'codex', 'running', s1.seq);
+    expect((seqHandlers.getRoomStatus() as any).nextTurnAgentId).toBe('claude');
   });
 
   it('getRoomStatus carries no completion reason or caught-up hints', () => {

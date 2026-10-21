@@ -56,6 +56,7 @@ const COLUMNS: Record<TabId, Column[]> = {
     { label: 'report.colRoomFlag', cell: (r, f) => num(r.sessions.byTrigger.room_flag, f) },
     { label: 'report.colDirectedFlag', cell: (r, f) => num(r.sessions.byTrigger.directed_flag, f) },
     { label: 'report.colContinuation', cell: (r, f) => num(r.sessions.byTrigger.continuation, f) },
+    { label: 'report.colTurn', cell: (r, f) => num(r.sessions.byTrigger.turn, f) },
     { label: 'report.colUnknown', cell: (r, f) => num(r.sessions.byTrigger.unknown, f) },
   ],
   time: [

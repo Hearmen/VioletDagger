@@ -87,10 +87,13 @@ export interface AgentInfo {
   unavailableReason?: string;
 }
 
+// 调度模式（需求 3.3、3.3.3）。
+export type SchedulingMode = 'parallel' | 'sequential';
+
 export interface Room {
   id: number;
   name: string;
-  schedulingMode: 'sequential';
+  schedulingMode: SchedulingMode;
   status: RoomStatus;
   maxSessions: number;
   workdir: string;
@@ -125,6 +128,7 @@ export interface RoomStatusPayload {
   status: RoomStatus;
   dispatchIdle: boolean;        // 无任务派发提醒（06 §4、03 §1.6）
   disabledAgentCount: number;
+  nextTurnAgentId: string | null; // sequential 房间的下一位（06 §4、03 §1.7）；parallel 房间恒为 null
   agents: {
     agentId: string;
     state: 'idle' | 'running' | 'stopping';
@@ -235,7 +239,7 @@ export interface ReportRow {
     completionRate: Ratio;
     passRate: Ratio;
     errorRate: Ratio;
-    byTrigger: { room_flag: number; directed_flag: number; continuation: number; unknown: number };
+    byTrigger: { room_flag: number; directed_flag: number; continuation: number; turn: number; unknown: number };
   };
   time: { totalExecMs: number | null; exec: DurationStats };
   tokens: {

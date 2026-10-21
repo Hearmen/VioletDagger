@@ -13,7 +13,7 @@ function row(agentId: string | null, overrides: Partial<ReportRow> = {}): Report
     sessions: {
       total: 4, byOutcome: { completed: 3, passed: 1, error: 0, terminated: 0 },
       completionRate: 0.75, passRate: 0.25, errorRate: 0,
-      byTrigger: { room_flag: 2, directed_flag: 1, continuation: 1, unknown: 0 },
+      byTrigger: { room_flag: 2, directed_flag: 1, continuation: 1, turn: 0, unknown: 0 },
     },
     time: { totalExecMs: 120_000, exec: { mean: 30_000, median: 30_000, p90: 40_000, max: 40_000, maxSeq: 7 } },
     tokens: {

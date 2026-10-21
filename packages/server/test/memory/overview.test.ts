@@ -7,7 +7,7 @@ import { buildOverview } from '../../src/memory/overview';
 
 function setup() {
   const db = createTestDb();
-  const room = createRoom(db, 'a', ['codex'], 'sequential');
+  const room = createRoom(db, 'a', ['codex'], 'parallel');
   const post = (params: Omit<InsertMessageParams, 'roomId' | 'sessionSeq' | 'authorId'> & { authorId?: string }) =>
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: params.authorId ?? 'codex', ...params });
   const goal = post({ authorId: 'human', content: 'build the thing', type: 'open_question' });
@@ -19,7 +19,7 @@ describe('buildOverview', () => {
 
   it('throws when the room has no goal yet', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     expect(() => buildOverview(db, room.id)).toThrow('room has no goal yet');
   });
 

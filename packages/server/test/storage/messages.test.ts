@@ -14,7 +14,7 @@ import { deleteRoom } from '../../src/storage/rooms';
 describe('insertMessage', () => {
   it('inserts a plain chat message with an auto-truncated summary', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const message = insertMessage(db, {
       roomId: room.id,
@@ -32,7 +32,7 @@ describe('insertMessage', () => {
 
   it('writes the initial state for stateful types', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const q = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'q', type: 'open_question' });
     const chain = insertMessage(db, {
       roomId: room.id, sessionSeq: null, authorId: 'human', content: 'c', type: 'chain',
@@ -50,7 +50,7 @@ describe('insertMessage', () => {
 
   it('does not record chainResolution unless the chain closes its question', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const chain = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'c', type: 'chain', chainResolution: 'RESOLVED' });
     expect(chain.closesQuestion).toBe(false);
     expect(chain.chainResolution).toBeNull();
@@ -58,7 +58,7 @@ describe('insertMessage', () => {
 
   it('persists referencedMessageIds for chain messages', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const fact = insertMessage(db, {
       roomId: room.id, sessionSeq: s1.seq, authorId: 'codex',
@@ -74,7 +74,7 @@ describe('insertMessage', () => {
 
   it('respects an explicitly provided summary', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const message = insertMessage(db, {
       roomId: room.id, sessionSeq: s1.seq, authorId: 'codex',
@@ -87,7 +87,7 @@ describe('insertMessage', () => {
 describe('message read queries', () => {
   it('getFirstMessage returns the room\'s earliest message', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const first = insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'goal: build X' });
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'second message' });
@@ -96,7 +96,7 @@ describe('message read queries', () => {
 
   it('getMessagesBySession returns only that session\'s messages in order', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const s2 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'in session 1' });
@@ -107,7 +107,7 @@ describe('message read queries', () => {
 
   it('listMessages paginates newest-first with a cursor for older history', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     for (let i = 1; i <= 5; i++) {
       insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: `m${i}` });
@@ -122,7 +122,7 @@ describe('message read queries', () => {
 
   it('getMessagesByType filters by type within the room', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'a fact', type: 'fact' });
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'chit chat' });
@@ -131,7 +131,7 @@ describe('message read queries', () => {
 
   it('getActiveExploring returns only active exploring messages', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const x = insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'exploring X', type: 'exploring' });
     completeExploring(db, room.id, x.id, { reason: 'explicit', resultSummary: 'done' });
@@ -145,7 +145,7 @@ describe('message read queries', () => {
 
   it('countMessages counts every message in the room', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     expect(countMessages(db, room.id)).toBe(0);
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'm1' });
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'm2' });
@@ -154,7 +154,7 @@ describe('message read queries', () => {
 
   it('getRecentRawMessages returns the last n messages regardless of type, oldest first', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'm1' });
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'm2', type: 'fact' });
@@ -164,7 +164,7 @@ describe('message read queries', () => {
 
   it('listMessages has null nextCursor at true end of history (boundary case)', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     for (let i = 1; i <= 4; i++) {
       insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: `m${i}` });
@@ -180,7 +180,7 @@ describe('message read queries', () => {
 
   it('listMessages does not throw for limit=0', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: s1.seq, authorId: 'codex', content: 'm1' });
     expect(() => listMessages(db, room.id, undefined, 0)).not.toThrow();
@@ -192,7 +192,7 @@ describe('message read queries', () => {
 describe('completeExploring', () => {
   it('records an explicit completion with its result atomically', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const message = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'exploring X', type: 'exploring' });
     completeExploring(db, room.id, message.id, { reason: 'explicit', resultSummary: 'no conclusion', resultMessageIds: [1, 1] });
     const updated = getMessageById(db, room.id, message.id)!;
@@ -206,7 +206,7 @@ describe('completeExploring', () => {
 
   it('records a human-terminated completion with its note and no result', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const message = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'exploring X', type: 'exploring' });
     completeExploring(db, room.id, message.id, { reason: 'human_terminated', note: '人类强制终止' });
     const updated = getMessageById(db, room.id, message.id)!;
@@ -217,7 +217,7 @@ describe('completeExploring', () => {
 
   it('only allows active -> completed once and rejects non-exploring messages', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const fact = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'a fact', type: 'fact' });
     expect(() => completeExploring(db, room.id, fact.id, { reason: 'explicit', resultSummary: 'x' })).toThrow('not active');
     const exploring = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'e', type: 'exploring' });
@@ -230,7 +230,7 @@ describe('completeExploring', () => {
 describe('state transitions', () => {
   it('setMessageType changes the current type and appends a transition record', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const h = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'h', type: 'hypothesis' });
     const v = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'v', type: 'verify', targetMessageId: h.id, verifyVerdict: true });
     setMessageType(db, room.id, h.id, 'fact', v.id, 'verified');
@@ -242,7 +242,7 @@ describe('state transitions', () => {
 
   it('setMessageType refuses to convert types outside hypothesis/fact/boundary', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const q = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'q', type: 'open_question' });
     expect(() => setMessageType(db, room.id, q.id, 'fact', q.id)).toThrow();
     expect(getStateTransitions(db, room.id, q.id)).toEqual([]);
@@ -250,7 +250,7 @@ describe('state transitions', () => {
 
   it('setQuestionStatus closes and reopens a question, folding the close reason into the status string', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const q = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'q', type: 'open_question' });
     const c = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'c', type: 'chain', targetMessageId: q.id });
     setQuestionStatus(db, room.id, q.id, { status: 'CLOSED', closeReason: 'UNRESOLVED', closedBy: c.id }, 99);
@@ -267,8 +267,8 @@ describe('state transitions', () => {
 
   it('setChainStatus records status transitions; transition ids are room-scoped', () => {
     const db = createTestDb();
-    const roomA = createRoom(db, 'a', ['codex'], 'sequential');
-    const roomB = createRoom(db, 'b', ['codex'], 'sequential');
+    const roomA = createRoom(db, 'a', ['codex'], 'parallel');
+    const roomB = createRoom(db, 'b', ['codex'], 'parallel');
     const a = insertMessage(db, { roomId: roomA.id, sessionSeq: null, authorId: 'codex', content: 'c', type: 'chain' });
     const b = insertMessage(db, { roomId: roomB.id, sessionSeq: null, authorId: 'codex', content: 'c', type: 'chain' });
     setChainStatus(db, roomA.id, a.id, 'CHALLENGED', 5);
@@ -284,7 +284,7 @@ describe('state transitions', () => {
 
   it('runInTransaction rolls back inserts and transitions together', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const h = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'h', type: 'hypothesis' });
     expect(() => runInTransaction(db, () => {
       const v = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'v', type: 'verify', targetMessageId: h.id, verifyVerdict: true });
@@ -298,7 +298,7 @@ describe('state transitions', () => {
 
   it('deleteRoom removes the room transition log', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const c = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'codex', content: 'c', type: 'chain' });
     setChainStatus(db, room.id, c.id, 'REJECT', 1);
     deleteRoom(db, room.id);
@@ -309,8 +309,8 @@ describe('state transitions', () => {
 describe('room-scoped message id', () => {
   it('restarts at 1 in each room (ids are not globally unique)', () => {
     const db = createTestDb();
-    const roomA = createRoom(db, 'a', ['codex'], 'sequential');
-    const roomB = createRoom(db, 'b', ['codex'], 'sequential');
+    const roomA = createRoom(db, 'a', ['codex'], 'parallel');
+    const roomB = createRoom(db, 'b', ['codex'], 'parallel');
     const a1 = insertMessage(db, { roomId: roomA.id, sessionSeq: null, authorId: 'human', content: 'a1' });
     const b1 = insertMessage(db, { roomId: roomB.id, sessionSeq: null, authorId: 'human', content: 'b1' });
     const a2 = insertMessage(db, { roomId: roomA.id, sessionSeq: null, authorId: 'human', content: 'a2' });
@@ -324,8 +324,8 @@ describe('room-scoped message id', () => {
 
   it('allows the same numeric ids to be referenced independently in each room', () => {
     const db = createTestDb();
-    const roomA = createRoom(db, 'a', ['codex'], 'sequential');
-    const roomB = createRoom(db, 'b', ['codex'], 'sequential');
+    const roomA = createRoom(db, 'a', ['codex'], 'parallel');
+    const roomB = createRoom(db, 'b', ['codex'], 'parallel');
     const factA = insertMessage(db, { roomId: roomA.id, sessionSeq: null, authorId: 'human', content: 'fact A', type: 'fact' });
     const factB = insertMessage(db, { roomId: roomB.id, sessionSeq: null, authorId: 'human', content: 'fact B', type: 'fact' });
     expect(factA.id).toBe(1);
@@ -349,7 +349,7 @@ describe('room-scoped message id', () => {
 describe('@ 定向消息 (targetAgentId)', () => {
   it('insertMessage persists targetAgentId and it round-trips through getMessageById', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'parallel');
     const message = insertMessage(db, {
       roomId: room.id, sessionSeq: null, authorId: 'human', content: 'just for you', targetAgentId: 'claude',
     });
@@ -360,7 +360,7 @@ describe('@ 定向消息 (targetAgentId)', () => {
 
   it('defaults targetAgentId to null when not provided', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const message = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'hi' });
 
     expect(message.targetAgentId).toBeNull();

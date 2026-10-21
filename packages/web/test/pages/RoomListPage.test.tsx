@@ -66,7 +66,7 @@ describe('RoomListPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
 
     await waitFor(() =>
-      expect(rest.createRoom).toHaveBeenCalledWith({ name: 'new room', agentIds: ['codex'], schedulingMode: 'sequential' }),
+      expect(rest.createRoom).toHaveBeenCalledWith({ name: 'new room', agentIds: ['codex'], schedulingMode: 'parallel' }),
     );
   });
 
@@ -85,7 +85,7 @@ describe('RoomListPage', () => {
 
     await waitFor(() =>
       expect(rest.createRoom).toHaveBeenCalledWith({
-        name: 'new room', agentIds: ['codex'], schedulingMode: 'sequential', maxSessions: 9,
+        name: 'new room', agentIds: ['codex'], schedulingMode: 'parallel', maxSessions: 9,
       }),
     );
   });
@@ -105,7 +105,7 @@ describe('RoomListPage', () => {
 
     await waitFor(() =>
       expect(rest.createRoom).toHaveBeenCalledWith({
-        name: 'new room', agentIds: ['codex'], schedulingMode: 'sequential', workdir: '/tmp/room-w',
+        name: 'new room', agentIds: ['codex'], schedulingMode: 'parallel', workdir: '/tmp/room-w',
       }),
     );
   });
@@ -197,5 +197,28 @@ describe('RoomListPage', () => {
     expect(await screen.findByText('房间已删除，但 1 个原生会话原件未能删除')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '关闭' }));
     expect(screen.queryByText('/k/s')).not.toBeInTheDocument();
+  });
+
+  it('offers parallel (selected by default) and sequential with a hint each, and submits the chosen mode', async () => {
+    vi.mocked(rest.createRoom).mockResolvedValue({
+      id: 9, name: 'new room', schedulingMode: 'sequential', status: 'active',
+      maxSessions: 20, workdir: '/tmp/work', createdAt: 'now', completedAt: null,
+    });
+    render(<MemoryRouter><RoomListPage /></MemoryRouter>);
+    await screen.findByLabelText('add codex');
+
+    expect(screen.getByLabelText('parallel')).toBeChecked();
+    expect(screen.getByLabelText('sequential')).not.toBeChecked();
+    expect(screen.getByText('agent 可以同时运行，由触发型消息驱动派发')).toBeInTheDocument();
+    expect(screen.getByText('同一时刻只有一个 agent 运行，按加入顺序轮流发言')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('sequential'));
+    fireEvent.change(screen.getByLabelText('room name'), { target: { value: 'new room' } });
+    fireEvent.click(screen.getByLabelText('add codex'));
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() =>
+      expect(rest.createRoom).toHaveBeenCalledWith({ name: 'new room', agentIds: ['codex'], schedulingMode: 'sequential' }),
+    );
   });
 });

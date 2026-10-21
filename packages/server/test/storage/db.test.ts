@@ -12,7 +12,7 @@ describe('createTestDb', () => {
     const file = join(dir, 'test.db');
     try {
       const first = createDb(file);
-      const room = createRoom(first, 'current', ['codex'], 'sequential');
+      const room = createRoom(first, 'current', ['codex'], 'parallel');
       const message = insertMessage(first, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
       first.close();
       const reopened = createDb(file);
@@ -32,7 +32,7 @@ describe('createTestDb', () => {
     const file = join(dir, 'test.db');
     try {
       const first = createDb(file);
-      createRoom(first, 'old', ['codex'], 'sequential');
+      createRoom(first, 'old', ['codex'], 'parallel');
       corrupt(first);
       first.close();
       const rebuilt = createDb(file);
@@ -61,7 +61,7 @@ describe('additive columns (01-storage.md §5.7)', () => {
     const file = join(dir, 'test.db');
     try {
       const first = createDb(file);
-      const room = createRoom(first, 'keep', ['codex'], 'sequential');
+      const room = createRoom(first, 'keep', ['codex'], 'parallel');
       first.exec('ALTER TABLE rooms DROP COLUMN completed_at');
       for (const column of ['dispatch_trigger', 'native_session_id', 'native_storage', 'native_original_path', 'native_copy_path']) {
         first.exec(`ALTER TABLE sessions DROP COLUMN ${column}`);
@@ -73,5 +73,51 @@ describe('additive columns (01-storage.md §5.7)', () => {
       expect(columns).toEqual(expect.arrayContaining(['dispatch_trigger', 'native_session_id', 'native_copy_path']));
       reopened.close();
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('scheduling_mode rewrite (01-storage.md §5.8)', () => {
+  it('rewrites sequential rows to parallel exactly once, guarded by user_version', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'violet-schema-mode-'));
+    const file = join(dir, 'test.db');
+    try {
+      const first = createDb(file);
+      const old = createRoom(first, 'old', ['codex'], 'sequential');
+      // 模拟改写之前的数据库。
+      first.pragma('user_version = 0');
+      first.close();
+
+      const migrated = createDb(file);
+      expect(getRoom(migrated, old.id)!.schedulingMode).toBe('parallel');
+      expect(migrated.pragma('user_version', { simple: true })).toBe(1);
+      const fresh = createRoom(migrated, 'new', ['codex'], 'sequential');
+      migrated.close();
+
+      const reopened = createDb(file);
+      expect(getRoom(reopened, fresh.id)!.schedulingMode).toBe('sequential');
+      expect(getRoom(reopened, old.id)!.schedulingMode).toBe('parallel');
+      reopened.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('marks a brand-new database as already rewritten', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'violet-schema-mode-new-'));
+    const file = join(dir, 'test.db');
+    try {
+      const db = createDb(file);
+      expect(db.pragma('user_version', { simple: true })).toBe(1);
+      const room = createRoom(db, 'r', ['codex'], 'sequential');
+      db.close();
+      const reopened = createDb(file);
+      expect(getRoom(reopened, room.id)!.schedulingMode).toBe('sequential');
+      reopened.close();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('creates rooms.scheduling_mode with a parallel default', () => {
+    const db = createTestDb();
+    const column = (db.prepare('PRAGMA table_info(rooms)').all() as { name: string; dflt_value: string }[])
+      .find((c) => c.name === 'scheduling_mode')!;
+    expect(column.dflt_value).toBe("'parallel'");
   });
 });

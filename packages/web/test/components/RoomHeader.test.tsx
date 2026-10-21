@@ -11,7 +11,7 @@ const room: Room = {
 };
 
 function status(overrides: Partial<RoomStatusPayload> = {}): RoomStatusPayload {
-  return { currentSessionCount: 3, status: 'active', dispatchIdle: false, disabledAgentCount: 0, agents: [], ...overrides };
+  return { currentSessionCount: 3, status: 'active', dispatchIdle: false, disabledAgentCount: 0, nextTurnAgentId: null, agents: [], ...overrides };
 }
 
 function renderHeader(props: Partial<ComponentProps<typeof RoomHeader>> = {}) {
@@ -188,5 +188,11 @@ describe('RoomHeader', () => {
     rerender(header(false));
     rerender(header(true));
     expect(screen.getByText(/当前没有任务可派发/)).toBeInTheDocument();
+  });
+
+  it('shows the scheduling mode as an identifier badge with a hint title', () => {
+    renderHeader();
+    const badge = screen.getByText('sequential');
+    expect(badge).toHaveAttribute('title', '同一时刻只有一个 agent 运行，按加入顺序轮流发言');
   });
 });

@@ -28,7 +28,7 @@ function fakeAdapter(overrides: Partial<NativeSessionAdapter> = {}): NativeSessi
 
 function setup() {
   const db = createTestDb();
-  const room = createRoom(db, 'a', ['kimi'], 'sequential');
+  const room = createRoom(db, 'a', ['kimi'], 'parallel');
   const agentId = getRoomAgents(db, room.id)[0].agentId;
   const finished = (usage = OLD_USAGE) => {
     const s = createSession(db, room.id, agentId, 'broadcast', 'room_flag');
@@ -97,7 +97,7 @@ describe('backfillNativeSessions', () => {
   it('only touches the requested room with --room', async () => {
     const { db, finished } = setup();
     finished();
-    const other = createRoom(db, 'b', ['kimi'], 'sequential');
+    const other = createRoom(db, 'b', ['kimi'], 'parallel');
     const adapter = fakeAdapter();
     const lines = await backfillNativeSessions(db, { logsDir: '/logs', roomId: other.id, getAdapter: () => adapter });
     expect(lines).toEqual([]);

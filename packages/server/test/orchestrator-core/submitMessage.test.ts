@@ -15,7 +15,7 @@ afterEach(() => {
 
 function setup(agents: string[] = ['codex', 'claude']) {
   const db = createTestDb();
-  const room = createRoom(db, 'r', agents, 'sequential');
+  const room = createRoom(db, 'r', agents, 'parallel');
   const startSession = vi.fn();
   const stuckCounter = createStuckCounter();
   const submit = (input: Omit<SubmitMessageInput, 'roomId'>) =>

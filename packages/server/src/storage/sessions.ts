@@ -45,7 +45,7 @@ function mapSessionEventRow(row: any): SessionEvent {
 }
 
 // dispatchScope 与 dispatchTrigger 由调用方（checkAndDispatch）按 03 §1.2 的判定结果传入。
-// 两者对应关系固定：directed_flag ↔ directed，room_flag / continuation ↔ broadcast；不符时抛错。
+// 两者对应关系固定：directed_flag ↔ directed，room_flag / continuation / turn ↔ broadcast；不符时抛错。
 export function createSession(
   db: Database.Database,
   roomId: number,

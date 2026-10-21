@@ -1,7 +1,10 @@
+// 调度模式（见 01-storage.md rooms.scheduling_mode，需求 3.3、3.3.3）。
+export type SchedulingMode = 'parallel' | 'sequential';
+
 export interface Room {
   id: number;
   name: string;
-  schedulingMode: 'sequential';
+  schedulingMode: SchedulingMode;
   status: 'active' | 'paused_limit' | 'paused_manual' | 'completed';
   maxSessions: number;
   workdir: string;   // 绝对路径；空串表示按服务端默认目录解析（历史数据）
@@ -34,7 +37,7 @@ export type SessionExitCause =
 
 export type DispatchScope = 'broadcast' | 'directed';
 // 派发来源（见 01-storage.md sessions.dispatch_trigger），只用于分析报告，不参与调度。
-export type DispatchTrigger = 'room_flag' | 'directed_flag' | 'continuation';
+export type DispatchTrigger = 'room_flag' | 'directed_flag' | 'continuation' | 'turn';
 
 export interface Session {
   roomId: number;

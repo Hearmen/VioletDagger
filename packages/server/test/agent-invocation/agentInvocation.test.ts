@@ -94,7 +94,7 @@ describe('createAgentInvocation - startSession', () => {
   function setup(reg: AgentRegistry = registry, getAdapter?: (key: string) => NativeSessionAdapter) {
     const db = createTestDb();
     const roomAgent = Object.keys(reg.agents)[0];
-    const room = createRoom(db, 'a', [roomAgent], 'sequential');
+    const room = createRoom(db, 'a', [roomAgent], 'parallel');
     const session = createSession(db, room.id, roomAgent, 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal text' });
     const fake = createFakeProcess();
@@ -346,7 +346,7 @@ describe('createAgentInvocation - startSession', () => {
 
   it('reports spawn-failed when spawnProcess throws synchronously', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
     const onSessionEnded = vi.fn();
@@ -417,7 +417,7 @@ describe('createAgentInvocation - startSession', () => {
 
   it('does not crash when the onSessionEnded handler throws', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
     const fake = createFakeProcess();
@@ -453,7 +453,7 @@ describe('createAgentInvocation - attachSessionLog', () => {
 
   function setup() {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
     const fake = createFakeProcess();
@@ -510,7 +510,7 @@ describe('createAgentInvocation - stopSessionProcess', () => {
 
   function setup(stopGraceMs = 20, stopConfirmMs = 30, getAdapter?: (key: string) => NativeSessionAdapter) {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
     const fake = createFakeProcess();
@@ -590,7 +590,7 @@ describe('createAgentInvocation - stopSessionProcess', () => {
 
   it('cancels startup (not-started) when terminated during the prompt-write window', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'human', content: 'goal' });
     let releasePrepare: () => void = () => {};
@@ -650,7 +650,7 @@ describe('createAgentInvocation - deleteRoomArtifacts', () => {
 
   it('deletes native originals recorded on sessions and returns per-original failures without stopping', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex', 'claude', 'kimi'], 'sequential');
+    const room = createRoom(db, 'a', ['codex', 'claude', 'kimi'], 'parallel');
     const native = (sessionId: string) => ({ sessionId, storage: 'file' as const, originalPath: `/orig/${sessionId}`, copyPath: null });
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     finishSession(db, room.id, s1.seq, 'completed', undefined, undefined, undefined, native('a'));

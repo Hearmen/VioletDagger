@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import {
   runInTransaction, insertMessage, getMessageById, countMessages, getActiveExploringByAuthor, getRoomAgents,
   getSession, setMessageType, setQuestionStatus, setChainStatus, setDispatchPending, setDirectedPending,
-  getStateTransitions,
+  getStateTransitions, getRoom,
 } from '../storage';
 import { MESSAGE_TYPES, type CloseReason, type Message, type MessageType } from '../storage/types';
 import { roomEvents } from '../events';
@@ -271,7 +271,13 @@ export function submitMessage(
   roomEvents.emit('message', { roomId, message });
   for (const messageId of changedMessageIds) roomEvents.emit('memoryUpdate', { roomId, messageId });
   if (message.type === 'exploring') resetStuckCount(stuckCounter, roomId, authorId);
-  if (pendingMarked) checkAndDispatch(db, roomId, startSession, stuckCounter);
+  if (pendingMarked) {
+    checkAndDispatch(db, roomId, startSession, stuckCounter);
+    // sequential 房间置位定向标记后，即便没有派发，"下一位"（getNextTurnAgent）也可能变了（03 §1.4 第 7 步）。
+    if (message.targetAgentId != null && getRoom(db, roomId)?.schedulingMode === 'sequential') {
+      roomEvents.emit('roomStatus', { roomId });
+    }
+  }
 
   return { message, changedMessageIds };
 }

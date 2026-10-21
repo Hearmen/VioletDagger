@@ -37,7 +37,7 @@ export function aggregateRow(
 ): ReportRow {
   const total = records.length;
   const byOutcome = { completed: 0, passed: 0, error: 0, terminated: 0 };
-  const byTrigger = { room_flag: 0, directed_flag: 0, continuation: 0, unknown: 0 };
+  const byTrigger = { room_flag: 0, directed_flag: 0, continuation: 0, turn: 0, unknown: 0 };
   for (const r of records) {
     byOutcome[r.outcome]++;
     byTrigger[r.trigger ?? 'unknown']++;

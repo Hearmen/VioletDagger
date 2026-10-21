@@ -26,7 +26,7 @@ describe('createHttpServer', () => {
 
   it('GET /api/rooms returns the room list', async () => {
     const db = createTestDb();
-    createRoom(db, 'a', ['codex'], 'sequential');
+    createRoom(db, 'a', ['codex'], 'parallel');
     httpServer = createHttpServer({ db, registry, deleteRoom: noopDeleteRoom });
     const port = await listen(httpServer);
 
@@ -63,7 +63,7 @@ describe('createHttpServer', () => {
     const res = await fetch(`http://localhost:${port}/api/rooms`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'a', agentIds: ['codex'], schedulingMode: 'sequential' }),
+      body: JSON.stringify({ name: 'a', agentIds: ['codex'], schedulingMode: 'parallel' }),
     });
     const body = await res.json();
     expect(res.status).toBe(201);
@@ -78,7 +78,7 @@ describe('createHttpServer', () => {
     const res = await fetch(`http://localhost:${port}/api/rooms`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', maxSessions: 4 }),
+      body: JSON.stringify({ name: 'a', agentIds: ['codex'], schedulingMode: 'parallel', maxSessions: 4 }),
     });
     const body = await res.json();
     expect(res.status).toBe(201);
@@ -93,7 +93,7 @@ describe('createHttpServer', () => {
     const res = await fetch(`http://localhost:${port}/api/rooms`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', maxSessions: -1 }),
+      body: JSON.stringify({ name: 'a', agentIds: ['codex'], schedulingMode: 'parallel', maxSessions: -1 }),
     });
     expect(res.status).toBe(400);
   });
@@ -106,7 +106,7 @@ describe('createHttpServer', () => {
     const res = await fetch(`http://localhost:${port}/api/rooms`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'a', agentIds: [], schedulingMode: 'sequential' }),
+      body: JSON.stringify({ name: 'a', agentIds: [], schedulingMode: 'parallel' }),
     });
     expect(res.status).toBe(400);
   });
@@ -126,7 +126,7 @@ describe('createHttpServer', () => {
 
   it('DELETE /api/rooms/:id delegates to the injected deleteRoom and returns ok', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const calls: number[] = [];
     httpServer = createHttpServer({
       db,
@@ -148,7 +148,7 @@ describe('createHttpServer', () => {
 
   it('DELETE /api/rooms/:id returns 409 when deleteRoom rejects (e.g. not completed)', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     setRoomStatus(db, room.id, 'active');
     httpServer = createHttpServer({
       db,

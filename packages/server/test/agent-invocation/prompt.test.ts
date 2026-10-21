@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { writeFile } from 'node:fs/promises';
-import { buildPromptText, writePromptFile } from '../../src/agent-invocation/prompt';
+import { buildPromptText, writePromptFile, SEQUENTIAL_SCHEDULING_NOTE } from '../../src/agent-invocation/prompt';
 import type { OverviewPayload, MessageSummary, QuestionOverview } from '../../src/memory';
 import { OVERVIEW_GUIDANCE, renderOverviewText } from '../../src/memory';
 
@@ -33,7 +33,7 @@ const baseOverview: OverviewPayload = {
 
 describe('buildPromptText', () => {
   it('includes roomId, agentId, the full goal content, and the fixed guidance text', () => {
-    const text = buildPromptText({ roomId: 7, agentId: 'codex', goalContent: 'build the thing, in full detail', overview: baseOverview });
+    const text = buildPromptText({ roomId: 7, agentId: 'codex', goalContent: 'build the thing, in full detail', overview: baseOverview, schedulingMode: 'parallel' });
     expect(text).toContain('roomId：7');
     expect(text).toContain('你的 authorId：codex');
     expect(text).toContain('任务目标：\nbuild the thing, in full detail\n');
@@ -43,9 +43,23 @@ describe('buildPromptText', () => {
   });
 
   it('is byte-identical for the same inputs (no dispatch-scope leakage)', () => {
-    const a = buildPromptText({ roomId: 7, agentId: 'codex', goalContent: 'g', overview: baseOverview });
-    const b = buildPromptText({ roomId: 7, agentId: 'codex', goalContent: 'g', overview: baseOverview });
+    const a = buildPromptText({ roomId: 7, agentId: 'codex', goalContent: 'g', overview: baseOverview, schedulingMode: 'parallel' });
+    const b = buildPromptText({ roomId: 7, agentId: 'codex', goalContent: 'g', overview: baseOverview, schedulingMode: 'parallel' });
     expect(a).toBe(b);
+  });
+
+  it('has no scheduling note in parallel rooms: the intro paragraph is followed directly by the parallel section', () => {
+    const text = buildPromptText({ roomId: 7, agentId: 'codex', goalContent: 'g', overview: baseOverview, schedulingMode: 'parallel' });
+    expect(text).not.toContain(SEQUENTIAL_SCHEDULING_NOTE);
+    expect(text).toContain('在本次 Session 内尽可能深入地研究。\n\n## 并行协作');
+  });
+
+  it('inserts the turn note after the intro paragraph in sequential rooms, leaving the rest unchanged', () => {
+    const params = { roomId: 7, agentId: 'codex', goalContent: 'g', overview: baseOverview };
+    const parallel = buildPromptText({ ...params, schedulingMode: 'parallel' });
+    const sequential = buildPromptText({ ...params, schedulingMode: 'sequential' });
+    expect(sequential).toContain(`在本次 Session 内尽可能深入地研究。\n\n${SEQUENTIAL_SCHEDULING_NOTE}\n\n## 并行协作`);
+    expect(sequential.replace(`\n\n${SEQUENTIAL_SCHEDULING_NOTE}`, '')).toBe(parallel);
   });
 });
 

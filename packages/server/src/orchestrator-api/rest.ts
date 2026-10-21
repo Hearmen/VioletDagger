@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { createRoom, getRoom, listRooms } from '../storage';
-import type { Room, RoomSummary } from '../storage';
+import type { Room, RoomSummary, SchedulingMode } from '../storage';
 import type { AgentRegistry } from '../agent-invocation';
 
 export class ApiError extends Error {
@@ -71,9 +71,10 @@ export function createRoomHandler(
       throw new ApiError(`unknown agentId: ${agentId}`);
     }
   }
-  if (body.schedulingMode !== 'sequential') {
-    throw new ApiError('schedulingMode must be "sequential" in v1');
+  if (body.schedulingMode !== 'parallel' && body.schedulingMode !== 'sequential') {
+    throw new ApiError("schedulingMode must be 'parallel' or 'sequential'");
   }
+  const schedulingMode: SchedulingMode = body.schedulingMode;
   if (body.maxSessions != null && (!Number.isInteger(body.maxSessions) || body.maxSessions <= 0)) {
     throw new ApiError('maxSessions must be a positive integer');
   }
@@ -82,7 +83,7 @@ export function createRoomHandler(
   }
   const workdir = resolveWorkdir(body.workdir);
   try {
-    return createRoom(db, body.name, body.agentIds, 'sequential', {
+    return createRoom(db, body.name, body.agentIds, schedulingMode, {
       maxSessions: body.maxSessions, workdir,
     });
   } catch (err) {

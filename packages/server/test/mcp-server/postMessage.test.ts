@@ -10,7 +10,7 @@ import { createStuckCounter } from '../../src/orchestrator-core/stuckCounter';
 
 function setup() {
   const db = createTestDb();
-  const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+  const room = createRoom(db, 'a', ['codex', 'claude'], 'parallel');
   const goal = insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
   const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
   setAgentState(db, room.id, 'codex', 'running', session.seq);

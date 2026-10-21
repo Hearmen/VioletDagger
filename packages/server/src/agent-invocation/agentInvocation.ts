@@ -304,12 +304,15 @@ export function createAgentInvocation(deps: {
 
     // 该 room 的工作目录（见 01-storage.md §5.4）：优先 room.workdir；为空串（历史数据）回退
     // VIOLETDAGGER_WORKDIR，再回退 server 进程 cwd。
-    const roomCwd = getRoom(db, roomId)?.workdir?.trim() || process.env.VIOLETDAGGER_WORKDIR || process.cwd();
+    const room = getRoom(db, roomId);
+    const roomCwd = room?.workdir?.trim() || process.env.VIOLETDAGGER_WORKDIR || process.cwd();
 
     const overview = buildOverview(db, roomId);
     // goal 的完整正文（概览里只有摘要，任务描述必须完整给出，见 04-agent-invocation.md §2.1）。
     const goalContent = getFirstMessage(db, roomId)?.content ?? '';
-    const promptText = buildPromptText({ roomId, agentId, goalContent, overview });
+    const promptText = buildPromptText({
+      roomId, agentId, goalContent, overview, schedulingMode: room?.schedulingMode ?? 'parallel',
+    });
     const promptLimit = Number(process.env.VIOLETDAGGER_MAX_PROMPT_BYTES ?? 128 * 1024);
     if (!Number.isInteger(promptLimit) || promptLimit <= 0 || Buffer.byteLength(promptText, 'utf8') > promptLimit) {
       setRoomStatus(db, roomId, 'paused_manual');

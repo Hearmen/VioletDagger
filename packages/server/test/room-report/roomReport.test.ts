@@ -45,7 +45,7 @@ describe('aggregateRow', () => {
       total: 4,
       byOutcome: { completed: 1, passed: 1, error: 1, terminated: 1 },
       completionRate: 0.25, passRate: 0.25, errorRate: 0.25,
-      byTrigger: { room_flag: 1, directed_flag: 1, continuation: 1, unknown: 1 },
+      byTrigger: { room_flag: 1, directed_flag: 1, continuation: 1, turn: 0, unknown: 1 },
     });
   });
 
@@ -135,7 +135,7 @@ describe('getRoomReport', () => {
 
   function fixture() {
     const db = createTestDb();
-    const room = createRoom(db, 'r', ['codex', 'claude', 'kimi'], 'sequential', { maxSessions: 10 });
+    const room = createRoom(db, 'r', ['codex', 'claude', 'kimi'], 'parallel', { maxSessions: 10 });
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
     const s1 = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     finishSession(db, room.id, s1.seq, 'completed', undefined, undefined,

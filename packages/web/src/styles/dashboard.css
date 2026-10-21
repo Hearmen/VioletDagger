@@ -225,6 +225,17 @@ body.is-resizing-y {
 }
 
 /* ---- status pills / connection dot ---- */
+/* 调度模式徽标（07-frontend.md §4）。 */
+.mode-badge {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--text-muted);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 .status-pill {
   font-family: var(--mono);
   font-size: 11px;
@@ -337,6 +348,21 @@ body.is-resizing-y {
   border: 1px solid var(--border-strong);
   border-radius: 10px;
   padding: 0 7px;
+}
+
+/* sequential 房间的轮次标记（07-frontend.md §5）："发言中"用身份色描边，"下一位"用 --text-muted 描边。 */
+.turn-badge {
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--text-muted);
+  border-radius: 10px;
+  padding: 0 7px;
+  white-space: nowrap;
+}
+
+.turn-badge--speaking {
+  color: var(--agent-color);
+  border-color: var(--agent-color);
 }
 
 .agent-card__meta {
@@ -1590,22 +1616,35 @@ body.is-resizing-y {
   margin-top: 8px;
 }
 
+.mode-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .mode-option {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid var(--accent);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.mode-option:has(input:checked) {
+  border-color: var(--accent);
   background: var(--accent-soft);
-  border-radius: 14px;
-  padding: 3px 10px;
+}
+
+.mode-option__choice {
   font-family: var(--mono);
   font-size: 12px;
 }
 
-.mode-option--disabled {
-  border-color: var(--border);
-  background: transparent;
-  color: var(--text-faint);
+.mode-option__hint {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 /* ---- loading / errors ---- */

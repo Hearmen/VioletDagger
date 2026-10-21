@@ -1,18 +1,25 @@
 import { writeFile } from 'node:fs/promises';
 import { renderOverviewText, type OverviewPayload } from '../memory';
+import type { SchedulingMode } from '../storage';
+
+// sequential 房间的轮次说明（04-agent-invocation.md §2.1 {{schedulingNote}}），必须与文档逐字一致。
+export const SEQUENTIAL_SCHEDULING_NOTE = '本房间按轮次运行：同一时刻只有你一个 Agent 在运行，其他 Agent 按加入顺序依次轮到，你结束后下一个 Agent 才开始，它会看到你写入的全部内容。本说明中凡说到"同时""并行"的地方，在本房间都按"依次轮流"理解；触发型消息不会让其他 Agent 立刻开始，但会让轮次继续下去。';
 
 export function buildPromptText(params: {
   roomId: number;
   agentId: string;
   goalContent: string;
   overview: OverviewPayload;
+  schedulingMode: SchedulingMode;
 }): string {
-  const { roomId, agentId, goalContent, overview } = params;
+  const { roomId, agentId, goalContent, overview, schedulingMode } = params;
+  // parallel 房间插槽为空，连同它前面的空行一起不输出。
+  const schedulingNote = schedulingMode === 'sequential' ? `\n\n${SEQUENTIAL_SCHEDULING_NOTE}` : '';
   return `你正在参与一个多 Agent 协同研究任务。
 roomId：${roomId}
 你的 authorId：${agentId}
 
-多个 Agent 同时在这个房间里工作。你的职责是推进任务目标：先处理等待独立验证的工作，把尚未拆开的目标拆成可以并行的子问题，再认领一个尚未被覆盖的方向，在本次 Session 内尽可能深入地研究。
+多个 Agent 同时在这个房间里工作。你的职责是推进任务目标：先处理等待独立验证的工作，把尚未拆开的目标拆成可以并行的子问题，再认领一个尚未被覆盖的方向，在本次 Session 内尽可能深入地研究。${schedulingNote}
 
 ## 并行协作
 

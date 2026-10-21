@@ -37,14 +37,14 @@ function deleteDeps(overrides: Partial<Parameters<typeof deleteRoom>[2]> = {}) {
 describe('room lifecycle', () => {
   it('pauseRoom sets status to paused_manual', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     pauseRoom(db, room.id);
     expect(getRoom(db, room.id)!.status).toBe('paused_manual');
   });
 
   it('resumeRoom from paused_manual reactivates and dispatches without requiring additionalSessions', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
     setDispatchPending(db, room.id, true, 'human');
     pauseRoom(db, room.id);
@@ -58,7 +58,7 @@ describe('room lifecycle', () => {
 
   it('resumeRoom from paused_limit requires additionalSessions and increases the cap', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     setRoomStatus(db, room.id, 'paused_limit');
 
     expect(() => resumeRoom(db, room.id, vi.fn(), createStuckCounter())).toThrow();
@@ -70,7 +70,7 @@ describe('room lifecycle', () => {
 
   it('confirmCompletion sets status to completed', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     confirmCompletion(db, room.id);
     expect(getRoom(db, room.id)).toMatchObject({
       status: 'completed',
@@ -81,7 +81,7 @@ describe('room lifecycle', () => {
 describe('deleteRoom', () => {
   it('rejects a room that is not completed', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     await expect(deleteRoom(db, room.id, deleteDeps())).rejects.toThrow(/completed/);
     expect(getRoom(db, room.id)).not.toBeNull();
   });
@@ -93,7 +93,7 @@ describe('deleteRoom', () => {
 
   it('cascade-deletes sessions/messages, removes artifacts, and emits roomDeleted', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'x', type: 'fact' });
     confirmCompletion(db, room.id);
@@ -121,7 +121,7 @@ describe('deleteRoom', () => {
 
   it('terminates a lingering running session before deleting', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     confirmCompletion(db, room.id);
@@ -137,7 +137,7 @@ describe('deleteRoom', () => {
 
   it('aborts deletion and keeps the room when terminating a lingering session cannot be confirmed', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     confirmCompletion(db, room.id);

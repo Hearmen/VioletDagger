@@ -3,7 +3,7 @@ import {
   getRoom, getRoomAgents, setRoomStatus, setAgentState, countSessions, createSession,
   getActiveExploring, countMessages, setDispatchPending, setDirectedPending, getMessagesByType, listSessions,
 } from '../storage';
-import type { DispatchTrigger, RoomAgentState } from '../storage/types';
+import type { DispatchTrigger, Room, RoomAgentState } from '../storage/types';
 import { roomEvents } from '../events';
 import type { StuckCounter } from './stuckCounter';
 
@@ -17,16 +17,131 @@ export type StartSession = (params: {
 // 派发空闲判定（03-orchestrator-core.md §1.6）：房间进行中、已有消息、没有 running/stopping 的 agent，
 // 没有启用 agent 的定向标记待处理，房间标记为 false 或没有任何启用的 agent，且续派条件不满足。
 // 只读，供 getRoomStatus 计算无任务派发提醒。
+// sequential 房间的第 4、5 条替换为 nextSequentialDispatch 返回 null（§1.7）。
 export function isDispatchIdle(db: Database.Database, roomId: number): boolean {
   const room = getRoom(db, roomId);
   if (!room || room.status !== 'active') return false;
   if (countMessages(db, roomId) === 0) return false;
   const agents = getRoomAgents(db, roomId);
   if (agents.some((agent) => agent.state === 'running' || agent.state === 'stopping')) return false;
+  if (room.schedulingMode === 'sequential') return nextSequentialDispatch(db, room, agents) === null;
   const enabled = agents.filter((agent) => agent.dispatchEnabled);
   if (enabled.some((agent) => agent.directedPending)) return false;
   if (room.dispatchPending && enabled.length > 0) return false;
   return pickContinuationTarget(db, roomId, agents) === null;
+}
+
+// "派发"（03-orchestrator-core.md §1.2，parallel 与 sequential 共用）：触及上限时把房间置为 paused_limit
+// 并返回 false，调用方就此结束本次检查、保留剩余标记。trigger 决定 scope：directed_flag → directed，
+// 其余 → broadcast（01 sessions.dispatch_trigger）。clearFlag 为 true 时清除对应标记：directed 清该 agent
+// 的定向标记，broadcast 清房间标记。
+function dispatchSession(
+  db: Database.Database,
+  room: Room,
+  agent: RoomAgentState,
+  trigger: DispatchTrigger,
+  startSession: StartSession,
+  clearFlag: boolean,
+): boolean {
+  const roomId = room.id;
+  const scope = trigger === 'directed_flag' ? 'directed' : 'broadcast';
+  if (countSessions(db, roomId) >= room.maxSessions) {
+    setRoomStatus(db, roomId, 'paused_limit');
+    return false;
+  }
+  const session = createSession(db, roomId, agent.agentId, scope, trigger);
+  setAgentState(db, roomId, agent.agentId, 'running', session.seq);
+  if (clearFlag) {
+    if (scope === 'directed') setDirectedPending(db, roomId, agent.agentId, false);
+    else setDispatchPending(db, roomId, false);
+  }
+  // checkAndDispatch 会被进程退出等事件回调直接调用；startSession 即使同步抛错也不能让它冒泡成
+  // 未捕获异常打挂 server（见 03-orchestrator-core.md §1.2"派发"第 3 步），这里统一降级为日志。
+  try {
+    const result = startSession({
+      roomId,
+      seq: session.seq,
+      agentId: agent.agentId,
+      registryKey: agent.registryKey,
+    });
+    if (result && typeof (result as Promise<void>).then === 'function') {
+      (result as Promise<void>).catch((err) => {
+        console.error(`startSession failed for room ${roomId}, agent ${agent.agentId}:`, err);
+      });
+    }
+  } catch (err) {
+    console.error(`startSession threw for room ${roomId}, agent ${agent.agentId}:`, err);
+  }
+  return true;
+}
+
+// ---- sequential 房间（03-orchestrator-core.md §1.7）----
+
+// 轮转目标：最近一次轮次（broadcast）session 的 agent 在 joinOrder 中的下一位起循环，取第一个启用的
+// agent（最后才回到它自己）；还没有轮次 session 时从 joinOrder 第一位开始。没有启用的 agent 返回 null。
+function nextTurnAgent(db: Database.Database, roomId: number, agents: RoomAgentState[]): RoomAgentState | null {
+  const ordered = [...agents].sort((a, b) => a.joinOrder - b.joinOrder);
+  const turns = listSessions(db, roomId).filter((s) => s.dispatchScope === 'broadcast');
+  const last = turns[turns.length - 1];
+  const start = last ? ordered.findIndex((agent) => agent.agentId === last.agentId) + 1 : 0;
+  for (let i = 0; i < ordered.length; i++) {
+    const agent = ordered[(start + i) % ordered.length];
+    if (agent.dispatchEnabled) return agent;
+  }
+  return null;
+}
+
+// 收敛：只看轮次 session，从最新一条起连续 passed 的条数不小于启用 agent 数；定向 session 不计入也不打断。
+function isConverged(db: Database.Database, roomId: number, agents: RoomAgentState[]): boolean {
+  const enabledCount = agents.filter((agent) => agent.dispatchEnabled).length;
+  const turns = listSessions(db, roomId).filter((s) => s.dispatchScope === 'broadcast');
+  let trailingPassed = 0;
+  for (let i = turns.length - 1; i >= 0 && turns[i].outcome === 'passed'; i--) trailingPassed++;
+  return trailingPassed >= enabledCount;
+}
+
+function firstDirectedPending(agents: RoomAgentState[]): RoomAgentState | null {
+  return [...agents]
+    .sort((a, b) => a.joinOrder - b.joinOrder)
+    .find((agent) => agent.dispatchEnabled && agent.directedPending) ?? null;
+}
+
+// 只读：这次检查应派发的目标，或 null（§1.7 nextSequentialDispatch）。
+function nextSequentialDispatch(
+  db: Database.Database,
+  room: Room,
+  agents: RoomAgentState[],
+): { agent: RoomAgentState; trigger: 'directed_flag' | 'turn' } | null {
+  if (room.status !== 'active') return null;
+  if (agents.some((agent) => agent.state === 'running' || agent.state === 'stopping')) return null;
+  const directed = firstDirectedPending(agents);
+  if (directed) return { agent: directed, trigger: 'directed_flag' };
+  if (!agents.some((agent) => agent.dispatchEnabled)) return null;
+  const continueTurns = room.dispatchPending || (
+    getMessagesByType(db, room.id, 'open_question').some((m) => m.questionStatus === 'OPEN')
+    && !isConverged(db, room.id, agents)
+  );
+  if (!continueTurns) return null;
+  const agent = nextTurnAgent(db, room.id, agents);
+  return agent ? { agent, trigger: 'turn' } : null;
+}
+
+// sequential 房间的派发检查：一次最多派发一个 session；目标为 null 时不派发、不推送。
+// 不做 stuckCount 扫描（§5），session 以 error 结束也不恢复标记（§2）。
+function checkAndDispatchSequential(db: Database.Database, room: Room, startSession: StartSession): void {
+  const target = nextSequentialDispatch(db, room, getRoomAgents(db, room.id));
+  if (!target) return;
+  dispatchSession(db, room, target.agent, target.trigger, startSession, true);
+  roomEvents.emit('roomStatus', { roomId: room.id });
+}
+
+// "下一位"（§1.7 getNextTurnAgent）：parallel 房间为 null；sequential 房间为第一个启用且带定向标记的
+// agent，没有则为轮转目标。不判断轮次条件，也不看是否有 agent 在运行。
+export function getNextTurnAgent(db: Database.Database, roomId: number): string | null {
+  const room = getRoom(db, roomId);
+  if (!room || room.schedulingMode !== 'sequential') return null;
+  const agents = getRoomAgents(db, roomId);
+  return (firstDirectedPending(agents) ?? nextTurnAgent(db, roomId, agents))?.agentId ?? null;
 }
 
 // 续派目标（03-orchestrator-core.md §1.2"续派"）：只在所有标记为 false 时调用。没有 agent 在跑、
@@ -69,6 +184,10 @@ export function checkAndDispatch(
 ): void {
   const room = getRoom(db, roomId);
   if (!room || room.status !== 'active') return;
+  if (room.schedulingMode === 'sequential') {
+    checkAndDispatchSequential(db, room, startSession);
+    return;
+  }
 
   const agents = getRoomAgents(db, roomId);
   const hasDirected = agents.some((agent) => agent.dispatchEnabled && agent.directedPending);
@@ -84,38 +203,11 @@ export function checkAndDispatch(
   const isBusy = (agent: RoomAgentState) =>
     dispatched.has(agent.agentId) || agent.state === 'running' || agent.state === 'stopping';
 
-  // "派发"（§1.2）：触及上限时把房间置为 paused_limit 并返回 false，调用方就此结束本次检查、保留剩余标记。
-  // trigger 决定 scope：directed_flag → directed，room_flag / continuation → broadcast（01 sessions.dispatch_trigger）。
+  // 续派不读写房间标记和标记作者（§1.2"续派"）。
   const dispatch = (agent: RoomAgentState, trigger: DispatchTrigger): boolean => {
-    const scope = trigger === 'directed_flag' ? 'directed' : 'broadcast';
-    if (countSessions(db, roomId) >= room.maxSessions) {
-      setRoomStatus(db, roomId, 'paused_limit');
-      return false;
-    }
-    const session = createSession(db, roomId, agent.agentId, scope, trigger);
-    setAgentState(db, roomId, agent.agentId, 'running', session.seq);
-    // 续派不读写房间标记和标记作者（§1.2"续派"）。
-    if (scope === 'directed') setDirectedPending(db, roomId, agent.agentId, false);
-    else if (!continuation) setDispatchPending(db, roomId, false);
-    dispatched.add(agent.agentId);
-    // checkAndDispatch 会被进程退出等事件回调直接调用；startSession 即使同步抛错也不能让它冒泡成
-    // 未捕获异常打挂 server（见 03-orchestrator-core.md §1.2"派发"第 3 步），这里统一降级为日志。
-    try {
-      const result = startSession({
-        roomId,
-        seq: session.seq,
-        agentId: agent.agentId,
-        registryKey: agent.registryKey,
-      });
-      if (result && typeof (result as Promise<void>).then === 'function') {
-        (result as Promise<void>).catch((err) => {
-          console.error(`startSession failed for room ${roomId}, agent ${agent.agentId}:`, err);
-        });
-      }
-    } catch (err) {
-      console.error(`startSession threw for room ${roomId}, agent ${agent.agentId}:`, err);
-    }
-    return true;
+    const ok = dispatchSession(db, room, agent, trigger, startSession, !continuation || trigger === 'directed_flag');
+    if (ok) dispatched.add(agent.agentId);
+    return ok;
   };
 
   const run = (): void => {

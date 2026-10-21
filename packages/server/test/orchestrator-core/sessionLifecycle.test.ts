@@ -28,7 +28,7 @@ function exitEvent(roomId: number, seq: number, agentId: string, overrides: Part
 describe('onSessionEnded', () => {
   it('marks the session completed when it exited naturally and posted a typed message', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'a fact', type: 'fact' });
 
@@ -39,7 +39,7 @@ describe('onSessionEnded', () => {
 
   it('marks the session passed when it exited naturally without any typed message, and writes a placeholder message', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'just chatting' });
 
@@ -59,7 +59,7 @@ describe('onSessionEnded', () => {
 
   it('marks the session error, records process_exited, and inserts a placeholder message attributed to the agent', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
 
     const messageListener = vi.fn();
@@ -86,7 +86,7 @@ describe('onSessionEnded', () => {
 
   it('settles a stopping session with stopIntent=terminate as terminated', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'stopping', session.seq);
     db.prepare(`UPDATE sessions SET outcome = 'stopping', stop_intent = 'terminate' WHERE room_id = ? AND seq = ?`)
@@ -109,7 +109,7 @@ describe('onSessionEnded', () => {
 
   it('auto-disables an agent after 3 consecutive errors', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     setRoomStatus(db, room.id, 'paused_manual'); // 避免结算后立刻再派发
     const failureCounter = createFailureCounter();
 
@@ -128,7 +128,7 @@ describe('onSessionEnded', () => {
 
   it('resets the failure count on a non-error outcome', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     setRoomStatus(db, room.id, 'paused_manual');
     const failureCounter = createFailureCounter();
 
@@ -150,7 +150,7 @@ describe('onSessionEnded', () => {
 
   it('is idempotent when the session has already finished', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     onSessionEnded(db, exitEvent(room.id, session.seq, 'codex'), vi.fn(), createStuckCounter(), createFailureCounter());
 
@@ -161,7 +161,7 @@ describe('onSessionEnded', () => {
 
   it('triggers a dispatch check after the state transition', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
     setDispatchPending(db, room.id, true, 'human');
@@ -174,7 +174,7 @@ describe('onSessionEnded', () => {
 
   it('an errored broadcast session restores the room flag with itself as author, so another agent picks it up', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     const startSession = vi.fn();
@@ -191,7 +191,7 @@ describe('onSessionEnded', () => {
 
   it('an errored directed session restores its own directed flag', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'directed', 'directed_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     const startSession = vi.fn();
@@ -208,7 +208,7 @@ describe('onSessionEnded', () => {
 
   it('a completed or passed session does not restore any flag', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     const startSession = vi.fn();
@@ -231,7 +231,7 @@ describe('terminateAgentSession', () => {
 
   it('marks the session terminated, completes active exploring, and frees the agent', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['claude', 'codex'], 'sequential');
+    const room = createRoom(db, 'a', ['claude', 'codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     insertMessage(db, { roomId: room.id, sessionSeq: session.seq, authorId: 'codex', content: 'exploring X', type: 'exploring' });
@@ -256,7 +256,7 @@ describe('terminateAgentSession', () => {
 
   it('keeps stopping and throws when cleanup cannot be confirmed', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     setAgentState(db, room.id, 'codex', 'running', session.seq);
     const stopSessionProcess = vi.fn().mockResolvedValue({ confirmed: false, error: 'still running', rawLogPath: '/logs/x' });
@@ -271,7 +271,7 @@ describe('terminateAgentSession', () => {
 
   it('is idempotent when the session has already finished', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     const stopSessionProcess = stopConfirmed(room.id, session.seq, 'codex');
     await terminateAgentSession(db, room.id, session.seq, stopSessionProcess, vi.fn(), createStuckCounter(), createFailureCounter());
@@ -284,7 +284,7 @@ describe('terminateAgentSession', () => {
 
   it('triggers a dispatch check after cleanup', async () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex', 'claude'], 'sequential');
+    const room = createRoom(db, 'a', ['codex', 'claude'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
     setDispatchPending(db, room.id, true, 'human');
@@ -301,7 +301,7 @@ describe('terminateAgentSession', () => {
 describe('setAgentEnabled', () => {
   it('re-enables an agent, clears its failure count, and triggers dispatch', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
     setDispatchPending(db, room.id, true, 'human');
     setAgentEnabled(db, room.id, 'codex', false, vi.fn(), createStuckCounter(), createFailureCounter());
@@ -318,7 +318,7 @@ describe('setAgentEnabled', () => {
 
   it('throws for an unknown agent', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     expect(() =>
       setAgentEnabled(db, room.id, 'ghost', true, vi.fn(), createStuckCounter(), createFailureCounter()),
     ).toThrow(/not found/);
@@ -328,7 +328,7 @@ describe('setAgentEnabled', () => {
 describe('onSessionExitProgress', () => {
   it('appends native_session_failed with the step as attempt id, without touching session state', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     const session = createSession(db, room.id, 'codex', 'broadcast', 'room_flag');
     onSessionExitProgress(db, room.id, session.seq, 'native_session_failed', 'disk full', 'archive');
     expect(listSessionEvents(db, room.id, session.seq)).toMatchObject([

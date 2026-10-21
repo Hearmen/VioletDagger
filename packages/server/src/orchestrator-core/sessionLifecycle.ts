@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import {
   getSession, finishSession, setAgentState, getMessagesBySession, insertMessage, getRoomAgents,
   getActiveExploringByAuthor, completeExploring, markSessionTerminating, markSessionCleanupStarted, appendSessionEvent,
-  setAgentEnabled, setDispatchPending, setDirectedPending,
+  setAgentEnabled, setDispatchPending, setDirectedPending, getRoom,
 } from '../storage';
 import { roomEvents } from '../events';
 import type { SessionExitEvent, StopResult } from '../agent-invocation';
@@ -85,9 +85,10 @@ export function onSessionEnded(
       signal: event.signal,
       exitCause: event.exitCause,
     }, event.usage, event.native);
-    // error 结束时恢复这次 session 消耗的标记（03 §1.2"置位"第 2 条）：广播派发的恢复房间标记，
+    // parallel 房间 error 结束时恢复这次 session 消耗的标记（03 §1.2"置位"第 2 条）：广播派发的恢复房间标记，
     // 标记作者记为失败的 agent，下一次优先派给其他 agent；定向派发的恢复它自己的定向标记。
-    if (outcome === 'error') {
+    // sequential 房间出错不重试，不恢复任何标记（03 §1.7）。
+    if (outcome === 'error' && getRoom(db, event.roomId)?.schedulingMode !== 'sequential') {
       if (session.dispatchScope === 'directed') setDirectedPending(db, event.roomId, event.agentId, true);
       else setDispatchPending(db, event.roomId, true, event.agentId);
     }

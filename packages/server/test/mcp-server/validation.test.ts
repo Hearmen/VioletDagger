@@ -8,7 +8,7 @@ import {
 describe('assertRoomExists', () => {
   it('does not throw for an existing room', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     expect(() => assertRoomExists(db, room.id)).not.toThrow();
   });
 
@@ -32,26 +32,26 @@ describe('assertNotReservedAuthor', () => {
 describe('resolveSessionBinding', () => {
   it('returns the currentSessionSeq when the agent is running', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     setAgentState(db, room.id, 'codex', 'running', 3);
     expect(resolveSessionBinding(db, room.id, 'codex')).toBe(3);
   });
 
   it('throws when the agent is idle', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     expect(() => resolveSessionBinding(db, room.id, 'codex')).toThrow(McpToolError);
   });
 
   it('throws when the agentId is not part of the room', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     expect(() => resolveSessionBinding(db, room.id, 'claude')).toThrow(McpToolError);
   });
 
   it('throws when the agent is running but has no currentSessionSeq', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     setAgentState(db, room.id, 'codex', 'running');
     expect(() => resolveSessionBinding(db, room.id, 'codex')).toThrow(McpToolError);
   });

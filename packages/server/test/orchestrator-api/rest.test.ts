@@ -25,8 +25,8 @@ afterEach(() => {
 describe('listRoomsHandler', () => {
   it('returns all rooms as summaries', () => {
     const db = createTestDb();
-    createRoom(db, 'a', ['codex'], 'sequential');
-    createRoom(db, 'b', ['claude'], 'sequential');
+    createRoom(db, 'a', ['codex'], 'parallel');
+    createRoom(db, 'b', ['claude'], 'parallel');
     expect(listRoomsHandler(db).map((r) => r.name)).toEqual(['a', 'b']);
   });
 });
@@ -34,7 +34,7 @@ describe('listRoomsHandler', () => {
 describe('getRoomHandler', () => {
   it('returns the full room', () => {
     const db = createTestDb();
-    const room = createRoom(db, 'a', ['codex'], 'sequential');
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
     expect(getRoomHandler(db, room.id)).toEqual(room);
   });
 
@@ -90,14 +90,14 @@ describe('resolveWorkdir', () => {
 describe('createRoomHandler', () => {
   it('creates a room when agentIds and schedulingMode are valid', () => {
     const db = createTestDb();
-    const room = createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'], schedulingMode: 'sequential' });
+    const room = createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'], schedulingMode: 'parallel' });
     expect(room.name).toBe('a');
   });
 
   it('allows the same agentId multiple times and numbers the instances', () => {
     const db = createTestDb();
     const room = createRoomHandler(db, registry, {
-      name: 'a', agentIds: ['codex', 'codex', 'claude'], schedulingMode: 'sequential',
+      name: 'a', agentIds: ['codex', 'codex', 'claude'], schedulingMode: 'parallel',
     });
     expect(getRoomAgents(db, room.id).map((a) => a.agentId)).toEqual(['codex-1', 'codex-2', 'claude']);
   });
@@ -105,35 +105,35 @@ describe('createRoomHandler', () => {
   it('rejects a missing name', () => {
     const db = createTestDb();
     expect(() =>
-      createRoomHandler(db, registry, { agentIds: ['codex'], schedulingMode: 'sequential' } as any),
+      createRoomHandler(db, registry, { agentIds: ['codex'], schedulingMode: 'parallel' } as any),
     ).toThrow(ApiError);
   });
 
   it('rejects an empty string name', () => {
     const db = createTestDb();
     expect(() =>
-      createRoomHandler(db, registry, { name: '', agentIds: ['codex'], schedulingMode: 'sequential' }),
+      createRoomHandler(db, registry, { name: '', agentIds: ['codex'], schedulingMode: 'parallel' }),
     ).toThrow(ApiError);
   });
 
   it('rejects an empty agentIds array', () => {
     const db = createTestDb();
     expect(() =>
-      createRoomHandler(db, registry, { name: 'a', agentIds: [], schedulingMode: 'sequential' }),
+      createRoomHandler(db, registry, { name: 'a', agentIds: [], schedulingMode: 'parallel' }),
     ).toThrow(ApiError);
   });
 
   it('rejects an agentId not in the registry', () => {
     const db = createTestDb();
     expect(() =>
-      createRoomHandler(db, registry, { name: 'a', agentIds: ['unknown'], schedulingMode: 'sequential' }),
+      createRoomHandler(db, registry, { name: 'a', agentIds: ['unknown'], schedulingMode: 'parallel' }),
     ).toThrow(ApiError);
   });
 
   it('honors an explicit maxSessions', () => {
     const db = createTestDb();
     const room = createRoomHandler(db, registry, {
-      name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', maxSessions: 3,
+      name: 'a', agentIds: ['codex'], schedulingMode: 'parallel', maxSessions: 3,
     });
     expect(room.maxSessions).toBe(3);
   });
@@ -141,17 +141,17 @@ describe('createRoomHandler', () => {
   it('rejects a non-positive maxSessions', () => {
     const db = createTestDb();
     expect(() =>
-      createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', maxSessions: 0 }),
+      createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'], schedulingMode: 'parallel', maxSessions: 0 }),
     ).toThrow(/maxSessions/);
     expect(() =>
-      createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', maxSessions: 2.5 }),
+      createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'], schedulingMode: 'parallel', maxSessions: 2.5 }),
     ).toThrow(/maxSessions/);
   });
 
   it('stores an explicit workdir (resolved to an absolute path)', () => {
     const db = createTestDb();
     const room = createRoomHandler(db, registry, {
-      name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', workdir: process.cwd(),
+      name: 'a', agentIds: ['codex'], schedulingMode: 'parallel', workdir: process.cwd(),
     });
     expect(room.workdir).toBe(process.cwd());
   });
@@ -160,7 +160,7 @@ describe('createRoomHandler', () => {
     const db = createTestDb();
     const target = path.join(tmp, 'new', 'room');
     const room = createRoomHandler(db, registry, {
-      name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', workdir: target,
+      name: 'a', agentIds: ['codex'], schedulingMode: 'parallel', workdir: target,
     });
     expect(room.workdir).toBe(target);
     expect(statSync(target).isDirectory()).toBe(true);
@@ -170,7 +170,7 @@ describe('createRoomHandler', () => {
     const db = createTestDb();
     expect(() =>
       createRoomHandler(db, registry, {
-        name: 'a', agentIds: ['codex'], schedulingMode: 'sequential', workdir: path.join(process.cwd(), 'package.json'),
+        name: 'a', agentIds: ['codex'], schedulingMode: 'parallel', workdir: path.join(process.cwd(), 'package.json'),
       }),
     ).toThrow(/not a directory/);
     expect(listRoomsHandler(db)).toEqual([]);
@@ -180,15 +180,24 @@ describe('createRoomHandler', () => {
     const db = createTestDb();
     const target = path.join(tmp, 'never');
     expect(() =>
-      createRoomHandler(db, registry, { name: 'a', agentIds: ['unknown'], schedulingMode: 'sequential', workdir: target }),
+      createRoomHandler(db, registry, { name: 'a', agentIds: ['unknown'], schedulingMode: 'parallel', workdir: target }),
     ).toThrow(ApiError);
     expect(existsSync(target)).toBe(false);
   });
 
-  it('rejects a schedulingMode other than sequential', () => {
+  it('rejects a schedulingMode other than parallel or sequential, including a missing one', () => {
     const db = createTestDb();
     expect(() =>
-      createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'], schedulingMode: 'parallel' }),
+      createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'], schedulingMode: 'round_robin' }),
+    ).toThrow("schedulingMode must be 'parallel' or 'sequential'");
+    expect(() =>
+      createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'] } as never),
     ).toThrow(ApiError);
+  });
+
+  it.each(['parallel', 'sequential'] as const)('creates a %s room', (schedulingMode) => {
+    const db = createTestDb();
+    const room = createRoomHandler(db, registry, { name: 'a', agentIds: ['codex'], schedulingMode });
+    expect(room.schedulingMode).toBe(schedulingMode);
   });
 });

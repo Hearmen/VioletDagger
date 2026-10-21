@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { Room, RoomSummary, RoomStatus, RoomAgentState } from './types';
+import type { Room, RoomSummary, RoomStatus, RoomAgentState, SchedulingMode } from './types';
 
 const DEFAULT_MAX_SESSIONS = 20;
 
@@ -50,7 +50,7 @@ export function createRoom(
   db: Database.Database,
   name: string,
   agentIds: string[],
-  schedulingMode: 'sequential',
+  schedulingMode: SchedulingMode,
   options: CreateRoomOptions = {},
 ): Room {
   const { maxSessions, workdir } = options;

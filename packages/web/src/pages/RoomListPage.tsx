@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { fetchRooms, fetchAgents, createRoom, deleteRoom } from '../api/rest';
-import type { AgentInfo, NativeDeleteFailure, RoomSummary, RoomStatus } from '../api/types';
+import type { AgentInfo, NativeDeleteFailure, RoomSummary, RoomStatus, SchedulingMode } from '../api/types';
 import { LocaleToggle } from '../components/LocaleToggle';
+import { SCHEDULING_MODE_HINTS } from '../components/RoomHeader';
 import { useI18n } from '../i18n/LocaleProvider';
 import { errorText, renderText, type LocalizedText } from '../i18n/types';
 import type { MessageKey } from '../i18n/zh';
@@ -68,6 +69,7 @@ export function RoomListPage() {
   const [name, setName] = useState('');
   const [maxSessions, setMaxSessions] = useState('');
   const [workdir, setWorkdir] = useState('');
+  const [schedulingMode, setSchedulingMode] = useState<SchedulingMode>('parallel');
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [error, setError] = useState<LocalizedText | null>(null);
 
@@ -110,7 +112,7 @@ export function RoomListPage() {
       const room = await createRoom({
         name,
         agentIds: selectedKeys,
-        schedulingMode: 'sequential',
+        schedulingMode,
         ...(parsedMaxSessions !== undefined ? { maxSessions: parsedMaxSessions } : {}),
         ...(workdir.trim() !== '' ? { workdir: workdir.trim() } : {}),
       });
@@ -274,11 +276,23 @@ export function RoomListPage() {
 
           <div className="field">
             <span className="field__label">{t('roomList.schedulingLabel')}</span>
-            <div className="chips">
-              <span className="mode-option">
-                <input type="radio" checked readOnly aria-label="sequential" /> sequential
-              </span>
-              <span className="mode-option mode-option--disabled" title={t('roomList.notImplemented')}>parallel</span>
+            <div className="mode-options">
+              {(['parallel', 'sequential'] as const).map((mode) => (
+                <label key={mode} className="mode-option">
+                  <span className="mode-option__choice">
+                    <input
+                      type="radio"
+                      name="schedulingMode"
+                      value={mode}
+                      checked={schedulingMode === mode}
+                      onChange={() => setSchedulingMode(mode)}
+                      aria-label={mode}
+                    />{' '}
+                    {mode}
+                  </span>
+                  <span className="mode-option__hint">{t(SCHEDULING_MODE_HINTS[mode])}</span>
+                </label>
+              ))}
             </div>
           </div>
 
