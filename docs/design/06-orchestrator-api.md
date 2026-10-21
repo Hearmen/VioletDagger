@@ -7,7 +7,7 @@
 ```
 GET    /api/rooms       → RoomSummary[]
 GET    /api/rooms/:id   → Room
-POST   /api/rooms       { name: string; agentIds: string[]; schedulingMode: 'sequential'; maxSessions?: number; workdir?: string } → Room
+POST   /api/rooms       { name: string; agentIds: string[]; schedulingMode: 'parallel' | 'sequential'; maxSessions?: number; workdir?: string } → Room
 DELETE /api/rooms/:id   → { ok: true, nativeDeleteFailures: NativeDeleteFailure[] }  // 仅 completed 房间可删；级联删除，见 03-orchestrator-core.md 第 4 节
 GET    /api/agents      → { agentId: string; available: boolean; unavailableReason?: string }[]
 ```
@@ -16,7 +16,7 @@ GET    /api/agents      → { agentId: string; available: boolean; unavailableRe
 
 `GET /api/agents` 返回 agent 注册表（`04-agent-invocation.md` 的 `AgentRegistry`，服务启动时从 `agents.config.json` 加载进内存）里所有的 key，供建房间表单渲染可勾选的 agent 列表（见 `07-frontend.md` 第 11 节）。**这里的 `agentId` 指的是注册表 key（如 `"codex"`），不是房间内的 agent 实例标识**——它是建房间表单这一处的输入，跟 `getRoomStatus` 里 `agentId`（实例标识，见 `00-overview.md`）分属两个层次，不要混用。
 
-`POST /api/rooms` 校验：`agentIds` 非空，且每个都存在于 agent 注册表、已通过 session 身份隔离适配校验（available=true）（见 `04-agent-invocation.md` 第 1 节）；**允许重复**——同一个 agent 出现多次表示要加入多个实例（需求 3.2，数组里是注册表 key；实例标识由 `storage.createRoom` 按 `01-storage.md` 的规则生成）；`schedulingMode` v1 只接受 `'sequential'`；`maxSessions` **可选**，给了就必须是正整数（否则报错），不传则用服务端默认值 20（见 `01-storage.md` §5.1）。`workdir` **可选**（该 room 所有 agent CLI 的 spawn cwd，见 `01-storage.md` §5.4）：给了就做 `~` 展开 + 绝对化；不传则默认取服务端配置 `VIOLETDAGGER_WORKDIR`，再退回 server 进程 cwd。解析出的路径：**不存在时递归创建**（等价 `mkdir -p`）；已存在且是目录时直接使用；已存在但不是目录时报错 `workdir is not a directory: <path>`；创建失败时报错 `failed to create workdir <path>: <系统错误信息>`。目录创建放在其余字段全部校验通过之后、`createRoom` 之前，校验失败的请求不会留下目录；`createRoom` 本身失败时已创建的目录不回删（空目录无害，回删有误删用户指定路径的风险）。解析后的绝对路径写入 `rooms.workdir`。随后 `storage.createRoom(name, agentIds, schedulingMode, { maxSessions, workdir })`（`room_agents` 的 `join_order` 按传入数组顺序写入，在 `createRoom` 内部完成；实例标识撞名时 `createRoom` 抛错，转为表单错误返回）。创建时不触发任何派发——房间里还没有消息，第一次派发要等人类发第一条消息（见需求 3.1）。
+`POST /api/rooms` 校验：`agentIds` 非空，且每个都存在于 agent 注册表、已通过 session 身份隔离适配校验（available=true）（见 `04-agent-invocation.md` 第 1 节）；**允许重复**——同一个 agent 出现多次表示要加入多个实例（需求 3.2，数组里是注册表 key；实例标识由 `storage.createRoom` 按 `01-storage.md` 的规则生成）；`schedulingMode` 必填，只接受 `'parallel'` 或 `'sequential'`（需求 3.3、3.3.3），其他值或缺省报错 `schedulingMode must be 'parallel' or 'sequential'`；`maxSessions` **可选**，给了就必须是正整数（否则报错），不传则用服务端默认值 20（见 `01-storage.md` §5.1）。`workdir` **可选**（该 room 所有 agent CLI 的 spawn cwd，见 `01-storage.md` §5.4）：给了就做 `~` 展开 + 绝对化；不传则默认取服务端配置 `VIOLETDAGGER_WORKDIR`，再退回 server 进程 cwd。解析出的路径：**不存在时递归创建**（等价 `mkdir -p`）；已存在且是目录时直接使用；已存在但不是目录时报错 `workdir is not a directory: <path>`；创建失败时报错 `failed to create workdir <path>: <系统错误信息>`。目录创建放在其余字段全部校验通过之后、`createRoom` 之前，校验失败的请求不会留下目录；`createRoom` 本身失败时已创建的目录不回删（空目录无害，回删有误删用户指定路径的风险）。解析后的绝对路径写入 `rooms.workdir`。随后 `storage.createRoom(name, agentIds, schedulingMode, { maxSessions, workdir })`（`room_agents` 的 `join_order` 按传入数组顺序写入，在 `createRoom` 内部完成；实例标识撞名时 `createRoom` 抛错，转为表单错误返回）。创建时不触发任何派发——房间里还没有消息，第一次派发要等人类发第一条消息（见需求 3.1）。
 
 `DELETE /api/rooms/:id`：调用 `orchestratorCore.deleteRoom(roomId)`（见 `03-orchestrator-core.md` 第 4 节）。它先确认遗留的 running/stopping session 已退出，再删除磁盘日志、原生会话副本与原件，并级联删除 DB；最后 emit `roomDeleted`。
 - **session 清理未确认**：返回错误，保留数据。
@@ -96,7 +96,8 @@ getRoomStatus(): {
   status: RoomStatus;
   dispatchIdle: boolean;        // orchestratorCore.isDispatchIdle(roomId)，见 03 §1.6
   disabledAgentCount: number;   // dispatchEnabled === false 的 agent 数，供提醒文案使用
-  agents: {
+  nextTurnAgentId: string | null; // orchestratorCore.getNextTurnAgent(roomId)，见 03 §1.7；parallel 房间恒为 null
+  agents: {                     // 按 joinOrder 排列
     agentId: string;               // agent 实例标识（见 00-overview.md），非注册表 key
     state: 'idle' | 'running' | 'stopping';
     sessionId?: number;            // 仅 running/stopping 时给出，取自 RoomAgentState.currentSessionSeq
@@ -106,7 +107,7 @@ getRoomStatus(): {
     enabled: boolean;              // room_agents.dispatch_enabled
     failureCount: number;          // 连续失败计数（内存，见 03 §6）
     activeExploringSummary?: string; // 该 agent 当前 active 的 exploring 消息 summary（如果有）
-    stuck?: boolean;               // 来自 orchestratorCore.getStuckAgents(roomId)
+    stuck?: boolean;               // 来自 orchestratorCore.getStuckAgents(roomId)；sequential 房间不会出现（03 §5）
   }[];
 };
 
@@ -171,7 +172,7 @@ buildMemoryView(roomId: number): MemoryViewPayload
 
 // 编排器核心
 submitMessage, pauseRoom, resumeRoom, confirmCompletion, deleteRoom,
-terminateAgentSession, getStuckAgents, getAgentFailures, setAgentEnabled
+terminateAgentSession, getStuckAgents, getAgentFailures, setAgentEnabled, getNextTurnAgent
 
 // 任务分析报告（见 10-room-report.md）
 getRoomReport(roomId: number): Promise<RoomReport>

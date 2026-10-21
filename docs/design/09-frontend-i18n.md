@@ -29,7 +29,7 @@ Web 前端提供中文与英文两套界面文案，用户通过页面顶栏的�
 | 服务端返回的 `error.message`（RPC/REST 失败的 toast 与内联错误、`loadError`） | 来自后端，前端原样展示 |
 | `authorId === 'system'` 消息的正文 | 服务端写入的数据 |
 | session 日志内容 | 原始 CLI 输出 |
-| 协议标识符：`MessageType` 值（`fact`、`hypothesis`…；`propose_completion` 的徽标文案除外，见 1.1）、消息状态值（`OPEN`、`CANDIDATE`、`VERIFIED`…）、状态迁移中的 type/status 值、`agentId`、`sessionId`、`#N`、session outcome 值（`stopping`、`completed`、`passed`、`error`、`terminated`）及其展示文案 `done` | 两种语言下都以英文标识符展示。session outcome 标签表中唯一的非标识符项 `running: '运行中'` 属于界面文案，进字典（英文 `running`） |
+| 协议标识符：`MessageType` 值（`fact`、`hypothesis`…；`propose_completion` 的徽标文案除外，见 1.1）、消息状态值（`OPEN`、`CANDIDATE`、`VERIFIED`…）、状态迁移中的 type/status 值、`agentId`、`sessionId`、`#N`、session outcome 值（`stopping`、`completed`、`passed`、`error`、`terminated`）及其展示文案 `done`、调度模式值（`parallel`、`sequential`） | 两种语言下都以英文标识符展示。session outcome 标签表中唯一的非标识符项 `running: '运行中'` 属于界面文案，进字典（英文 `running`） |
 | 单位缩写 `tok`（`formatTokens`）、费用 `$` | 两种语言通用 |
 | 品牌名 `VioletDagger`、`<title>` | 品牌名不翻译 |
 | 代码注释、CSS 注释 | 不属于界面 |
@@ -194,7 +194,15 @@ export function LocaleToggle(): JSX.Element;
 - `endMarkerLabel(meta, agentId, seq, t)`：插入的`结束`改为 `t('eventTree.end')`；开始标记的`开始`同样走字典（`eventTree.start`）。
 - 事件树状态迁移条目中的 `类型 X → Y` / `状态 X → Y` 改为 `t('eventTree.typeChange', { from, to })` / `t('eventTree.statusChange', { from, to })`；X、Y 是标识符，不翻译。`MemoryPanel` 的 `transitionText` 只拼接标识符，不变。
 - `RoomHeader` 的 `sessions` 计数后缀、`window.prompt('additionalSessions (required)')`、各确认弹窗文字一律走字典。
-- `RoomListPage` 中未实现项的 `title="v1 未实现"` 走字典（`roomList.notImplemented`，英文 `Not implemented in v1`）。
+- 调度模式说明文案（需求 3.3、3.3.3）由 `RoomListPage` 的单选项说明与 `RoomHeader` 调度模式徽标的 `title` 共用，放在 `common` 区域：
+
+  | key | 中文 | 英文 |
+  |---|---|---|
+  | `common.schedulingParallelHint` | agent 可以同时运行，由触发型消息驱动派发 | Agents can run at the same time; dispatch is driven by trigger messages |
+  | `common.schedulingSequentialHint` | 同一时刻只有一个 agent 运行，按加入顺序轮流发言 | Only one agent runs at a time; agents take turns in join order |
+
+- `AgentRail` 的轮次标记（`07-frontend.md` §5）：`agentRail.speaking`（中文"发言中"，英文 `Speaking`）、`agentRail.nextTurn`（中文"下一位"，英文 `Next`）。
+- 任务分析报告 `Session` 标签页的轮次列：`report.colTurn`（中文"轮次"，英文 `Turn`）。
 
 ## 6. 文件落点
 

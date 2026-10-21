@@ -27,12 +27,14 @@
 
 ### 1.2 待分发标记与 `checkAndDispatch(roomId)`
 
+本节描述 `parallel` 房间的派发，以及两种模式共用的部分（标记置位第 1 条、检查时机、"派发"三步）；`sequential` 房间的派发见 §1.7。
+
 **标记**（需求 3.3）：房间标记 `room.dispatchPending` 及标记作者 `room.pendingAuthorId`，每个 agent 的定向标记 `agent.directedPending`，都持久化在存储层（`01-storage.md` §1）。
 
 **置位**：
 
 1. `submitMessage`（§1.4）写入的消息在写入时刻属于触发型（§1.1），且不属于 `directed` session：`targetAgentId` 为空时 `setDispatchPending(roomId, true, authorId)`；非空时 `setDirectedPending(roomId, targetAgentId, true)`。与消息插入在同一事务内完成。
-2. `onSessionEnded` 结算为 `error`（§2）：`dispatchScope === 'broadcast'` 时 `setDispatchPending(roomId, true, agentId)`；`'directed'` 时 `setDirectedPending(roomId, agentId, true)`。
+2. `parallel` 房间的 `onSessionEnded` 结算为 `error`（§2）：`dispatchScope === 'broadcast'` 时 `setDispatchPending(roomId, true, agentId)`；`'directed'` 时 `setDirectedPending(roomId, agentId, true)`。
 
 **检查时机**：以下情况各调用一次 `checkAndDispatch`：
 
@@ -43,7 +45,7 @@
 
 `checkAndDispatch` 是一个**纯同步函数**（内部只有 SQLite 同步读写，没有 `await`）：
 
-1. 读 room；若 `status !== 'active'`，直接返回。
+1. 读 room；若 `status !== 'active'`，直接返回。若 `room.schedulingMode === 'sequential'`，执行 §1.7 的 `checkAndDispatchSequential` 后返回，不进入下面的第 2~5 步。
 2. 读 `getRoomAgents(roomId)`。若 `room.dispatchPending` 为 false，且没有 `dispatchEnabled && directedPending` 的 agent：执行**续派**（见下）后返回，不进入第 3、4 步。
 3. **定向阶段**：按 `joinOrder` 顺序，对每个 `dispatchEnabled`、`idle`、`directedPending` 的 agent，执行"派发"（见下），`scope = 'directed'`、`trigger = 'directed_flag'`，并 `setDirectedPending(roomId, agentId, false)`。
 4. **房间阶段**（仅当 `room.dispatchPending` 为 true）：按 `joinOrder` 顺序扫描：
@@ -69,10 +71,10 @@
 
 续派只在"没有标记、也没有 agent 在跑"的检查里发生，也就是房间原本会静默的时刻。有 agent 在跑时不续派——它结束时的检查会再判断一次。
 
-**派发**（第 3、4 步与续派共用）：
+**派发**（第 3、4 步、续派与 §1.7 共用）：
 
 1. 若 `countSessions(roomId) >= room.maxSessions`：把 room 置为 `paused_limit`，`emit('roomStatus')`，结束本次 `checkAndDispatch`，尚未处理的标记保持原样。
-2. `createSession(roomId, agentId, scope, trigger)` + `setAgentState(roomId, agentId, 'running', seq)`，并清除对应标记（续派不清除任何标记），与扫描在同一个同步调用栈内完成。`trigger` 只落库供分析报告统计派发来源，调度逻辑中任何判断都不读它（`01-storage.md` sessions.dispatch_trigger）。
+2. `createSession(roomId, agentId, scope, trigger)` + `setAgentState(roomId, agentId, 'running', seq)`，并清除对应标记（续派不清除任何标记；§1.7 的清除规则见该节），与扫描在同一个同步调用栈内完成。`trigger` 只落库供分析报告统计派发来源，调度逻辑中任何判断都不读它（`01-storage.md` sessions.dispatch_trigger）。
 3. 调用 `agentInvocation.startSession({ roomId, seq, agentId, registryKey })`（fire-and-forget）。`scope` 与 `trigger` 都**不传给** `startSession`（§1.5）。必须用 try/catch 包住这次调用：返回的 Promise 已用 `.catch` 兜住，但同步阶段也可能抛错（如建目录失败），而 `checkAndDispatch` 会被进程退出等回调直接调用，同步抛出会变成未捕获异常——任何同步抛出都降级为"记录日志、这次派发失败"。
 
 **停止**：房间标记与所有启用 agent 的定向标记都为 false，且续派条件不满足（没有 OPEN 的 `open_question`、已收敛、没有启用的 agent，或仍有 agent 在跑）时，`checkAndDispatch` 在第 2 步什么都不做，派发停止；到达 `maxSessions` 时由"派发"第 1 步把房间置为 `paused_limit`。
@@ -136,7 +138,7 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 4a. 按 §1.2"置位"第 1 条置位标记。
 5. 事务提交后：`emit('message', { roomId, message })`；对每个 `changedMessageIds` emit `memoryUpdate`。
 6. 若新消息是 `exploring`：`resetStuckCount(roomId, authorId)`（该 agent 的 active exploring 发生了变化，§5）。
-7. 若第 4a 步置位了标记：`checkAndDispatch(roomId)`。
+7. 若第 4a 步置位了标记：`checkAndDispatch(roomId)`。若置位的是定向标记且房间为 `sequential`，之后再 `emit('roomStatus')`——即便这次没有派发，`getNextTurnAgent`（§1.7）的结果也可能变了。
 8. 返回 `{ message, changedMessageIds }`。
 
 **写入校验**（需求 4.2/4.3；`T` 指 `getMessageById(roomId, targetMessageId)`，不存在即拒绝）：
@@ -171,7 +173,7 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 1. **房间协议说明**——固定的规则性内容（消息类型含义、写入约束、知识状态转换、`exploring` 规则、调度触发条件、人类消息权重、可用工具等），每次完整给出，直接写死在 prompt 模板里（`04-agent-invocation.md` §2）。
 2. **当前房间状态**——`startSession` 内部调用记忆管理层的 `buildOverview(roomId)`（`02-memory-management.md` §3），预渲染进 prompt。这是派发那一刻的快照；之后 agent 可以随时调用 MCP 的 `get_overview` 刷新，两处共用同一个 `buildOverview` 和 `renderOverviewText`（`02-memory-management.md` §3.4），格式一致。
 
-两者一起构成这次 session 的完整输入，**跟 `dispatchScope` 无关**——广播和定向派发拿到的 prompt 逐字节一致（需求 3.3.2）。`dispatchScope` 只是记在 session 上的元数据，用于 §1.1 排除定向 session 的产出，以及 §2 失败时恢复对应的标记，不会以任何形式传给 `startSession`/`buildPromptText`。
+两者一起构成这次 session 的完整输入，**跟 `dispatchScope` 无关**——广播和定向派发拿到的 prompt 逐字节一致（需求 3.3.2）。协议说明随房间的 `schedulingMode` 多一段轮次说明（`sequential` 房间，需求 3.3.3），由 `startSession` 自己读 `room.schedulingMode` 决定（`04-agent-invocation.md` §2.1），不需要核心传参；同一房间内的所有派发仍逐字节一致。`dispatchScope` 只是记在 session 上的元数据，用于 §1.1 排除定向 session 的产出、§2 失败时恢复对应的标记，以及 `sequential` 房间的轮转位置与收敛计数（§1.7），不会以任何形式传给 `startSession`/`buildPromptText`。
 
 ### 1.6 派发空闲判定 `isDispatchIdle(roomId)`
 
@@ -183,7 +185,44 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 4. 没有 `dispatchEnabled && directedPending` 的 agent，并且 `room.dispatchPending` 为 false 或没有任何 `dispatchEnabled` 的 agent。停用的 agent 不参与判定；
 5. 续派条件（§1.2"续派"第 2~5 条）不满足：没有 OPEN 的 `open_question`、已收敛、没有 `dispatchEnabled` 的 agent，或最近一个 session 是定向 session。续派条件满足时下一次检查就会派发，不算空闲。
 
+`sequential` 房间的第 4、5 条替换为一条：`nextSequentialDispatch(roomId)`（§1.7）返回 null。
+
 这个值的变化总是伴随着已有的 `roomStatus` 推送（session 结算、`checkAndDispatch` 找不到派发目标、`setAgentEnabled`、房间状态变更），不需要新增事件。
+
+### 1.7 顺序房间的派发（需求 3.3.3）
+
+`room.schedulingMode === 'sequential'` 时，`checkAndDispatch` 在第 1 步之后改走本节。检查时机与 §1.2 相同；本节的函数同样是纯同步函数，"不需要显式加锁/互斥"的论证同样成立。
+
+**标记**：§1.2"置位"第 1 条照常执行——触发型消息置位房间标记（`targetAgentId` 为空）或定向标记（`targetAgentId` 非空），定向 session 的产出不置位任何标记。§1.2"置位"第 2 条（error 恢复标记）不执行：`sequential` 房间的 session 不论以什么结果结束，都不恢复任何标记。房间标记只作为"轮次应继续"的信号读取；`pendingAuthorId` 由 `setDispatchPending` 照常写入，本节不读取。
+
+**轮次 session**：`dispatchScope === 'broadcast'` 的 session。`sequential` 房间只有两种派发：轮次（`broadcast` / `turn`）与定向（`directed` / `directed_flag`）。
+
+**`nextTurnAgent(roomId, agents)`**：取 `listSessions(roomId)` 中 `dispatchScope === 'broadcast'` 且 `seq` 最大的 session 的 `agentId`，从它在 `joinOrder` 中的下一位开始循环查找（排到末尾回到开头，最后才回到它自己），取第一个 `dispatchEnabled` 的 agent；还没有轮次 session 时从 `joinOrder` 第一位开始查找。没有 `dispatchEnabled` 的 agent 时返回 null。上一轮 agent 当前被停用时，仍以它在 `joinOrder` 中的位置为起点。
+
+**`isConverged(roomId, agents)`**：`listSessions(roomId)` 中 `dispatchScope === 'broadcast'` 的 session 按 `seq` 降序，从最新一条开始连续 `outcome === 'passed'` 的条数，不小于 `dispatchEnabled` 的 agent 数。定向 session 被过滤掉，既不计入也不打断连续计数。
+
+**`nextSequentialDispatch(roomId)`**：只读，返回这次检查应派发的目标 `{ agentId, scope, trigger }`，或 null：
+
+1. 读 room；`status !== 'active'` → null。
+2. 读 `getRoomAgents(roomId)`；有 agent 处于 `running`/`stopping` → null。
+3. **定向优先**：按 `joinOrder` 取第一个 `dispatchEnabled && directedPending` 的 agent，有则返回 `{ agentId, scope: 'directed', trigger: 'directed_flag' }`。
+4. 没有 `dispatchEnabled` 的 agent → null。
+5. **轮次条件**：`room.dispatchPending === true`，或者（`getMessagesByType(roomId, 'open_question')` 中至少有一条 `questionStatus === 'OPEN'`，且 `!isConverged`）。都不满足 → null。
+6. 返回 `{ agentId: nextTurnAgent(roomId, agents), scope: 'broadcast', trigger: 'turn' }`。
+
+**`checkAndDispatchSequential(roomId)`**：
+
+1. `target = nextSequentialDispatch(roomId)`；为 null 时什么都不做、不推送（定向标记变化引起的推送由 §1.4 第 7 步负责）。
+2. 对 `target` 执行 §1.2 的"派发"三步。第 1 步触及 `maxSessions` 时把 room 置为 `paused_limit` 并推送，标记保持原样。第 2 步清除的标记：`directed` 时 `setDirectedPending(roomId, agentId, false)`；`turn` 时 `setDispatchPending(roomId, false)`。
+3. 派发成功后 `emit('roomStatus')`。
+
+一次检查最多派发一个 session——派发之后房间里已有 agent 在运行，按第 2 步不可能再派第二个。本节不做 `stuckCount` 扫描（§5）。
+
+**`getNextTurnAgent(roomId)`**：供 `getRoomStatus` 标出"下一位"（需求 3.3.3）。`parallel` 房间返回 null。`sequential` 房间：按 `joinOrder` 第一个 `dispatchEnabled && directedPending` 的 agent，没有则 `nextTurnAgent(roomId, agents)`。它不判断轮次条件，也不看是否有 agent 在运行——是"如果还有下一个 session，会派给谁"；轮次是否会继续由前端结合 `dispatchIdle` 与房间状态决定是否展示（`07-frontend.md` §5）。
+
+**停止**：`nextSequentialDispatch` 返回 null 且没有 agent 在运行时，轮次停止（需求 3.3.3"轮次停止"）；之后任何一次检查时机只要使它返回非 null，轮次就从 `nextTurnAgent` 接着继续。定向 session 的产出不置位标记，但它改变的问题状态照常参与第 5 步的判断，因此一次定向 session 结束后的检查也可能重新开始轮次（需求 3.3.3）。
+
+**阻塞**：第 2 步只要有 agent 处于 `running`/`stopping` 就不派发。人工终止清理失败而停在 `stopping` 的 session（§3 第 4 步），或"派发"第 3 步 `startSession` 同步抛错后仍处于 `running` 的 session，会让整个 `sequential` 房间停止派发，直到人类终止它（清理失败时重试）、它结算释放占位为止。
 
 ## 2. 自然结束与最终结算
 
@@ -200,7 +239,7 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 
 没有自动运行时长/无输出超时；卡住时人类可暂停房间、查看日志并终止。MCP 消息可在调用期间持续产生，CLI stdout/stderr 不参与结果判定、不转为 fact，也不用于任何统计。用量统计与原生会话引用由 04 的原生会话分析适配器在报告 `SessionExitEvent` 之前得出（`04-agent-invocation.md` §7.2），它们不影响这张结算表，只随 `finishSession` 多写几列。正常结束不自动完成 active exploring，不结束 room。
 
-只处理 running/stopping。事务内写 outcome、endedAt、退出元数据、用量统计（`event.usage`）、原生会话引用（`event.native`）及 process_exited，且仅在 currentSessionSeq 等于本 seq 时释放 agent。撤销凭据；outcome 为 error 时按 §1.2"置位"第 2 条恢复标记（与结算同一事务）；更新连续失败计数（§6）；emit `roomStatus` 并执行一次 `checkAndDispatch`。outcome 为 completed 之外的结果时（passed/error/terminated），额外用 `storage.insertMessage` 写一条无 type 的系统占位消息（`authorId` 为该 session 的 agentId、`sessionSeq` 为本次 seq），并 emit `message`——内容按结果分别说明"未发出任何带类型的消息"（passed）、报错原因（error）、"人工终止"（terminated）。事件树（`07-frontend.md` §9）靠这条消息本身留痕，不需要单独的 session 节点。
+只处理 running/stopping。事务内写 outcome、endedAt、退出元数据、用量统计（`event.usage`）、原生会话引用（`event.native`）及 process_exited，且仅在 currentSessionSeq 等于本 seq 时释放 agent。撤销凭据；`parallel` 房间 outcome 为 error 时按 §1.2"置位"第 2 条恢复标记（与结算同一事务；`sequential` 房间不恢复，§1.7）；更新连续失败计数（§6）；emit `roomStatus` 并执行一次 `checkAndDispatch`。outcome 为 completed 之外的结果时（passed/error/terminated），额外用 `storage.insertMessage` 写一条无 type 的系统占位消息（`authorId` 为该 session 的 agentId、`sessionSeq` 为本次 seq），并 emit `message`——内容按结果分别说明"未发出任何带类型的消息"（passed）、报错原因（error）、"人工终止"（terminated）。事件树（`07-frontend.md` §9）靠这条消息本身留痕，不需要单独的 session 节点。
 
 ## 3. `terminateAgentSession(roomId, seq)`
 
@@ -269,12 +308,14 @@ async function deleteRoom(roomId: number): Promise<{ nativeDeleteFailures: Nativ
 
 **已知限制**：房间里只有一个 agent 时，扫描不会反复经过它，计数很难累积，这套机制基本不起作用，人类靠 `getRoomStatus` 的"已运行 X 秒"自己判断（需求 4.6）。不额外设计备用机制。
 
+**`sequential` 房间**：派发走 §1.7，不经过 §1.2 第 4 步的扫描，`stuckCount` 恒为 0，`getStuckAgents` 不会返回该房间的 agent，界面不出现卡住提醒（需求 3.3.3）。
+
 ## 6. 连续失败与派发停用（需求 3.4）
 
 每个 agent 一个**内存** `failureCount`（roomId+agentId，重启归零，与 `stuckCount` 同类，不落盘）：
 
 - **结算更新**：`onSessionEnded` 结算为 `error` 时 `failureCount + 1`；结算为其他终态（`completed`/`passed`/`terminated`）时清零。
-- **自动停用**：`failureCount` 达到阈值（默认 3，服务端配置可调）时，调用 `storage.setAgentEnabled(roomId, agentId, false)`，清零计数，`emit('roomStatus')`。停用状态持久化在 `room_agents.dispatch_enabled`，重启后仍生效。停用发生在 §2 恢复标记之后：被停用 agent 的 broadcast session 失败所恢复的房间标记，会在紧接着的 `checkAndDispatch` 里派给其他 agent。
+- **自动停用**：`failureCount` 达到阈值（默认 3，服务端配置可调）时，调用 `storage.setAgentEnabled(roomId, agentId, false)`，清零计数，`emit('roomStatus')`。停用状态持久化在 `room_agents.dispatch_enabled`，重启后仍生效。停用发生在 §2 恢复标记之后：`parallel` 房间里，被停用 agent 的 broadcast session 失败所恢复的房间标记，会在紧接着的 `checkAndDispatch` 里派给其他 agent；`sequential` 房间不恢复标记，紧接着的检查按 §1.7 轮到下一个启用的 agent。
 - **派发跳过**：`checkAndDispatch` 扫描时跳过 `dispatchEnabled === false` 的 agent（§1.2 第 3、4 步），继续看后面的；停用不终止正在运行的 session。它的定向标记保留，要等人类重新启用后才会被派发。
 - **人工启停**：`setAgentEnabled(roomId, agentId, enabled)` 是人类显式操作。启用时清零 `failureCount`、`emit('roomStatus')` 并调用一次 `checkAndDispatch`；停用只 `emit('roomStatus')`。系统不自动恢复。
 - **展示**：`getRoomStatus` 暴露每个 agent 的 `enabled` 与 `failureCount`，前端展示"连续失败，已停用派发"并提供启用/停用控件（`07-frontend.md` §5）。
@@ -298,6 +339,7 @@ function resetStuckCount(roomId: number, agentId: string): void;
 function getAgentFailures(roomId: number): { agentId: string; failureCount: number }[];
 function setAgentEnabled(roomId: number, agentId: string, enabled: boolean): void;
 function isDispatchIdle(roomId: number): boolean; // §1.6
+function getNextTurnAgent(roomId: number): string | null; // §1.7；parallel 房间恒为 null
 ```
 
 ## 8. 对外依赖
@@ -307,7 +349,7 @@ function isDispatchIdle(roomId: number): boolean; // §1.6
 getRoom, setRoomStatus, increaseMaxSessions, deleteRoom,
 getRoomAgents, setAgentState, setAgentEnabled, setDispatchPending, setDirectedPending,
 createSession, finishSession, markSessionTerminating, appendSessionEvent, getSession,
-countSessions,
+countSessions, listSessions, getMessagesByType,
 runInTransaction, insertMessage, getMessageById, countMessages, getMessagesBySession,
 getActiveExploring, getActiveExploringByAuthor, completeExploring,
 setMessageType, setQuestionStatus, setChainStatus

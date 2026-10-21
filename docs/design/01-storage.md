@@ -12,12 +12,12 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 |---|---|---|
 | id | INTEGER PK AUTOINCREMENT | |
 | name | TEXT NOT NULL | 创建时填写的简短标题，仅用于列表展示 |
-| scheduling_mode | TEXT NOT NULL DEFAULT 'sequential' | v1 只有 `'sequential'`，字段为未来 `'parallel'` 预留 |
+| scheduling_mode | TEXT NOT NULL DEFAULT 'parallel' | 调度模式：`'parallel'`（并行房间）/ `'sequential'`（顺序房间，agent 轮流发言），见需求 3.3、3.3.3。创建时由 `createRoom` 显式写入，创建后不可更改。`user_version` 小于 1 的数据库中该列取值的改写见 §5.8 |
 | status | TEXT NOT NULL DEFAULT 'active' | `active` / `paused_limit`（触及上限自动暂停） / `paused_manual`（人类主动暂停） / `completed` |
 | max_sessions | INTEGER NOT NULL | 创建时写入，缺省 **20**（见 §5.1），触及上限后 `resumeRoom(additionalSessions)` 会增加此值 |
 | workdir | TEXT NOT NULL DEFAULT '' | 该 room 的工作目录（创建时解析而成的**绝对路径**）。空串表示"按服务端默认目录"解析（`VIOLETDAGGER_WORKDIR` 或 server 进程 cwd）——只为历史数据/缺省兜底，新建 room 一律写入具体路径 |
-| dispatch_pending | INTEGER NOT NULL DEFAULT 0 | 房间标记（需求 3.3）。`1` 表示有待分发的触发型消息，`0` 表示没有。由核心在触发型消息写入、session 以 error 结束时置位，派发时清除（`03-orchestrator-core.md` §1.2） |
-| pending_author_id | TEXT | 标记作者：最近一次置位房间标记的消息作者（agent 实例标识，或 `"human"`）；session 以 error 结束恢复标记时为失败的 agent。房间标记为 0 时为 NULL |
+| dispatch_pending | INTEGER NOT NULL DEFAULT 0 | 房间标记（需求 3.3）。`1` 表示有待分发的触发型消息，`0` 表示没有。由核心在触发型消息写入、session 以 error 结束时置位，派发时清除（`03-orchestrator-core.md` §1.2）。`sequential` 房间中它只表示"自上一轮开始以来有新的触发型消息，轮次应继续"：每派发一轮清除，session 以 error 结束时不恢复（`03-orchestrator-core.md` §1.7） |
+| pending_author_id | TEXT | 标记作者：最近一次置位房间标记的消息作者（agent 实例标识，或 `"human"`）；session 以 error 结束恢复标记时为失败的 agent。房间标记为 0 时为 NULL。`sequential` 房间照常写入，但调度不读取 |
 | created_at | TEXT NOT NULL | ISO8601 |
 | completed_at | TEXT | 房间被 confirmCompletion 结束的时间（ISO8601）；未结束为 NULL。已结束但该列为 NULL 的房间，分析报告的房间总时长为空 |
 
@@ -28,7 +28,7 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 | room_id | INTEGER NOT NULL REFERENCES rooms(id) | |
 | agent_id | TEXT NOT NULL | **agent 实例标识**（见 `00-overview.md`"agent 实例标识"）：该 agent 只加入一次时等于注册表 key（如 `"codex"`），加入多次时为 `"codex-1"`/`"codex-2"`……。不是外键（注册表是配置文件不是表） |
 | registry_key | TEXT NOT NULL | 该实例对应的 `agents.config.json` 注册表 key（如 `"codex"`）。查注册表配置一律用这一列，不从 `agent_id` 反解后缀 |
-| join_order | INTEGER NOT NULL | 加入房间的顺序，决定派发优先级（3.3："按固定顺序（agent 加入房间的顺序）"）；多个实例各自占一个位置 |
+| join_order | INTEGER NOT NULL | 加入房间的顺序，决定派发优先级（3.3："按固定顺序（agent 加入房间的顺序）"），也是 `sequential` 房间的轮流顺序（3.3.3）；多个实例各自占一个位置 |
 | state | TEXT NOT NULL DEFAULT 'idle' | `idle` / `running` / `stopping`。`passed`/`errored` 不是持久状态，只是某次 session 的 outcome（见下），该 session 结束后 agent 状态直接回 `idle` |
 | current_session_seq | INTEGER | `running`/`stopping` 时必须非空，指向 `sessions.seq`（room 内），供 `terminateAgentSession` 和详情查看定位 |
 | dispatch_enabled | INTEGER NOT NULL DEFAULT 1 | 是否参与派发。`1`=启用（默认），`0`=停用——人类手动停用，或连续失败达到阈值后由核心自动停用（见 `03-orchestrator-core.md` §6）。停用只阻止后续派发，不终止正在运行的 session，也不自动恢复 |
@@ -60,8 +60,8 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 | cache_read_tokens | INTEGER | 同上 |
 | cache_write_tokens | INTEGER | 同上 |
 | cost_usd | REAL | 只采用原生会话中记录的美元费用（claude 的 `cost-state`、opencode 的 `part.cost`），不做任何定价表估算；codex、kimi 的原生会话没有费用，恒为 NULL |
-| dispatch_scope | TEXT NOT NULL DEFAULT 'broadcast' | `'broadcast'`（因房间标记派发）/ `'directed'`（因定向标记派发，见需求 3.3.2）；`createSession` 时由核心写入，不可事后修改。`directed` session 产出的消息不置位任何标记（见 `03-orchestrator-core.md` §1.1）；session 以 error 结束时，核心按它恢复对应的标记 |
-| dispatch_trigger | TEXT | 派发来源：`'room_flag'`（因房间标记）/ `'directed_flag'`（因定向标记）/ `'continuation'`（无标记时的续派，见需求 3.3）。`createSession` 时由核心写入，不可事后修改。**只用于分析报告的派发来源分布，不参与任何调度判断**；调度仍只看 `dispatch_scope`。与 `dispatch_scope` 的对应关系固定：`directed_flag` ↔ `directed`，`room_flag` / `continuation` ↔ `broadcast`。该列为 NULL 的 session 在报告中计为"未知" |
+| dispatch_scope | TEXT NOT NULL DEFAULT 'broadcast' | `'broadcast'`（因房间标记、续派或 `sequential` 房间的轮次派发）/ `'directed'`（因定向标记派发，见需求 3.3.2）；`createSession` 时由核心写入，不可事后修改。`directed` session 产出的消息不置位任何标记（见 `03-orchestrator-core.md` §1.1）；`parallel` 房间的 session 以 error 结束时，核心按它恢复对应的标记；`sequential` 房间用它区分轮次 session（`broadcast`）与定向 session，决定轮转位置与收敛计数（`03-orchestrator-core.md` §1.7） |
+| dispatch_trigger | TEXT | 派发来源：`'room_flag'`（因房间标记）/ `'directed_flag'`（因定向标记）/ `'continuation'`（无标记时的续派，见需求 3.3）/ `'turn'`（`sequential` 房间的轮次派发，见需求 3.3.3）。`createSession` 时由核心写入，不可事后修改。**只用于分析报告的派发来源分布，不参与任何调度判断**；调度仍只看 `dispatch_scope`。与 `dispatch_scope` 的对应关系固定：`directed_flag` ↔ `directed`，`room_flag` / `continuation` / `turn` ↔ `broadcast`。该列为 NULL 的 session 在报告中计为"未知" |
 | native_session_id | TEXT | CLI 原生会话标识（见 `04-agent-invocation.md` §7）；定位失败、未结束或 spawn-failed / not-started 时为 NULL |
 | native_storage | TEXT | `'file'` / `'database'`；含义与 NULL 规则同上 |
 | native_original_path | TEXT | 原件位置：文件型为会话文件或目录，数据库型为数据库文件；同上 |
@@ -163,10 +163,12 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 ## 3. 类型定义（TypeScript）
 
 ```typescript
+type SchedulingMode = 'parallel' | 'sequential';
+
 interface Room {
   id: number;
   name: string;
-  schedulingMode: 'sequential';
+  schedulingMode: SchedulingMode;
   status: 'active' | 'paused_limit' | 'paused_manual' | 'completed';
   maxSessions: number;
   workdir: string;   // 绝对路径；空串表示按服务端默认目录解析（历史数据）
@@ -214,7 +216,7 @@ interface Session {
   cacheWriteTokens: number | null;
   costUsd: number | null;
   dispatchScope: 'broadcast' | 'directed';
-  dispatchTrigger: 'room_flag' | 'directed_flag' | 'continuation' | null;
+  dispatchTrigger: 'room_flag' | 'directed_flag' | 'continuation' | 'turn' | null;
   nativeSessionId: string | null;
   nativeStorage: 'file' | 'database' | null;
   nativeOriginalPath: string | null;
@@ -331,7 +333,7 @@ interface CreateRoomOptions {
   maxSessions?: number; // 正整数，不传用默认值 20（见 §5.1）；非正整数抛错
   workdir?: string;     // 绝对路径（由调用方解析/校验，见 06；存储层只负责落盘）
 }
-function createRoom(name: string, agentIds: string[], schedulingMode: 'sequential', options?: CreateRoomOptions): Room;
+function createRoom(name: string, agentIds: string[], schedulingMode: SchedulingMode, options?: CreateRoomOptions): Room;
 // agentIds 装的是注册表 key 列表（允许重复）；createRoom 内部按上文规则生成实例标识写入 room_agents.agent_id，并写入 registry_key 与 join_order（数组顺序）
 // workdir 缺省写 ''（读出来由 agent 调用层按服务端默认目录兜底）
 function getRoom(roomId: number): Room | null;
@@ -358,7 +360,7 @@ function setDirectedPending(roomId: number, agentId: string, pending: boolean): 
 // Session
 function createSession(roomId: number, agentId: string,
   dispatchScope: 'broadcast' | 'directed',
-  dispatchTrigger: 'room_flag' | 'directed_flag' | 'continuation'): Session;
+  dispatchTrigger: 'room_flag' | 'directed_flag' | 'continuation' | 'turn'): Session;
 // seq 在此自增；dispatchScope 与 dispatchTrigger 由调用方（checkAndDispatch）按 03 §1.2 的判定结果传入；
 // 两者不符合固定对应关系时抛错
 function setSessionPgid(roomId: number, seq: number, pgid: number): void;
@@ -443,7 +445,7 @@ room 创建时可指定 `workdir`——该房**所有 agent CLI 的 spawn cwd**�
 
 ### 5.6 schema 不兼容时重建数据库
 
-建连接时检查 schema：`messages` 缺少 `(room_id, id)` 复合主键、缺少 `question_status`/`chain_status`/`chain_resolution`/`question_closed_by` 列，`rooms` 缺少 `dispatch_pending`/`pending_author_id` 列，`room_agents` 缺少 `directed_pending` 列，或不存在 `state_transition_log` 表，任一情况都视为不兼容的旧 schema，**直接重建整个数据库**——删除全部表与数据，按 §1 重新建表。旧数据不迁移、不保留。本地单机工具，接受这一取舍。
+建连接时检查 schema：`messages` 缺少 `(room_id, id)` 复合主键、缺少 `question_status`/`chain_status`/`chain_resolution`/`question_closed_by` 列，`rooms` 缺少 `dispatch_pending`/`pending_author_id` 列，`room_agents` 缺少 `directed_pending` 列，或不存在 `state_transition_log` 表，任一情况都视为不兼容的旧 schema，**直接重建整个数据库**——删除全部表与数据，按 §1 重新建表，并按 §5.8 把 `user_version` 设为 1。旧数据不迁移、不保留。本地单机工具，接受这一取舍。
 
 ### 5.7 新增可空列的原地补齐
 
@@ -454,3 +456,11 @@ room 创建时可指定 `workdir`——该房**所有 agent CLI 的 spawn cwd**�
 - 删除房间时跳过这些 session 的原件删除。
 
 此后再新增可空列也按本节处理，不触发整库重建。
+
+### 5.8 `scheduling_mode` 取值的一次性改写
+
+`user_version` 小于 1 的数据库中，`scheduling_mode = 'sequential'` 的行表示 agent 之间可以同时运行的房间，语义与 `'parallel'` 相同，必须改写为 `'parallel'`，且只能改写一次——改写之后新建的顺序房间同样存 `'sequential'`，重复改写会把它们错改为并行房间。用 SQLite 的 `PRAGMA user_version` 记录是否已经改写：
+
+- 建连接时，在 §5.6、§5.7 的处理之后读取 `user_version`。小于 1 时，在同一个事务内执行 `UPDATE rooms SET scheduling_mode = 'parallel' WHERE scheduling_mode = 'sequential'` 和 `PRAGMA user_version = 1`；大于等于 1 时不做任何改写。
+- 全新建库（包括 §5.6 的整库重建）在建表后直接把 `user_version` 设为 1，不执行改写。
+- `user_version` 小于 1 的数据库，`rooms` 表定义中该列的默认值文本为 `'sequential'`：SQLite 不能原地修改列默认值，这里也不为此重建表。`createRoom` 总是显式写入调度模式，这个默认值不会被用到。

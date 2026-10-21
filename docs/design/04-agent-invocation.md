@@ -28,9 +28,14 @@ interface AgentConfig {
 
 ### 2.1 Prompt 模板全文
 
-`buildPromptText(roomId, agentId, goalContent, overview)` 拼出的完整文本，只有 3 处随派发而变的动态插槽（`{{roomId}}`、`{{agentId}}`、`{{renderOverviewText(goalContent, overview)}}`），其余固定文本每次原样注入，不因 agent 或房间不同而改写一字。这是需求 3.3"每次 session 都从零开始，必须每次完整给出协议规则"的具体落地，代码（`packages/server/src/agent-invocation/prompt.ts`）必须和下面的模板逐字一致，改动先改这里。
+`buildPromptText` 拼出的完整文本（参数对象在现有字段之外增加 `schedulingMode`），只有 4 处随派发而变的动态插槽（`{{roomId}}`、`{{agentId}}`、`{{schedulingNote}}`、`{{renderOverviewText(goalContent, overview)}}`），其余固定文本每次原样注入，不因 agent 或房间不同而改写一字。这是需求 3.3"每次 session 都从零开始，必须每次完整给出协议规则"的具体落地，代码（`packages/server/src/agent-invocation/prompt.ts`）必须和下面的模板逐字一致，改动先改这里。
 
 - `{{renderOverviewText(goalContent, overview)}}` 是记忆面板，由 `02-memory-management.md` §3.4 的 `renderOverviewText` 生成，内容依次为 goal 全文、摘要树（已关闭的子问题及其相关 exploring 按 02 §3.4 折叠，只影响这份文本，不影响存储）和固定引导语；`goalContent` 是房间首条消息（goal）的**完整正文**，由 `getFirstMessage(roomId).content` 取得——概览里的 goal 只有摘要，任务描述必须完整给出。MCP `get_overview` 返回的是同一个函数的输出，agent 中途刷新看到的格式与这里一致。
+- `{{schedulingNote}}` 是轮次说明（需求 3.3.3），按 `schedulingMode`（`startSession` 从 `getRoom(roomId).schedulingMode` 取得）取值：`'parallel'` 时为空串，此时该插槽连同它前面的空行一起不输出；`'sequential'` 时为下面这段固定文本（逐字一致）：
+
+  ```
+  本房间按轮次运行：同一时刻只有你一个 Agent 在运行，其他 Agent 按加入顺序依次轮到，你结束后下一个 Agent 才开始，它会看到你写入的全部内容。本说明中凡说到"同时""并行"的地方，在本房间都按"依次轮流"理解；触发型消息不会让其他 Agent 立刻开始，但会让轮次继续下去。
+  ```
 - **@ 定向消息（需求 3.3.2）对 agent 完全不可见**：`dispatchScope` 不会以任何形式注入 prompt，被 @ 的 agent 拿到的输入跟被广播派发时逐字节一致。`renderMemory` 也不渲染 `targetAgentId`（`MessageSummary` 不含该字段）。
 
 ```
@@ -39,6 +44,8 @@ roomId：{{roomId}}
 你的 authorId：{{agentId}}
 
 多个 Agent 同时在这个房间里工作。你的职责是推进任务目标：先处理等待独立验证的工作，把尚未拆开的目标拆成可以并行的子问题，再认领一个尚未被覆盖的方向，在本次 Session 内尽可能深入地研究。
+
+{{schedulingNote}}
 
 ## 并行协作
 
@@ -110,7 +117,7 @@ prompt 副本位于 <logsDir>/prompts/violetdagger-<roomId>-<seq>.prompt.txt；�
 ## 3. startSession
 
 1. 同步占位，异步准备每个阶段检查是否已取消，防止终止后启动孤儿进程。
-2. 构造 prompt、凭据和独立配置。设置 cwd 为 room.workdir，历史空值回退服务端配置及 server cwd。
+2. 构造 prompt（按 `room.schedulingMode` 填 `{{schedulingNote}}`，§2.1）、凭据和独立配置。设置 cwd 为 room.workdir，历史空值回退服务端配置及 server cwd。
 3. 创建日志目录，立即 setSessionRawLogPath，再用普通子进程直接执行 argv；stdout/stderr 使用管道，绝不创建 PTY。
 4. arg 模式通过参数提交任务并关闭不使用的 stdin；stdin 模式只写入初始 prompt 后关闭。浏览器没有写 stdin 的入口。
 5. stdout/stderr 按服务器观察顺序统一记录为带 stream 标记的日志事件；保留原文，不提取答案。两个独立流之间不承诺来源进程的全局顺序。

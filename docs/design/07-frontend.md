@@ -99,7 +99,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 
 ## 4. RoomHeader
 
-顶栏，`grid-area: header`，`position: sticky`。左侧：返回房间列表的链接、房间名（`GET /api/rooms/:id`）、状态徽标、`currentSessionCount / maxSessions`（`--mono`）、房间总用量（`getUsageSummary().room`，格式见 §5 AgentRail 用量行；`sessionCount === 0` 时不显示这一项）、以及该房间的工作目录 `workdir`（`--mono`、`--text-faint`）。工作目录占据左侧信息与右侧控件之间的全部剩余空间，不设固定最大宽度，放得下就完整显示；只有剩余空间不够时才单行截断。截断时保留路径**末尾**、省略号在开头（如 `…/AI_generate/teke`），因为末尾的目录名最能区分房间。悬浮 `title` 始终给完整路径。房间总用量随 `roomStatus` 推送后的重拉节奏一起刷新，不单独轮询。右侧按状态渲染控制：
+顶栏，`grid-area: header`，`position: sticky`。左侧：返回房间列表的链接、房间名（`GET /api/rooms/:id`）、状态徽标、调度模式徽标（`Room.schedulingMode`，以标识符 `parallel` / `sequential` 原样显示，`--mono`、`--text-muted` 描边小徽标，悬浮 `title` 给出该模式的一句说明，文案同第 11 节）、`currentSessionCount / maxSessions`（`--mono`）、房间总用量（`getUsageSummary().room`，格式见 §5 AgentRail 用量行；`sessionCount === 0` 时不显示这一项）、以及该房间的工作目录 `workdir`（`--mono`、`--text-faint`）。工作目录占据左侧信息与右侧控件之间的全部剩余空间，不设固定最大宽度，放得下就完整显示；只有剩余空间不够时才单行截断。截断时保留路径**末尾**、省略号在开头（如 `…/AI_generate/teke`），因为末尾的目录名最能区分房间。悬浮 `title` 始终给完整路径。房间总用量随 `roomStatus` 推送后的重拉节奏一起刷新，不单独轮询。右侧按状态渲染控制：
 
 - `active`：`Pause`；其余非 `completed`：`Resume`（`paused_limit` 时弹输入框要求填 `additionalSessions`，必填不可提交；`paused_manual` 直接调用，见 `03-orchestrator-core.md` 第 4 节）；非 `completed` 恒有 `Confirm Completion`（`--danger` 描边 + 二次确认弹窗）。
 - `completed`：pause/resume/confirm 控制隐藏，顶栏显示"已结束 · 只读"，并保留一个 `Delete Room` 按钮（`--danger` 描边 + 二次确认弹窗，文案同第 11 节）——只有 completed 房间可删；删除成功后跳回 `/`，`nativeDeleteFailures` 非空时随导航带给 RoomListPage 展示（第 11 节）。
@@ -125,7 +125,8 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - **用量行**：来自 `getUsageSummary().byAgent[agentId]`（`UsageTotals`，见 `01-storage.md`）。`sessionCount === 0`（这个 agent 在本房间还没跑完过一次）时不显示这一行；否则显示 token 总量 `inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens` 的紧凑数字（如 `12.3k tok`），与任务分析报告（`10-room-report.md`）`tokens.total` 的口径相同；输入、输出、缓存读、缓存写四项明细悬浮显示，不占卡片空间；`costUsd` 非 null 时接一个 `· $0.28`，为 null 时（这个 agent 完全不提供费用数据，如 codex、kimi）不显示 `$` 部分；`sessionsWithoutCost > 0` 且 `costUsd` 非 null 时（部分 session 有费用、部分没有）在后面加一个 `*`，悬浮提示"N 个 session 无费用数据，未计入"——不静默让总数显得比实际更精确。
 - `running`/`stopping` 且 `sessionStartedAt` 存在时，本地每秒 tick 显示 `已运行 HH:mm:ss`（系统不做超时判定，这是人类判断"跑太久"的唯一依据，需求 3.3）。
 - `sessionId` 徽标可点击（`running`/`stopping` 才有）→ `LiveSessionModal`（实时只读日志，见 §10.1）；`终止` 按钮调用 `terminateAgentSession({ sessionId })`（需求 3.5：操作对象是具体 session，不是 agent）。只要 session 仍为 running/stopping 就保留"终止"，包括已 completed 的房间。
-- `stuck` 时整卡描边 `--warn` + `⚠` 图标，`title="这个 agent 可能卡住了，要不要看看"`（不自动处理，只提示）。
+- `stuck` 时整卡描边 `--warn` + `⚠` 图标，`title="这个 agent 可能卡住了，要不要看看"`（不自动处理，只提示）。只有 `parallel` 房间会出现（`03-orchestrator-core.md` §5）。
+- **轮次标记**（仅 `sequential` 房间，需求 3.3.3）：`running`/`stopping` 的卡片在 `state` 徽标旁显示"发言中"徽标（身份色描边）；`getRoomStatus().nextTurnAgentId` 对应的卡片显示"下一位"徽标（`--text-muted` 描边）。房间不为 `active`，或 `dispatchIdle === true` 时不显示"下一位"（轮次已停止，见 `03-orchestrator-core.md` §1.7）。`nextTurnAgentId` 恰是正在运行的 agent 时（例如房间只有一个启用的 agent），同一张卡同时显示两个徽标。卡片按 `getRoomStatus().agents` 的顺序（`joinOrder`）排列，即轮流顺序。`parallel` 房间不显示这两个徽标。
 - **派发启停**：卡片显示 `enabled`；`enabled === false` 时整卡降为 `--text-muted` + "已停用派发"，`failureCount > 0` 时显示 `连续失败 ×N`。每张卡有一个启用/停用按钮，调用 `setAgentEnabled({ agentId, enabled })`（`03-orchestrator-core.md` §6）。连续 3 次失败会被核心自动停用，需人类点启用重新入队。
 - 卡片左侧用 agent 身份色 3px 描边，扫一眼即可按颜色区分。
 
@@ -295,7 +296,7 @@ RoomHeader 的 `Report` 按钮打开，使用第 10 节的共用 modal 外壳。
 - 表格上方是分组标签页：`Session`、`时间`、`Token`、`模型`、`工具`，默认 `Token`。
 - 行为各 agent（按 `joinOrder`，agent 标识带 `colorForAgent` 色块），末行为加粗的"合计"行；各标签页共用同一组行。
 - 各标签页的列：
-  - `Session`：总数、completed、passed、error、terminated、完成率、pass 率、失败率、房间标记、定向标记、续派、未知
+  - `Session`：总数、completed、passed、error、terminated、完成率、pass 率、失败率、房间标记、定向标记、续派、轮次、未知
   - `时间`：累计执行时长、平均、中位数、P90、最大（附 `#seq`）
   - `Token`：输入、输出、缓存读、缓存写、总计、占比、缓存命中率、每 session、每 completed、每步、输出速率（token/s）
   - `模型`：步数、每 session 步数、首次响应平均、首次响应中位数
@@ -318,7 +319,7 @@ RoomHeader 的 `Report` 按钮打开，使用第 10 节的共用 modal 外壳。
 `/`，纵向：顶部品牌栏 + 房间网格 + 新建房间面板。品牌栏（`app-bar`）右端是语言切换按钮 `LocaleToggle`（见 `09-frontend-i18n.md` §4）；`RoomDashboardPage` 在房间/状态尚未加载完成或加载失败时显示的 `app-bar` 同样带此按钮。
 
 - 房间网格：每张卡片显示 `name`、状态徽标、`createdAt`（相对时间，如"3 分钟前"），点击进入 `/rooms/:id`；空态显示"还没有房间，创建一个吧"。**`completed` 的卡片额外显示 `Delete` 按钮**（`--danger` 描边 + 二次确认弹窗，说明"将级联删除 session、记忆、事件树、信息流、磁盘日志，以及各 agent CLI 自己保存的原生会话记录（如 claude、codex、opencode、kimi 的会话历史），不可恢复"）；删除调用 `DELETE /api/rooms/:id`，成功后刷新列表；非 `completed` 卡片不显示该按钮。
-- 新建房间面板：`name` 输入框；agent chips 来自 `GET /api/agents`，**可重复点击以加入同一 agent 的多个实例**——每个 chip 显示当前已加入数量（如 `codex ×2`），点击 +1；下方"已加入实例"区按加入顺序展示将要生成的实例标识（单个显示 `codex`，多个显示 `codex-1`/`codex-2`……，与 `01-storage.md` 的规则一致），每条可单独移除、也可清空某 agent 的全部实例。`schedulingMode` 只有 `sequential`，渲染为唯一可选且已选中的选项（其他模式预留位置但禁用，需求 3.3）。另有**可选的 `maxSessions` 数字输入框**（label「session 上限」，`min=1`，placeholder 显示默认值 20）：留空表示用服务端默认值；填了就必须是正整数，否则提交时在表单内联报错、不发请求。以及**可选的 `workdir` 文本输入框**（label「工作目录」，placeholder 提示"默认：服务端目录；不存在会自动创建"）：留空用服务端默认；填了随 `POST /api/rooms` 提交，目录不存在时由服务端自动创建，路径不是目录或创建失败由服务端报错（`06`），失败在表单内联报错。提交 `POST /api/rooms`（`agentIds` 按加入顺序、允许重复；数组里是注册表 key；`maxSessions` 仅在填写时带上），成功后跳 `/rooms/:id`；失败在表单内联 `role="alert"`。
+- 新建房间面板：`name` 输入框；agent chips 来自 `GET /api/agents`，**可重复点击以加入同一 agent 的多个实例**——每个 chip 显示当前已加入数量（如 `codex ×2`），点击 +1；下方"已加入实例"区按加入顺序展示将要生成的实例标识（单个显示 `codex`，多个显示 `codex-1`/`codex-2`……，与 `01-storage.md` 的规则一致），每条可单独移除、也可清空某 agent 的全部实例；这个顺序也是 `sequential` 房间的轮流顺序。`schedulingMode` 渲染为两个单选项，以标识符 `parallel`（默认选中）与 `sequential` 显示，各自下方一行 `--text-muted` 说明：parallel"agent 可以同时运行，由触发型消息驱动派发"；sequential"同一时刻只有一个 agent 运行，按加入顺序轮流发言"（需求 3.3、3.3.3）。所选值随 `POST /api/rooms` 提交。另有**可选的 `maxSessions` 数字输入框**（label「session 上限」，`min=1`，placeholder 显示默认值 20）：留空表示用服务端默认值；填了就必须是正整数，否则提交时在表单内联报错、不发请求。以及**可选的 `workdir` 文本输入框**（label「工作目录」，placeholder 提示"默认：服务端目录；不存在会自动创建"）：留空用服务端默认；填了随 `POST /api/rooms` 提交，目录不存在时由服务端自动创建，路径不是目录或创建失败由服务端报错（`06`），失败在表单内联报错。提交 `POST /api/rooms`（`agentIds` 按加入顺序、允许重复；数组里是注册表 key；`schedulingMode` 总是带上；`maxSessions` 仅在填写时带上），成功后跳 `/rooms/:id`；失败在表单内联 `role="alert"`。
 - **原生会话原件未删除提示**：`DELETE /api/rooms/:id` 返回的 `nativeDeleteFailures` 非空时（来自本页卡片删除，或 RoomHeader 删除后带过来的导航状态），在房间网格上方显示一条可关闭的 `role="alert"` 提示条："房间已删除，但 N 个原生会话原件未能删除"。下方逐条列出 `agentId #seq · target · error`（`target` 用 `--mono`，超过 5 条时折叠为"展开全部"）。提示条只在本次页面状态中存在，刷新后消失。
 - **不可用 agent**：`GET /api/agents` 返回 `available`/`unavailableReason`；`available=false` 的 chip 禁用并悬浮展示原因（`07 §17`）。
 - **创建后不可变**：参与的 agent 名单（含实例划分）、`schedulingMode` 与 `maxSessions` 在创建时确定，创建后不能增减或更改（需求 3.5；`maxSessions` 之后只能靠房间内 `resumeRoom` 追加）。
@@ -427,7 +428,7 @@ src/
 └── api/{rest.ts,types.ts}
 ```
 
-`*Tab` 后缀组件统一改名为 `*Panel`；`test/` 下对应测试同步更新，并新增布局、Composer 目标/类型选择、EventTree 人类消息穿插与关联线、事件树标签页切换与记忆、Session 泳道（列的组成与顺序、全局行对齐、列头打开详情、事件块定位消息）、session 边界标记（合并排序与同时刻先后、两个标签页的开始/结束标记、运行中无结束标记、泳道运行区间竖线）、MemoryPanel 总线/逐级下钻、LiveSessionModal 实时日志（`mode=live` 只读）、SessionDetailModal 复盘视图（`mode=replay` 只读回放、running 也走 replay）、删除房间、多实例建房间、agent 派发启停、RoomReportModal（打开即请求、Regenerate 重新请求、加载与错误重试、null 显示 `—`、分组标签页切换、合计行、缺失数据脚注、工具名范围切换）、删除房间的原件未删除提示条的测试。
+`*Tab` 后缀组件统一改名为 `*Panel`；`test/` 下对应测试同步更新，并新增布局、Composer 目标/类型选择、EventTree 人类消息穿插与关联线、事件树标签页切换与记忆、Session 泳道（列的组成与顺序、全局行对齐、列头打开详情、事件块定位消息）、session 边界标记（合并排序与同时刻先后、两个标签页的开始/结束标记、运行中无结束标记、泳道运行区间竖线）、MemoryPanel 总线/逐级下钻、LiveSessionModal 实时日志（`mode=live` 只读）、SessionDetailModal 复盘视图（`mode=replay` 只读回放、running 也走 replay）、删除房间、多实例建房间、调度模式单选（默认 parallel、切换后随请求提交）、RoomHeader 调度模式徽标、AgentRail 轮次标记（发言中/下一位、dispatchIdle 与非 active 时隐藏下一位、parallel 房间不显示）、agent 派发启停、RoomReportModal（打开即请求、Regenerate 重新请求、加载与错误重试、null 显示 `—`、分组标签页切换、合计行、缺失数据脚注、工具名范围切换）、删除房间的原件未删除提示条的测试。
 
 ## 17. Agent 可用性与停用
 

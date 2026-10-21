@@ -30,7 +30,7 @@ interface ReportRow {
     total: number; // 已结束 session 数
     byOutcome: { completed: number; passed: number; error: number; terminated: number };
     completionRate: Ratio; passRate: Ratio; errorRate: Ratio;
-    byTrigger: { room_flag: number; directed_flag: number; continuation: number; unknown: number };
+    byTrigger: { room_flag: number; directed_flag: number; continuation: number; turn: number; unknown: number };
   };
   time: {
     totalExecMs: number | null; // 没有已结束 session 时为 null
@@ -118,7 +118,7 @@ interface RoomReport {
 | `total` | 已结束 session 数 |
 | `byOutcome` | 按 outcome 计数 |
 | `completionRate` / `passRate` / `errorRate` | completed / passed / error ÷ `total` |
-| `byTrigger` | 按 `dispatch_trigger` 计数；NULL 计入 `unknown` |
+| `byTrigger` | 按 `dispatch_trigger` 计数（`turn` 只出现在 `sequential` 房间，`room_flag`/`continuation` 只出现在 `parallel` 房间，不出现的项为 0）；NULL 计入 `unknown` |
 
 ### 4.2 执行时间
 
