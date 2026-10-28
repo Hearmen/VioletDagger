@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderMemory, renderOverviewText, OVERVIEW_GUIDANCE } from '../../src/memory';
+import { renderMemory, renderOverviewText, OVERVIEW_GUIDANCE, MEMORY_HINT } from '../../src/memory';
 import type { OverviewPayload, MessageSummary, QuestionOverview, KnowledgeOverview } from '../../src/memory';
 
 const summary = (id: number, type: MessageSummary['type'], text: string, extra: Partial<MessageSummary> = {}): MessageSummary => ({
@@ -98,6 +98,82 @@ describe('renderMemory', () => {
     const text = renderMemory(overview);
     expect(text).toContain('- [#10] 聊天（人类）：hello\n- [#11] 聊天：hi');
   });
+
+  it('starts with the get_detail hint', () => {
+    expect(renderMemory(baseOverview).startsWith(`${MEMORY_HINT}\n\n### 任务目标（goal）`)).toBe(true);
+  });
+
+  it('flattens newlines in summaries and clips long exploring result summaries', () => {
+    const overview: OverviewPayload = {
+      ...baseOverview,
+      recentRawMessages: [summary(10, 'verify', 'first line\n\n  ① second line')],
+      completedExploring: [{
+        message: summary(8, 'exploring', 'tried\nX'), agentId: 'codex', status: 'completed',
+        target: summary(1, 'open_question', 'q'), resultSummary: `${'结'.repeat(80)}\n多出来的部分`, resultMessages: [],
+      }],
+    };
+    const text = renderMemory(overview);
+    expect(text).toContain('- [#10] verify：first line ① second line');
+    expect(text).toContain(`- [#8] 占用：codex → #1：tried X\n  结束：${'结'.repeat(80)}…；结果引用：（无）`);
+  });
+
+  it('keeps a short exploring result summary as is', () => {
+    const overview: OverviewPayload = {
+      ...baseOverview,
+      completedExploring: [{
+        message: summary(8, 'exploring', 'x'), agentId: 'codex', status: 'completed',
+        target: summary(1, 'open_question', 'q'), resultSummary: '结'.repeat(80), resultMessages: [],
+      }],
+    };
+    expect(renderMemory(overview)).toContain(`结束：${'结'.repeat(80)}；`);
+  });
+
+  it('omits a chain transition line implied by its status and a listed verify', () => {
+    const transition = (from: 'CANDIDATE' | 'VERIFIED' | 'CHALLENGED', to: 'VERIFIED' | 'CHALLENGED', trigger: number) => ({
+      fromType: null, toType: null, fromStatus: from, toStatus: to, triggerMessageId: trigger, createdAt: 'x', reason: null,
+    });
+    const chainOf = (id: number, transitions: ReturnType<typeof transition>[], verifies: MessageSummary[]) => ({
+      current: summary(id, 'chain', `plan ${id}`), status: 'VERIFIED' as const, closesQuestion: false, chainResolution: null,
+      evidence: [], verifies, challenges: [], transitions,
+    });
+    const overview: OverviewPayload = {
+      ...baseOverview,
+      goal: question(1, 'build the thing', {
+        chains: [
+          chainOf(5, [transition('CANDIDATE', 'VERIFIED', 6)], [summary(6, 'verify', 'ok')]),
+          chainOf(7, [transition('CANDIDATE', 'VERIFIED', 8)], []),
+          chainOf(9, [transition('CANDIDATE', 'VERIFIED', 10), transition('VERIFIED', 'CHALLENGED', 11), transition('CHALLENGED', 'VERIFIED', 12)],
+            [summary(10, 'verify', 'ok'), summary(12, 'verify', 'ok again')]),
+        ],
+      }),
+    };
+    const text = renderMemory(overview);
+    expect(text).toContain('    - [#5] chain [VERIFIED]：plan 5\n      - verify [#6]：ok');
+    expect(text).toContain('    - [#7] chain [VERIFIED]：plan 7\n      - 转换：CANDIDATE→VERIFIED（#8）');
+    expect(text).toContain('      - 转换：CANDIDATE→VERIFIED（#10） VERIFIED→CHALLENGED（#11） CHALLENGED→VERIFIED（#12）');
+  });
+
+  it('skips recent messages already rendered as entries, but not ones only referenced', () => {
+    const overview: OverviewPayload = {
+      ...baseOverview,
+      goal: question(1, 'build the thing', {
+        facts: [knowledge(summary(3, 'fact', 'a fact', { referencedMessageIds: [9] }), { verifies: [summary(4, 'verify', 'checked')] })],
+      }),
+      recentRawMessages: [
+        summary(2, 'exploring', 'looking at schema'),
+        summary(3, 'fact', 'a fact'),
+        summary(4, 'verify', 'checked'),
+        summary(9, null, 'only referenced'),
+      ],
+    };
+    const text = renderMemory(overview);
+    expect(text).toContain('### 最近消息\n- [#9] 聊天：only referenced');
+    expect(text.match(/\[#4\]/g)).toHaveLength(1);
+  });
+
+  it('shows "（无）" when every recent message was already rendered', () => {
+    expect(renderMemory(baseOverview)).toContain('### 最近消息\n（无）');
+  });
 });
 
 describe('renderMemory closed-question folding', () => {
@@ -133,24 +209,21 @@ describe('renderMemory closed-question folding', () => {
     ],
   };
 
-  it('renders a closed sub-question as its closing chain plus one-line facts and boundaries', () => {
+  it('renders a closed sub-question as one root line with its closing chain, plus one-line facts and boundaries', () => {
     const text = renderMemory(overview);
     expect(text).toContain([
-      '- [#10] 问题 [CLOSED/RESOLVED]：sub problem',
-      '  - 收尾链路：',
-      '    - [#16] chain [VERIFIED] 关闭意图：RESOLVED：chain 16 依据：#12',
-      '      - 转换：CANDIDATE→VERIFIED（#116）',
-      '      - verify [#116]：verify of 16',
+      '- [#10] 问题 [CLOSED/RESOLVED]：sub problem → 收尾 #16：chain 16',
       '  - 事实：',
       '    - [#12] fact：env fact',
       '  - 死胡同：',
       '    - [#14] boundary：dead end',
-      '  - 已折叠：2 条回答、2 条 exploring，需要时用 get_detail 查看',
       '- [#20] 问题 [OPEN]：still open',
     ].join('\n'));
     expect(text).not.toContain('open claim');
     expect(text).not.toContain('chain 15');
+    expect(text).not.toContain('verify of 16');
     expect(text).not.toContain('checked');
+    expect(text).not.toContain('已折叠');
   });
 
   it('removes exploring related to the closed question from both exploring groups', () => {
@@ -161,15 +234,14 @@ describe('renderMemory closed-question folding', () => {
     expect(text).toContain('### 已结束探索\n- [#33] 占用：codex → #1：explore 33');
   });
 
-  it('omits zero counts and the whole folded line when nothing is folded', () => {
-    const onlyClosing = question(10, 'sub problem', { status: 'CLOSED', closeReason: 'RESOLVED', chains: [chain(16, 'VERIFIED', true)] });
-    const text = renderMemory({ ...baseOverview, questions: [onlyClosing] });
-    expect(text).not.toContain('已折叠');
-    const withExploring = renderMemory({
-      ...baseOverview, questions: [onlyClosing],
-      completedExploring: [exploring(32, summary(10, 'open_question', 'sub problem'), 'completed')],
+  it('lists several closing chains in id order and omits the segment when there is none', () => {
+    const several = question(10, 'sub problem', {
+      status: 'CLOSED', closeReason: 'RESOLVED', chains: [chain(16, 'VERIFIED', true), chain(17, 'VERIFIED', true), chain(18, 'VERIFIED', false)],
     });
-    expect(withExploring).toContain('  - 已折叠：1 条 exploring，需要时用 get_detail 查看');
+    expect(renderMemory({ ...baseOverview, questions: [several] }))
+      .toContain('- [#10] 问题 [CLOSED/RESOLVED]：sub problem → 收尾 #16：chain 16 → 收尾 #17：chain 17\n');
+    const none = question(10, 'sub problem', { status: 'CLOSED', closeReason: 'UNRESOLVED' });
+    expect(renderMemory({ ...baseOverview, questions: [none] })).toContain('- [#10] 问题 [CLOSED/UNRESOLVED]：sub problem\n\n### 未挂在问题下的知识');
   });
 
   it('renders a reopened question and its exploring in full again', () => {
