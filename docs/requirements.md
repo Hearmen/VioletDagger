@@ -408,7 +408,7 @@ interface ExploringOverview {
 }
 ```
 
-每个 `open_question` 是一个聚合根，它的状态和关闭原因直接给出，不由 Agent 从消息关系推断。goal 只出现在 `goal` 字段，不在 `questions` 中重复。chain 必须挂在某个问题之下，因此只出现在 `QuestionOverview.chains` 中。`activeExploring` 只包含当前 active 的 exploring，`completedExploring` 只包含已完成的 exploring。所有字段只提供摘要/索引，需要全文时使用 `get_detail`。渲染成交给 agent 的文本时（派发 prompt 与 `get_overview`），已关闭的子问题（goal 除外）会折叠：只保留收尾 chain，以及 fact、boundary 的单行摘要；它下面的其余回答，以及指向该问题或其下 hypothesis 的 exploring，都只以计数形式出现。问题重新打开后恢复完整显示。折叠只作用于这份文本，不删除、不修改任何存储内容；`OverviewPayload` 本身仍然完整，被折叠的内容照常可以通过 `get_detail` 查询，前端记忆视图也照常显示。具体格式见 `02-memory-management.md` §3.4。
+每个 `open_question` 是一个聚合根，它的状态和关闭原因直接给出，不由 Agent 从消息关系推断。goal 只出现在 `goal` 字段，不在 `questions` 中重复。chain 必须挂在某个问题之下，因此只出现在 `QuestionOverview.chains` 中。`activeExploring` 只包含当前 active 的 exploring，`completedExploring` 只包含已完成的 exploring。所有字段只提供摘要/索引，需要全文时使用 `get_detail`。渲染成交给 agent 的文本时（派发 prompt 与 `get_overview`），已关闭的子问题（goal 除外）会折叠：只保留问题摘要、收尾 chain 的编号和摘要，以及 fact、boundary 的单行摘要；它下面的其余回答，以及指向该问题或其下 hypothesis 的 exploring，都不再出现在文本里。问题重新打开后恢复完整显示。折叠只作用于这份文本，不删除、不修改任何存储内容；`OverviewPayload` 本身仍然完整，被折叠的内容照常可以通过 `get_detail` 查询，前端记忆视图也照常显示。具体格式见 `02-memory-management.md` §3.4。
 
 **`get_detail(roomId, messageId | { type } | { list: true, type?, targetMessageId?, beforeId?, limit? })`** —— agent 按需调用，拿某条或某类记忆的完整内容（包括它挂载的所有 challenge/verify 注解）。`list: true` 时分页浏览全部历史（含无类型聊天），默认 30、最大 100，按 ID 倒序取页、页内升序，返回 `{ messages, nextCursor }`。按 `type: "exploring"` 查询时返回**该类型下的全部记录，不分 active/completed**——这是深挖历史的工具，跟 `get_overview` 里只给 active 快照的 `activeExploring` 是两回事。
 

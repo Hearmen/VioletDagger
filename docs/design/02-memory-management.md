@@ -141,6 +141,10 @@ interface ExploringOverview {
 
 `### 任务目标（goal）` → `### 其他问题`（questions）→ `### 未挂在问题下的知识`（unattachedKnowledge）→ `### 正在探索的方向`（activeExploring）→ `### 已结束探索`（completedExploring）→ `### 完成提议`（completionProposals）→ `### 最近消息`（recentRawMessages）。
 
+`renderMemory` 输出的第一行是固定提示"以下各条只给摘要；需要某条的全文，或已关闭问题下未列出的回答与 exploring 时，用 get_detail 按 #id 查看。"，空一行后再接各分组。
+
+**摘要文本**：渲染时，所有摘要文本（`MessageSummary.summary` 和 exploring 的 `resultSummary`）先把换行连同两侧的空白替换成一个空格，保证每个条目只占自己那一行。`resultSummary` 超过 80 个字符时只渲染前 80 个字符，末尾加"…"。80 与存储层自动生成摘要时的截断长度相同。这些处理只影响这份文本，`OverviewPayload` 里的值不变。
+
 组内为空显示"（无）"。
 
 **问题**（goal 与 questions 共用）：
@@ -161,26 +165,22 @@ interface ExploringOverview {
 
 goal 的根行不渲染摘要（完整正文已在上方"任务目标"处给出），写成 `- [#id] goal [{status}{/closeReason}]：（全文见上方"任务目标"）`，其下子组的渲染与其他问题相同；其他问题的根行按上面的格式渲染摘要。
 
-**已关闭的问题**（只针对 questions；goal 始终完整渲染）：`status === 'CLOSED'` 时只渲染根行、收尾 chain，以及 fact 和 boundary 的单行摘要。其余回答和相关的 exploring 全部折叠：
+**已关闭的问题**（只针对 questions；goal 始终完整渲染）：`status === 'CLOSED'` 时，渲染根行（带收尾 chain），以及 fact 和 boundary 的单行摘要：
 
 ```
-- [#id] 问题 [CLOSED/{closeReason}]：{summary}
-  - 收尾链路：
-    {逐条渲染收尾 chain}
+- [#id] 问题 [CLOSED/{closeReason}]：{summary} → 收尾 #{chainId}：{chain summary}
   - 事实：
     - [#id] fact：{summary}
   - 死胡同：
     - [#id] boundary：{summary}
-  - 已折叠：{N} 条回答、{M} 条 exploring，需要时用 get_detail 查看
 ```
 
-- **收尾 chain**：chains 中 `status === 'VERIFIED'` 且 `closesQuestion` 为 true 的 chain，按下文 chain 的格式完整渲染（含转换、verify、challenge 行），正常情况下只有一条。
-- **fact / boundary**：每条只渲染一行 `- [#id] {type}：{summary}`，不带依据、转换、verify、challenge 行。
-- **N**：hypotheses 与 chains 的条数之和，减去收尾 chain 的条数。
-- **相关的 exploring**：activeExploring 和 completedExploring 中满足任一条件的条目——`target.id` 等于该问题的 id；或 `target.targetMessageId` 等于该问题的 id，即指向该问题下的某条 hypothesis（包括它后来转成的 fact 或 boundary）。这些条目不在"正在探索的方向"和"已结束探索"两个分组中渲染，只计入 M。
-- 某个子组为空时省略该子组行；N 或 M 为 0 时省略对应的那一项，两者都为 0 时省略整行"已折叠"。
-- 问题被 challenge 重新打开、变回 `OPEN` 后恢复完整渲染，相关的 exploring 也回到各自的分组中渲染。
-- 折叠只发生在渲染层：`buildOverview` 返回的 `OverviewPayload` 仍然包含全部条目，存储层、`buildDetail` 和 `buildMemoryView`（前端记忆视图）都不受影响，被折叠的内容照常可以查询和展示。
+- **收尾 chain**：chains 中 `status === 'VERIFIED'` 且 `closesQuestion` 为 true 的 chain，只在根行里写 id 和摘要，不带依据、转换、verify、challenge。正常情况下只有一条。有多条时按 id 升序依次写成多段"→ 收尾 #id：{summary}"；没有时省略这一段。
+- **fact / boundary**：每条只渲染一行 `- [#id] {type}：{summary}`，不带依据、转换、verify、challenge 行，按 id 升序。某个子组为空时省略该子组的标题行。
+- hypotheses、非收尾的 chain 和相关的 exploring 都不渲染，也不计数。
+- **相关的 exploring**：activeExploring 和 completedExploring 中满足任一条件的条目——`target.id` 等于该问题的 id；或 `target.targetMessageId` 等于该问题的 id，即指向该问题下的某条 hypothesis（包括它后来转成的 fact 或 boundary）。这些条目不在"正在探索的方向"和"已结束探索"两个分组中渲染。
+- 问题被 challenge 重新打开、变回 `OPEN` 后，恢复完整渲染，相关的 exploring 也回到各自的分组中渲染。
+- 折叠只发生在渲染层：`buildOverview` 返回的 `OverviewPayload` 仍然包含全部条目，存储层、`buildDetail` 和 `buildMemoryView`（前端记忆视图）都不受影响，没有渲染的内容照常可以查询和展示。
 
 **知识条目**（hypothesis/fact/boundary，含 unattachedKnowledge）：
 
@@ -200,7 +200,7 @@ goal 的根行不渲染摘要（完整正文已在上方"任务目标"处给出�
   - challenge [#id]：{summary}
 ```
 
-verify 的结论不单独渲染：它造成的结果已体现在"转换"行（触发消息 id 即该 verify），完整的 `verifyVerdict` 可通过 `get_detail` 查看。转换、verify、challenge 各自按 id 升序，没有时省略对应行。
+verify 的结论不单独渲染：它造成的结果体现在 chain 的 `[{status}]` 和"转换"行上（触发消息 id 就是那条 verify），完整的 `verifyVerdict` 可以通过 `get_detail` 查看。chain 只有一条转换、这条转换从 `CANDIDATE` 出发、并且触发它的消息就在本 chain 的 verify 行里时，省略"转换"行，因为 `[{status}]` 和那条 verify 行已经完整表达了这次转换。转换、verify、challenge 各自按 id 升序，没有时省略对应行。
 
 **exploring**：
 
@@ -209,7 +209,7 @@ verify 的结论不单独渲染：它造成的结果已体现在"转换"行（�
   结束：{resultSummary ?? '未记录结果'}；结果引用：#id …      ← 仅 completedExploring
 ```
 
-**完成提议**与**最近消息**：`- [#id] {type ?? '聊天'}{（人类）}：{summary}`，`source === 'human'` 时追加"（人类）"。最近消息按 `recentRawMessages` 原有顺序渲染，不重新排序。
+**完成提议**与**最近消息**：`- [#id] {type ?? '聊天'}{（人类）}：{summary}`，`source === 'human'` 时追加"（人类）"。最近消息按 `recentRawMessages` 原有顺序渲染，不重新排序。已经在前面任一分组中以 `- [#id]` 条目行渲染过的消息跳过；只以 `#id` 引用形式出现过的不算。全部跳过时显示"（无）"。跳过不会扩大最近消息的窗口。
 
 ## 4. 详情 `buildDetail(roomId, params)`
 
