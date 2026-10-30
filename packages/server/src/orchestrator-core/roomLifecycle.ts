@@ -10,6 +10,11 @@ import type { StuckCounter } from './stuckCounter';
 import type { FailureCounter } from './failureCounter';
 
 export function pauseRoom(db: Database.Database, roomId: number): void {
+  const room = getRoom(db, roomId);
+  if (!room) throw new Error(`Room ${roomId} not found`);
+  // completed 不可再改状态，否则 completed → paused_manual → resumeRoom 会重新打开已结束的房间（03 §4）。
+  if (room.status !== 'active') throw new Error('room is not active');
+
   setRoomStatus(db, roomId, 'paused_manual');
   roomEvents.emit('roomStatus', { roomId });
 }
@@ -23,6 +28,9 @@ export function resumeRoom(
 ): void {
   const room = getRoom(db, roomId);
   if (!room) throw new Error(`Room ${roomId} not found`);
+  if (room.status !== 'paused_limit' && room.status !== 'paused_manual') {
+    throw new Error('room is not paused');
+  }
 
   if (room.status === 'paused_limit') {
     if (additionalSessions == null) {
@@ -38,6 +46,10 @@ export function resumeRoom(
 
 // 房间只能由人类通过本函数结束，系统不自动结束房间（需求 3.3.1）。
 export function confirmCompletion(db: Database.Database, roomId: number): void {
+  const room = getRoom(db, roomId);
+  if (!room) throw new Error(`Room ${roomId} not found`);
+  if (room.status === 'completed') throw new Error('room is already completed');
+
   setRoomStatus(db, roomId, 'completed');
   roomEvents.emit('roomStatus', { roomId });
 }

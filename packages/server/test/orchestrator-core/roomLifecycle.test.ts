@@ -76,6 +76,39 @@ describe('room lifecycle', () => {
       status: 'completed',
     });
   });
+
+  it('pauseRoom rejects a room that is not active', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
+    setRoomStatus(db, room.id, 'paused_limit');
+    expect(() => pauseRoom(db, room.id)).toThrow('room is not active');
+    expect(getRoom(db, room.id)!.status).toBe('paused_limit');
+
+    confirmCompletion(db, room.id);
+    expect(() => pauseRoom(db, room.id)).toThrow('room is not active');
+    expect(getRoom(db, room.id)!.status).toBe('completed');
+  });
+
+  it('resumeRoom rejects active and completed rooms without dispatching', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
+    const startSession = vi.fn();
+    expect(() => resumeRoom(db, room.id, startSession, createStuckCounter())).toThrow('room is not paused');
+
+    confirmCompletion(db, room.id);
+    expect(() => resumeRoom(db, room.id, startSession, createStuckCounter(), 5)).toThrow('room is not paused');
+    expect(getRoom(db, room.id)).toMatchObject({ status: 'completed', maxSessions: 20 });
+    expect(startSession).not.toHaveBeenCalled();
+  });
+
+  it('confirmCompletion rejects an already completed room and keeps completedAt', () => {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', ['codex'], 'parallel');
+    confirmCompletion(db, room.id);
+    const completedAt = getRoom(db, room.id)!.completedAt;
+    expect(() => confirmCompletion(db, room.id)).toThrow('room is already completed');
+    expect(getRoom(db, room.id)!.completedAt).toBe(completedAt);
+  });
 });
 
 describe('deleteRoom', () => {
