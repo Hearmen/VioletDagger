@@ -4,7 +4,7 @@
   "private": true,
   "workspaces": ["packages/*"],
   "scripts": {
-    "dev": "concurrently -n server,web -c blue,green \"npm:start -w @violetdagger/server\" \"npm:dev -w @violetdagger/web\"",
+    "dev": "concurrently -n server,web,bot -c blue,green,magenta \"npm:start -w @violetdagger/server\" \"npm:dev -w @violetdagger/web\" \"npm:start -w @violetdagger/telegram-bot\"",
     "bot": "npm start -w @violetdagger/telegram-bot"
   },
   "devDependencies": {

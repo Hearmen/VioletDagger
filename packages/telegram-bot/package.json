@@ -6,7 +6,7 @@
   "scripts": {
     "test": "vitest run",
     "build": "tsc -p tsconfig.json",
-    "start": "tsx src/main.ts"
+    "start": "tsx --env-file-if-exists=$HOME/.config/violetdagger/telegram.env src/main.ts"
   },
   "dependencies": {
     "ws": "^8.18.0"
