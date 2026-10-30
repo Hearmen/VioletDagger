@@ -4,7 +4,7 @@
 
 ## 1. 进程与依赖
 
-- 包：`packages/telegram-bot`（npm workspace `@violetdagger/telegram-bot`），TypeScript / Node.js，`tsx src/main.ts` 启动；根 `package.json` 增加脚本 `"bot": "npm start -w @violetdagger/telegram-bot"`，不并入 `dev`（不用 Telegram 时不需要它）。
+- 包：`packages/telegram-bot`（npm workspace `@violetdagger/telegram-bot`），TypeScript / Node.js，`tsx src/main.ts` 启动。根 `package.json` 的 `dev` 脚本用 `concurrently` 同时启动 server、web 与本模块，Ctrl-C 一起停止；另保留 `"bot": "npm start -w @violetdagger/telegram-bot"` 单独启动。未配置 token 时本模块按 §2 报错退出，`concurrently` 不因此停止 server 与 web，不用 Telegram 时可忽略这一行报错。本模块与编排器的启动顺序无关：编排器尚未就绪时，房间集合同步失败按 §5.2 每 60 秒重试，命令回复"编排器不可达"。
 - 依赖：`ws`（房间 WS 客户端）；Telegram Bot API 与 REST 均用 Node 内置 `fetch`，不引入 Telegram SDK。
 - 与 Telegram：`getUpdates` 长轮询（`timeout=50`），只有出站 HTTPS；不使用 webhook，不需要公网入口。
 - 与编排器：`VIOLETDAGGER_API_URL`（默认 `http://127.0.0.1:4200`）下的 REST 与 `/api/rooms/:roomId/ws`。不使用日志 WS（`06` 第 2.1 节）。
@@ -18,6 +18,8 @@
 | `VIOLETDAGGER_API_URL` | 否 | `http://127.0.0.1:4200` | 编排器 REST/WS 地址 |
 | `VIOLETDAGGER_TG_STATE_PATH` | 否 | 包根目录下 `state.json` | 私聊状态持久化文件 |
 | `VIOLETDAGGER_TG_IDLE_NOTIFY_DELAY_MS` | 否 | `10000` | "无任务可派发"提醒的稳定等待时间（§6.2） |
+
+环境变量也可以写在配置文件 `~/.config/violetdagger/telegram.env`（`KEY=value` 每行一个）：启动时若该文件存在则加载（Node `--env-file-if-exists`），进程环境中已有的同名变量优先。该文件在仓库之外，建议权限 600。
 
 启动时校验必填项，失败打印原因并以非 0 退出。`state.json` 加入 `.gitignore`；token 不写入任何文件。
 
