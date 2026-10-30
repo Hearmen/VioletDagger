@@ -262,15 +262,20 @@ stopping 只用于人工终止过程，不是正常完成的必经状态。所�
 
 ```typescript
 function pauseRoom(roomId: number): void;
+// 只允许 status === 'active'，否则抛错 `room is not active`（paused_* 已在暂停中；completed 不可再改状态，
+// 否则 completed → paused_manual → resumeRoom 会重新打开已结束的房间）。
 // setRoomStatus(roomId, 'paused_manual') + emit('roomStatus')，不影响进行中的 session，只是不再新起
 
 function resumeRoom(roomId: number, additionalSessions?: number): void;
+// 只允许 status 为 'paused_limit' 或 'paused_manual'，否则抛错 `room is not paused`
+// （active 无需恢复；completed 是终态，已结束的房间只读，不能重新打开，需求 7）。
 // 若当前 status === 'paused_limit'：additionalSessions 必填（否则报错），
 //   increaseMaxSessions(roomId, additionalSessions) 后 setRoomStatus(roomId, 'active')，
 //   emit('roomStatus')，再调用 checkAndDispatch(roomId)
 // 若当前 status === 'paused_manual'：additionalSessions 可省略，直接 setRoomStatus(roomId, 'active') + emit('roomStatus') + checkAndDispatch(roomId)
 
 function confirmCompletion(roomId: number): void;
+// 只允许 status !== 'completed'，否则抛错 `room is already completed`（不重复写 completed_at）。
 // setRoomStatus(roomId, 'completed')（同时写入 rooms.completed_at，见 01-storage.md）+ emit('roomStatus')。不终止仍在跑的 session（它们跑完后正常写入结果，
 // 只是不会再触发新的派发——checkAndDispatch 第一步就会因 status !== 'active' 直接返回）。
 // 房间只能由人类通过本函数结束，系统不自动结束房间（需求 3.3.1）

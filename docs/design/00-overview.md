@@ -11,15 +11,16 @@
 | `03-orchestrator-core.md` | 编排器核心 | 消息写入校验与知识状态转换、事件驱动派发、session 生命周期 |
 | `04-agent-invocation.md` | Agent 调用适配层 | 子进程 spawn/终止、agent 注册表、原生会话分析适配器 |
 | `05-mcp-server.md` | MCP Server | 暴露给外部 agent CLI 的工具（post_message/get_overview/...） |
-| `06-orchestrator-api.md` | 编排器对外接口 | REST + WebSocket，服务网页前端 |
+| `06-orchestrator-api.md` | 编排器对外接口 | REST + WebSocket，服务网页前端与 Telegram 机器人 |
 | `07-frontend.md` | Web 前端 | 房间列表、消息流、记忆面板、事件树 |
 | `10-room-report.md` | 任务分析报告 | 按需计算房间各 agent 的量化指标快照，只读、不持久化 |
+| `11-telegram-bot.md` | Telegram 远程控制 | 独立进程，经编排器对外接口（REST + 房间 WS）把房间浏览、发消息、控制操作和提醒桥接到 Telegram 私聊 |
 
 存储层之上先是记忆管理（纯粹是存储层原始查询的组装层，谁都能调用，不依赖任何其他模块），再定义引擎部分（编排器核心 → Agent 调用适配层），最后是两层对外接口（MCP Server 给 agent、编排器对外接口给前端）和前端——MCP Server 本质上是包装编排器核心调度状态的一层薄接口（session 绑定依赖固定调用凭据及 session 的 `running` 状态，这是编排器核心模块定义的），所以放在核心调度之后设计更合理。
 
 ## 进程拓扑
 
-编排器核心、存储层、记忆管理、MCP Server、Agent 调用适配层运行在**同一个 Node.js 进程**内，模块间直接函数调用，不经过 IPC。Web 前端是独立的浏览器应用，通过 REST + WebSocket 与该进程通信（见 `06-orchestrator-api.md`）；MCP Server 通过 HTTP（Streamable HTTP transport）暴露给外部 agent CLI 进程。
+编排器核心、存储层、记忆管理、MCP Server、Agent 调用适配层运行在**同一个 Node.js 进程**内，模块间直接函数调用，不经过 IPC。Web 前端是独立的浏览器应用，通过 REST + WebSocket 与该进程通信（见 `06-orchestrator-api.md`）；MCP Server 通过 HTTP（Streamable HTTP transport）暴露给外部 agent CLI 进程。Telegram 机器人（`11-telegram-bot.md`）是另一个独立进程，与网页前端一样只通过 REST + WebSocket 访问编排器进程，对 Telegram 只做出站长轮询。
 
 ## 仓库结构
 
@@ -32,6 +33,7 @@ VioletDagger/
 │   ├── server/                 # 编排器核心 + 存储层 + 记忆管理 + MCP Server + agent 调用适配层
 │   │   ├── agents.config.json  # agent 注册表（3.2）
 │   │   └── src/
+│   ├── telegram-bot/           # Telegram 远程控制（独立进程）
 │   └── web/                    # React + Vite 前端
 └── package.json                # npm workspaces 根
 ```
