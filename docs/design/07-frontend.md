@@ -337,7 +337,7 @@ RoomHeader 的 `Report` 按钮打开，使用第 10 节的共用 modal 外壳。
 }
 ```
 
-- **队列必须跨重连存活**：连接未建立（含断开期间）发出的 `call()` 保留在队列，`onopen` 后按序 flush；不许静默丢弃或让 Promise 永不 settle。
+- **队列必须跨重连存活，且每个调用只排一次**：每次 `call()` 在待决表（id → 请求帧、resolve、reject）登记一条，收到匹配 id 的响应后移除；待决表是唯一的排队来源，不另设发送队列。连接已打开时 `call()` 立即发送该帧；否则只登记、不发送。每次 `onopen`（含重连）按 id 升序把待决表中全部帧各发送一次，包括上一条连接上已发出但未收到响应的调用。`onclose` 不复制、不追加任何帧，只等待下一次 `onopen`。由此无论断线多久、重连失败多少次，每个调用在每条连接上最多发送一次，服务端恢复后收到的请求数等于待决调用数。不许静默丢弃调用或让 Promise 永不 settle。
 - **重连后必须重拉全量状态**：`disconnected` 后固定间隔（2 秒）自动重连；每次 `onopen`（含重连）后由 `RoomDashboardPage` 订阅 `reconnectCount` 触发一次全量刷新（`getRoomStatus()` / `getMemoryView()` / 不带 cursor 的 `listMessages()`），服务端不补发。
 
 ### 12.1 useSessionLog(roomId, seq, mode)

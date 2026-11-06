@@ -21,7 +21,7 @@ const RECONNECT_DELAY_MS = 2000;
 export function useRoomSocket(roomId: number): RoomSocket {
   const wsRef = useRef<WebSocket | null>(null);
   const connectedRef = useRef(false);
-  const pendingFramesRef = useRef<string[]>([]);
+  // 待决表是唯一的排队来源（07 §12）：id 单调递增，Map 的插入顺序即 id 升序。
   const pendingRef = useRef<Map<string, PendingCall>>(new Map());
   const subscribersRef = useRef<Map<PushEvent, Set<(data: any) => void>>>(new Map());
   const nextIdRef = useRef(1);
@@ -32,7 +32,6 @@ export function useRoomSocket(roomId: number): RoomSocket {
   useEffect(() => {
     if (roomIdRef.current !== roomId) {
       roomIdRef.current = roomId;
-      pendingFramesRef.current = [];
       pendingRef.current.clear();
     }
 
@@ -51,9 +50,7 @@ export function useRoomSocket(roomId: number): RoomSocket {
         setConnectionState('connected');
         if (hasOpened) setReconnectCount((count) => count + 1);
         hasOpened = true;
-        const frames = pendingFramesRef.current;
-        pendingFramesRef.current = [];
-        frames.forEach((frame) => ws.send(frame));
+        pendingRef.current.forEach((pending) => ws.send(pending.frame));
       };
 
       ws.onmessage = (event: { data: string }) => {
@@ -74,10 +71,7 @@ export function useRoomSocket(roomId: number): RoomSocket {
         connectedRef.current = false;
         if (stopped) return;
         setConnectionState('disconnected');
-        const inFlight = Array.from(pendingRef.current.values()).map((pending) => pending.frame);
-        if (inFlight.length > 0) {
-          pendingFramesRef.current = [...inFlight, ...pendingFramesRef.current];
-        }
+        // 未响应的调用留在待决表里，下一次 onopen 统一重发，这里不复制任何帧。
         reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS);
       };
       ws.onerror = () => ws.close();
@@ -100,8 +94,6 @@ export function useRoomSocket(roomId: number): RoomSocket {
       const ws = wsRef.current;
       if (ws && connectedRef.current && ws.readyState === WebSocket.OPEN) {
         ws.send(frame);
-      } else {
-        pendingFramesRef.current.push(frame);
       }
     });
   }, []);

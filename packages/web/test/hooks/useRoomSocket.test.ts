@@ -208,6 +208,49 @@ describe('useRoomSocket', () => {
     vi.useRealTimers();
   });
 
+  it('sends each pending call exactly once after many failed reconnect attempts', () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useRoomSocket(7));
+    const ws1 = FakeWebSocket.instances[0];
+    act(() => {
+      ws1.open();
+    });
+    // 一个已发出但未收到响应的调用，断线后也要在新连接上重发一次。
+    act(() => {
+      result.current.call('getRoomStatus');
+    });
+    expect(ws1.sent).toHaveLength(1);
+    act(() => {
+      ws1.onclose?.();
+    });
+    act(() => {
+      result.current.call('getMemoryView');
+      result.current.call('getEventTree');
+    });
+
+    // 连续 10 次重连失败。
+    for (let i = 0; i < 10; i += 1) {
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+      act(() => {
+        FakeWebSocket.instances[FakeWebSocket.instances.length - 1].onclose?.();
+      });
+    }
+    act(() => {
+      vi.advanceTimersByTime(2000);
+    });
+    const last = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    act(() => {
+      last.open();
+    });
+
+    const methods = last.sent.map((frame) => JSON.parse(frame).method);
+    expect(methods).toEqual(['getRoomStatus', 'getMemoryView', 'getEventTree']);
+    FakeWebSocket.instances.slice(1, -1).forEach((ws) => expect(ws.sent).toHaveLength(0));
+    vi.useRealTimers();
+  });
+
   it('queues call() while CONNECTING and flushes it in order once the socket opens', async () => {
     const { result } = renderHook(() => useRoomSocket(7));
     const ws = FakeWebSocket.instances[0];
