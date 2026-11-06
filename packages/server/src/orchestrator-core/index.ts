@@ -3,7 +3,7 @@ export { createStuckCounter, getStuckAgents, resetStuckCount, type StuckCounter 
 export {
   createFailureCounter, getAgentFailures, FAILURE_THRESHOLD, type FailureCounter,
 } from './failureCounter';
-export { setAgentEnabled } from './agentControl';
+export { setAgentEnabled, releaseExploring, ReleaseExploringError } from './agentControl';
 export { checkAndDispatch, isDispatchIdle, getNextTurnAgent, type StartSession } from './dispatch';
 export {
   submitMessage, SubmitMessageError, type SubmitMessageInput, type MessageAuthor,

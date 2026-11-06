@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryPanel } from '../../src/components/MemoryPanel';
 import type { Message, MemoryViewPayload } from '../../src/api/types';
@@ -131,5 +131,35 @@ describe('MemoryPanel', () => {
     fireEvent.click(chip);
     expect(chip).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('short summary')).not.toBeInTheDocument();
+  });
+});
+
+describe('MemoryPanel — releasing exploring', () => {
+  it('shows a release button for releasable active exploring and calls back after confirmation', () => {
+    const onRelease = vi.fn();
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const memory = makeMemory({ exploring: [makeMessage({ id: 3, summary: 'stale', exploringStatus: 'active' })] });
+    render(<MemoryPanel memory={memory} canReleaseExploring={() => true} onReleaseExploring={onRelease} />);
+    fireEvent.click(screen.getByRole('button', { name: 'memory group exploring' }));
+    fireEvent.click(screen.getByRole('button', { name: 'memory item 3' }));
+    fireEvent.click(screen.getByRole('button', { name: '释放' }));
+    expect(confirm).toHaveBeenCalled();
+    expect(onRelease).toHaveBeenCalledWith(3);
+    confirm.mockRestore();
+  });
+
+  it('hides the button when the author is running, and shows the new end reasons', () => {
+    const memory = makeMemory({
+      exploring: [
+        makeMessage({ id: 3, summary: 'busy', exploringStatus: 'active' }),
+        makeMessage({ id: 4, summary: 'released', exploringStatus: 'completed', exploringEndReason: 'human_released' }),
+      ],
+    });
+    render(<MemoryPanel memory={memory} canReleaseExploring={() => false} onReleaseExploring={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'memory group exploring' }));
+    fireEvent.click(screen.getByRole('button', { name: 'memory item 3' }));
+    expect(screen.queryByRole('button', { name: '释放' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'memory item 4' }));
+    expect(screen.getByText(/已完成：/)).toHaveTextContent('人类释放');
   });
 });

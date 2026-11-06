@@ -11,7 +11,7 @@ export {
 } from './sessions';
 export {
   runInTransaction, insertMessage, getMessageById, getFirstMessage, countMessages, getMessagesBySession, listMessages,
-  getMessagesByType, getRoomMessages, getRecentRawMessages, getActiveExploring, getActiveExploringByAuthor,
+  getMessagesByType, getRoomMessages, getRecentRawMessages, getRecentControlMessages, getActiveExploring, getActiveExploringByAuthor,
   completeExploring, setMessageType, setQuestionStatus, setChainStatus, getStateTransitions, getRoomStateTransitions,
   type CompleteExploringEnd,
 } from './messages';

@@ -1,6 +1,6 @@
 import { ApiError, type RestClient } from './api';
 import {
-  ArgError, parseNewRoomArgs, parsePlainText, parsePositiveIntArg, parsePostArgs,
+  ArgError, parseGoArgs, parseNewRoomArgs, parsePlainText, parsePositiveIntArg, parsePostArgs,
 } from './args';
 import {
   escapeHtml, formatAgents, formatMemory, formatMessageFull, formatReport, formatRoomHeader,
@@ -25,6 +25,7 @@ export const COMMAND_LIST: { command: string; description: string }[] = [
   { command: 'messages', description: '最近消息：/messages [n]' },
   { command: 'show', description: '消息全文：/show <messageId>' },
   { command: 'memory', description: '记忆视图：/memory [category]' },
+  { command: 'go', description: '发调度指令：/go [@agentId] 正文' },
   { command: 'post', description: '带参数发消息：/post key=value… 正文' },
   { command: 'pause', description: '暂停当前房间' },
   { command: 'resume', description: '恢复当前房间：/resume [n]' },
@@ -89,6 +90,7 @@ export class Commands {
       case 'messages': return this.messages(ctx, args).then(() => true);
       case 'show': return this.show(ctx, parsePositiveIntArg('messageId', args)).then(() => true);
       case 'memory': return this.memory(ctx, args.trim()).then(() => true);
+      case 'go': return this.post(ctx, parseGoArgs(args)).then(() => true);
       case 'post': return this.post(ctx, parsePostArgs(args)).then(() => true);
       case 'pause': return this.simple(ctx, 'pauseRoom', undefined, '已暂停').then(() => true);
       case 'resume': return this.resume(ctx, args.trim()).then(() => true);

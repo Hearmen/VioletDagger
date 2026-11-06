@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { getFirstMessage, getRecentRawMessages } from '../storage/messages';
+import { getFirstMessage, getRecentControlMessages, getRecentRawMessages } from '../storage/messages';
 import type { Message, StateTransition } from '../storage/types';
 import { buildRoomIndex, isQuestion, type RoomIndex } from './roomIndex';
 import type {
@@ -8,15 +8,25 @@ import type {
 } from './types';
 
 const DEFAULT_RECENT_RAW_MESSAGES = 4;
+const DEFAULT_RECENT_CONTROL_MESSAGES = 1;
 
 export const OVERVIEW_GUIDANCE =
   '以上是当前任务的记忆状态。已确认的 fact、boundary 和 VERIFIED 的 chain 可以直接引用，不需要重复研究；如果你认为其中某条有误或不完整，用 challenge 指出，再以新的 chain 给出你的方案，不要绕开已有结论另起一套。';
 
-function readRecentRawMessagesCount(): number {
-  const raw = process.env.VIOLETDAGGER_RECENT_RAW_MESSAGES;
-  if (raw == null || raw.trim() === '') return DEFAULT_RECENT_RAW_MESSAGES;
+// 正整数环境变量；未设置或非法时回落默认值（02 §3.2）。
+function readPositiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === '') return fallback;
   const n = Number(raw);
-  return Number.isInteger(n) && n > 0 ? n : DEFAULT_RECENT_RAW_MESSAGES;
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+function readRecentRawMessagesCount(): number {
+  return readPositiveInt('VIOLETDAGGER_RECENT_RAW_MESSAGES', DEFAULT_RECENT_RAW_MESSAGES);
+}
+
+function readRecentControlMessagesCount(): number {
+  return readPositiveInt('VIOLETDAGGER_RECENT_CONTROL_MESSAGES', DEFAULT_RECENT_CONTROL_MESSAGES);
 }
 
 // 摘要不含作者，只用 source 区分人类与 agent（系统占位消息的作者是 agent 实例标识，归为 agent）。
@@ -28,6 +38,7 @@ export function summarize(m: Message): MessageSummary {
     summary: m.summary,
     targetMessageId: m.targetMessageId,
     referencedMessageIds: m.referencedMessageIds,
+    targetAgentId: m.targetAgentId,
     createdAt: m.createdAt,
   };
 }
@@ -128,6 +139,7 @@ export function buildOverview(db: Database.Database, roomId: number): OverviewPa
       .filter((m) => m.type === 'exploring' && m.exploringStatus === 'completed')
       .map((m) => exploring(index, m)),
     completionProposals: index.messages.filter((m) => m.type === 'propose_completion').map(summarize),
+    controlMessages: getRecentControlMessages(db, roomId, readRecentControlMessagesCount()).map(summarize),
     recentRawMessages: getRecentRawMessages(db, roomId, readRecentRawMessagesCount()).map(summarize),
     guidance: OVERVIEW_GUIDANCE,
   };

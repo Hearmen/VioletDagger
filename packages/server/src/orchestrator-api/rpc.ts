@@ -25,6 +25,8 @@ import {
   confirmCompletion as orchestratorConfirmCompletion,
   terminateAgentSession as orchestratorTerminateAgentSession,
   setAgentEnabled as orchestratorSetAgentEnabled,
+  releaseExploring as orchestratorReleaseExploring,
+  ReleaseExploringError,
   getStuckAgents,
   isDispatchIdle,
   getNextTurnAgent,
@@ -208,6 +210,20 @@ export function createRpcHandlers(deps: RpcDeps): Record<string, (params?: any) 
       orchestratorSetAgentEnabled(
         db, roomId, params.agentId, params.enabled, startSession, stuckCounter, failureCounter,
       );
+      return { ok: true };
+    },
+
+    // 人类释放一条作者不在运行的 active exploring（03 §3.1）。
+    releaseExploring(params: { messageId: number }) {
+      if (typeof params?.messageId !== 'number') {
+        throw new ApiError('releaseExploring requires { messageId: number }', 400);
+      }
+      try {
+        orchestratorReleaseExploring(db, roomId, params.messageId, startSession, stuckCounter);
+      } catch (err) {
+        if (err instanceof ReleaseExploringError) throw new ApiError(err.message, 400);
+        throw err;
+      }
       return { ok: true };
     },
 

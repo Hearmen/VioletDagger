@@ -8,6 +8,8 @@ import { colorForAgent, isTriggeringNewMessageType } from '../utils/format';
 // 不需要目标的类型（07-frontend.md §7）：fact/boundary 未选目标时即为不挂在问题下的知识。
 // 人类不发送 exploring（需求 3.5），任何情况下都不提供入口。
 const BASE_TYPES: MessageType[] = ['open_question', 'fact', 'boundary', 'propose_completion'];
+// 调度指令（需求 4.3）：不允许 targetMessageId，只在未选目标时提供，排在第一位。
+const NO_TARGET_ONLY_TYPES: MessageType[] = ['control'];
 
 // 发送要求提示（07-frontend.md §7）：文案取自 04 §2.1 记忆类型表的"发送要求"列，只做提示、不阻止发送。
 export const SEND_REQUIREMENTS: Partial<Record<MessageType, MessageKey>> = {
@@ -19,6 +21,7 @@ export const SEND_REQUIREMENTS: Partial<Record<MessageType, MessageKey>> = {
   challenge: 'composer.requirement.challenge',
   verify: 'composer.requirement.verify',
   propose_completion: 'composer.requirement.propose_completion',
+  control: 'composer.requirement.control',
 };
 // 只有选中目标后才会出现的类型；取消目标时已选中的这些类型一并清空。
 export const TARGET_ONLY_TYPES: MessageType[] = ['hypothesis', 'chain', 'challenge', 'verify'];
@@ -79,6 +82,9 @@ export function Composer(props: {
 
   useEffect(() => {
     if (targetMessageId != null) setPickerOpen(true);
+    // 选了目标就不能再是调度指令（control 不允许 targetMessageId），回到纯聊天。
+    if (targetMessageId != null && NO_TARGET_ONLY_TYPES.includes(type as MessageType)) props.onTypeChange('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [targetMessageId]);
 
   // 切换类型/目标时重置附加字段，避免把上一次的 verify 结论或关闭意图带到新消息上。
@@ -119,7 +125,9 @@ export function Composer(props: {
     return <div className="composer__readonly">{t('composer.readonly')}</div>;
   }
 
-  const availableTypes = [...new Set([...BASE_TYPES, ...typesForTarget(target)])];
+  const availableTypes = target
+    ? [...new Set([...BASE_TYPES, ...typesForTarget(target)])]
+    : [...NO_TARGET_ONLY_TYPES, ...BASE_TYPES];
   const verdictMissing = type === 'verify' && verifyVerdict == null;
   const resolutionMissing = type === 'chain' && closesQuestion && chainResolution == null;
   const canSend = content.trim().length > 0 && !verdictMissing && !resolutionMissing && !sending;

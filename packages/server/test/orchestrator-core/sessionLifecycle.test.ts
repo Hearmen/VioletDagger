@@ -8,7 +8,8 @@ import { insertMessage, getMessagesBySession, getActiveExploring } from '../../s
 import { createStuckCounter } from '../../src/orchestrator-core/stuckCounter';
 import { createFailureCounter } from '../../src/orchestrator-core/failureCounter';
 import { onSessionEnded, onSessionExitProgress, terminateAgentSession } from '../../src/orchestrator-core/sessionLifecycle';
-import { setAgentEnabled } from '../../src/orchestrator-core/agentControl';
+import { setAgentEnabled, releaseExploring, ReleaseExploringError } from '../../src/orchestrator-core/agentControl';
+import { getMessageById } from '../../src/storage/messages';
 import type { SessionExitEvent } from '../../src/agent-invocation';
 import { roomEvents } from '../../src/events';
 
@@ -335,5 +336,92 @@ describe('onSessionExitProgress', () => {
       { kind: 'native_session_failed', attemptId: 'archive', detail: 'disk full' },
     ]);
     expect(getSession(db, room.id, session.seq)).toMatchObject({ outcome: 'running', cleanupStartedAt: null });
+  });
+});
+
+// 停用释放与人类释放（03 §3.1、§6）。
+describe('releasing exploring that nobody will continue', () => {
+  function roomWithExploring(agents = ['claude', 'codex']) {
+    const db = createTestDb();
+    const room = createRoom(db, 'a', agents, 'parallel');
+    insertMessage(db, { roomId: room.id, sessionSeq: null, authorId: 'human', content: 'goal', type: 'open_question' });
+    const session = createSession(db, room.id, 'claude', 'broadcast', 'room_flag');
+    const exploring = insertMessage(db, {
+      roomId: room.id, sessionSeq: session.seq, authorId: 'claude', content: 'checking #1', type: 'exploring', targetMessageId: 1,
+    });
+    return { db, room, session, exploring };
+  }
+
+  it('disabling an idle agent completes its active exploring as agent_disabled', () => {
+    const { db, room, exploring } = roomWithExploring();
+    const memoryUpdate = vi.fn();
+    roomEvents.on('memoryUpdate', memoryUpdate);
+
+    setAgentEnabled(db, room.id, 'claude', false, vi.fn(), createStuckCounter(), createFailureCounter());
+
+    const m = getMessageById(db, room.id, exploring.id)!;
+    expect(m.exploringStatus).toBe('completed');
+    expect(m.exploringEndReason).toBe('agent_disabled');
+    expect(m.exploringNote).toBe('agent 已停用');
+    expect(memoryUpdate).toHaveBeenCalledWith({ roomId: room.id, messageId: exploring.id });
+  });
+
+  it('disabling a running agent keeps its exploring until that session ends', () => {
+    const { db, room, session, exploring } = roomWithExploring();
+    setRoomStatus(db, room.id, 'paused_manual');
+    setAgentState(db, room.id, 'claude', 'running', session.seq);
+
+    setAgentEnabled(db, room.id, 'claude', false, vi.fn(), createStuckCounter(), createFailureCounter());
+    expect(getMessageById(db, room.id, exploring.id)!.exploringStatus).toBe('active');
+
+    onSessionEnded(db, exitEvent(room.id, session.seq, 'claude'), vi.fn(), createStuckCounter(), createFailureCounter());
+    expect(getMessageById(db, room.id, exploring.id)!.exploringEndReason).toBe('agent_disabled');
+  });
+
+  it('the session that triggers auto-disable also releases the exploring', () => {
+    const { db, room, exploring } = roomWithExploring(['claude']);
+    setRoomStatus(db, room.id, 'paused_manual');
+    const failureCounter = createFailureCounter();
+    for (let i = 0; i < 3; i += 1) {
+      const s = createSession(db, room.id, 'claude', 'broadcast', 'room_flag');
+      setAgentState(db, room.id, 'claude', 'running', s.seq);
+      onSessionEnded(db, exitEvent(room.id, s.seq, 'claude', { exitCause: 'unexpected' }), vi.fn(), createStuckCounter(), failureCounter);
+      if (i < 2) expect(getMessageById(db, room.id, exploring.id)!.exploringStatus).toBe('active');
+    }
+    expect(getMessageById(db, room.id, exploring.id)!.exploringEndReason).toBe('agent_disabled');
+  });
+
+  it('an enabled agent keeps its exploring when a session ends normally', () => {
+    const { db, room, session, exploring } = roomWithExploring();
+    setRoomStatus(db, room.id, 'paused_manual');
+    setAgentState(db, room.id, 'claude', 'running', session.seq);
+    onSessionEnded(db, exitEvent(room.id, session.seq, 'claude'), vi.fn(), createStuckCounter(), createFailureCounter());
+    expect(getMessageById(db, room.id, exploring.id)!.exploringStatus).toBe('active');
+  });
+
+  it('releaseExploring completes an idle author\'s exploring as human_released and checks dispatch', () => {
+    const { db, room, exploring } = roomWithExploring();
+    setDispatchPending(db, room.id, true, 'human');
+    const startSession = vi.fn();
+
+    releaseExploring(db, room.id, exploring.id, startSession, createStuckCounter());
+
+    const m = getMessageById(db, room.id, exploring.id)!;
+    expect(m.exploringEndReason).toBe('human_released');
+    expect(m.exploringNote).toBe('人类释放');
+    expect(startSession).toHaveBeenCalled();
+  });
+
+  it('releaseExploring rejects a running author, a non-exploring message, and an already completed exploring', () => {
+    const { db, room, session, exploring } = roomWithExploring();
+    setAgentState(db, room.id, 'claude', 'running', session.seq);
+    expect(() => releaseExploring(db, room.id, exploring.id, vi.fn(), createStuckCounter()))
+      .toThrow(ReleaseExploringError);
+    expect(() => releaseExploring(db, room.id, 1, vi.fn(), createStuckCounter())).toThrow('不是 exploring');
+    expect(() => releaseExploring(db, room.id, 99, vi.fn(), createStuckCounter())).toThrow('消息不存在');
+
+    setAgentState(db, room.id, 'claude', 'idle');
+    releaseExploring(db, room.id, exploring.id, vi.fn(), createStuckCounter());
+    expect(() => releaseExploring(db, room.id, exploring.id, vi.fn(), createStuckCounter())).toThrow('该 exploring 已结束');
   });
 });

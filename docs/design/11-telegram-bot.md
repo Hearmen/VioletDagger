@@ -110,6 +110,7 @@ interface AlertSnapshot {
 | `/memory [category]` | 不带参数：各类别计数；带参数：该类条目 `#id [标签] 摘要` 列表。类别映射见 §7.3 | `getMemoryView` |
 | 普通文本 | 作为人类消息发进当前房间（§7.1） | `postHumanMessage` |
 | `/post <参数…> <正文>` | 带 type 等字段发消息（§7.1） | `postHumanMessage` |
+| `/go <正文>` | 发一条调度指令 `control`（§7.1），正文可以 `@<agentId>` 开头定向 | `postHumanMessage` |
 | `/pause` | 暂停当前房间 | `pauseRoom` |
 | `/resume [n]` | 先 `GET /api/rooms/:id` 校验：只有 `paused_limit`/`paused_manual` 可恢复，否则回复"房间未暂停"；`paused_limit` 未给 n 时回复"已达上限暂停的房间需要指定追加的 session 数：/resume <n>"；n 须为正整数 | `resumeRoom({ additionalSessions })` |
 | `/confirm` | 确认完成当前房间（需二次确认） | `confirmCompletion` |
@@ -125,6 +126,7 @@ interface AlertSnapshot {
 ### 7.1 发消息
 
 - **普通文本**：若以 `@<agentId>` 开头（后接空白），该 token 解析为 `targetAgentId`，其余为 `content`；否则全文为 `content`。不做 agentId 存在性的本地校验，由核心校验并返回错误。
+- **`/go`**：等同于 `/post type=control <正文>`；正文以 `@<agentId>` 开头（后接空白）时按普通文本的规则解析为 `targetAgentId`。正文为空时本地报错。
 - **`/post`**：正文前连续的 `key=value` token 为参数，第一个不符合该形式的 token 起为 `content`。值含空格时用双引号包住，`\"` 转义引号。
 
   | key | 映射 | 取值 |
@@ -156,6 +158,7 @@ interface AlertSnapshot {
 | `chain` | `chain/<chainStatus>`；`closesQuestion` 为 true 时追加 `·closes→<chainResolution>` |
 | `exploring` | `exploring/<exploringStatus>` |
 | `verify` | `verify/通过` 或 `verify/不通过`（按 `verifyVerdict`） |
+| `control` | `指令`；`targetAgentId` 非空时追加 `→@<targetAgentId>` |
 | 其他 | 只显示 type |
 
 `/memory` 类别参数与 `MemoryViewPayload`（`02-memory-management.md` §5）分组的对应：`questions`→`openQuestions`（含 goal，计数时单列"其中目标 1"），`hypotheses`→`hypotheses`，`facts`→`facts`，`boundaries`→`boundaries`，`chains`→`chains`，`exploring`→`exploring`（计数按 `exploringStatus` 分为 active/completed 两项），`proposals`→`completionProposals`，`challenges`→`challenges`，`verifies`→`verifies`。

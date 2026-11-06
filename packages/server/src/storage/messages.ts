@@ -158,9 +158,17 @@ export function getRoomMessages(db: Database.Database, roomId: number): Message[
   return rows.map((row) => rowToMessage(row, refs.get(row.id) ?? []));
 }
 
+// 最近 n 条非 control 消息（control 单独由 getRecentControlMessages 提供，见 02 §3.2）。
 export function getRecentRawMessages(db: Database.Database, roomId: number, n: number): Message[] {
   const rows = db
-    .prepare(`SELECT * FROM messages WHERE room_id = ? ORDER BY id DESC LIMIT ?`)
+    .prepare(`SELECT * FROM messages WHERE room_id = ? AND (type IS NULL OR type != 'control') ORDER BY id DESC LIMIT ?`)
+    .all(roomId, n) as any[];
+  return rows.map((row) => mapMessageRow(db, row)).reverse();
+}
+
+export function getRecentControlMessages(db: Database.Database, roomId: number, n: number): Message[] {
+  const rows = db
+    .prepare(`SELECT * FROM messages WHERE room_id = ? AND type = 'control' ORDER BY id DESC LIMIT ?`)
     .all(roomId, n) as any[];
   return rows.map((row) => mapMessageRow(db, row)).reverse();
 }
@@ -186,7 +194,7 @@ export function getActiveExploringByAuthor(db: Database.Database, roomId: number
 
 export type CompleteExploringEnd =
   | { reason: 'explicit'; resultSummary: string; resultMessageIds?: number[] }
-  | { reason: 'human_terminated'; note: string };
+  | { reason: 'human_terminated' | 'agent_disabled' | 'human_released'; note: string };
 
 // 只允许 active → completed 一次，结束原因与结果原子写入；已 completed 时抛错。
 export function completeExploring(

@@ -21,13 +21,21 @@ type GroupKey =
 const END_REASON_LABELS: Record<string, MessageKey> = {
   explicit: 'memory.endReason.explicit',
   human_terminated: 'memory.endReason.humanTerminated',
+  agent_disabled: 'memory.endReason.agentDisabled',
+  human_released: 'memory.endReason.humanReleased',
 };
 
 function transitionText(tr: StateTransition): string {
   return tr.fromType != null || tr.toType != null ? `${tr.fromType}→${tr.toType}` : `${tr.fromStatus}→${tr.toStatus}`;
 }
 
-export function MemoryPanel(props: { memory: MemoryViewPayload; onJumpToMessage?: (messageId: number) => void }) {
+export function MemoryPanel(props: {
+  memory: MemoryViewPayload;
+  onJumpToMessage?: (messageId: number) => void;
+  // 释放 exploring（07-frontend.md §8）：canReleaseExploring 为 true 的 active exploring 显示"释放"按钮。
+  canReleaseExploring?: (message: Message) => boolean;
+  onReleaseExploring?: (messageId: number) => void;
+}) {
   const { memory } = props;
   const { t } = useI18n();
   const [groups, setGroups] = useState<Set<string>>(new Set());
@@ -79,6 +87,17 @@ export function MemoryPanel(props: { memory: MemoryViewPayload; onJumpToMessage?
         )}
         {message.type === 'chain' && message.closesQuestion && (
           <div>{t('memory.closeIntent', { reason: t(message.chainResolution === 'RESOLVED' ? 'composer.resolved' : 'composer.unresolved'), value: message.chainResolution ?? '' })}</div>
+        )}
+        {message.exploringStatus === 'active' && props.onReleaseExploring && props.canReleaseExploring?.(message) && (
+          <button
+            type="button"
+            className="ghost memory-item__release"
+            onClick={() => {
+              if (window.confirm(t('memory.releaseConfirm', { id: message.id }))) props.onReleaseExploring!(message.id);
+            }}
+          >
+            {t('memory.release')}
+          </button>
         )}
         {completed && (
           <div className="memory-item__note">

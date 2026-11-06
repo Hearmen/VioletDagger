@@ -2,11 +2,12 @@
 
 export type MessageType =
   | 'fact' | 'hypothesis' | 'boundary' | 'open_question' | 'chain'
-  | 'exploring' | 'propose_completion' | 'challenge' | 'verify';
+  | 'exploring' | 'propose_completion' | 'challenge' | 'verify'
+  | 'control';
 
 export const MESSAGE_TYPES: readonly MessageType[] = [
   'fact', 'hypothesis', 'boundary', 'open_question', 'chain',
-  'exploring', 'propose_completion', 'challenge', 'verify',
+  'exploring', 'propose_completion', 'challenge', 'verify', 'control',
 ];
 
 export type CloseReason = 'RESOLVED' | 'UNRESOLVED';

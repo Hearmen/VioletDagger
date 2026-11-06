@@ -9,6 +9,7 @@ import type { SessionExitEvent, StopResult } from '../agent-invocation';
 import { checkAndDispatch, type StartSession } from './dispatch';
 import { resetStuckCount, type StuckCounter } from './stuckCounter';
 import { FAILURE_THRESHOLD, type FailureCounter } from './failureCounter';
+import { releaseDisabledAgentExploring } from './agentControl';
 
 export type StopSessionProcess = (roomId: number, seq: number) => Promise<StopResult>;
 
@@ -113,6 +114,8 @@ export function onSessionEnded(
   } else {
     failureCounter.reset(event.roomId, event.agentId);
   }
+  // 停用状态的 agent 结算后释放它的 active exploring（03 §6"停用释放"，含这次刚被自动停用）。
+  releaseDisabledAgentExploring(db, event.roomId, event.agentId, stuckCounter);
 
   roomEvents.emit('roomStatus', { roomId: event.roomId });
   checkAndDispatch(db, event.roomId, startSession, stuckCounter);

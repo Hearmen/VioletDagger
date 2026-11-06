@@ -587,6 +587,7 @@ body.is-resizing-y {
 .type-badge--propose_completion { color: #56d364; }
 .type-badge--challenge { color: var(--danger); }
 .type-badge--verify { color: var(--info); }
+.type-badge--control { color: var(--accent); }
 
 /* ---- status badge（紧跟类型徽标，只用于有状态的类型，见 07-frontend.md §2）---- */
 .status-badge {

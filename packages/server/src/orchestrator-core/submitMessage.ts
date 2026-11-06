@@ -144,6 +144,10 @@ function validate(db: Database.Database, input: SubmitMessageInput, type: Messag
       }
       break;
     }
+    case 'control':
+      // 调度指令是人类专属（需求 4.3）；targetMessageId 已在上面按 targetAllowed 拒绝。
+      if (author.kind !== 'human') fail('control 只能由人类发送');
+      break;
     default:
       break;
   }
@@ -214,7 +218,8 @@ function applyTransitions(db: Database.Database, roomId: number, m: Message): nu
 
 // 新消息在写入时刻是否触发型（见 03-orchestrator-core.md §1.1）：定向 session 的产出一律不是。
 function isTriggerAtWrite(db: Database.Database, m: Message): boolean {
-  const triggering = (m.type === 'open_question' && m.questionStatus === 'OPEN')
+  const triggering = m.type === 'control'
+    || (m.type === 'open_question' && m.questionStatus === 'OPEN')
     || m.type === 'hypothesis'
     || (m.type === 'chain' && m.chainStatus === 'CANDIDATE')
     || m.type === 'challenge';

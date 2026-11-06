@@ -19,7 +19,7 @@ Web 前端提供中文与英文两套界面文案，用户通过页面顶栏的�
 界面文案包括：
 
 - 按钮、标题、面板名、标签页名、占位符、空状态、提示条、确认弹窗、`window.confirm` / `window.prompt` 的提示文字、表单标签与校验提示、`title` / `aria-label` 等无障碍文案。
-- 前端派生的展示文案：作者标识（`人类`/`系统`）、头像首字、相对时间、用量行（`输入`/`输出`/`缓存读`/`缓存写`）、`verify` 结果文案（`成立/不成立`、`通过/驳回`）、`propose_completion` 的类型徽标文案、session 结束/开始标记中的`结束`/`开始`、状态迁移条目中的`类型`/`状态`、记忆分组名、Composer 的发送要求提示、session 生命周期事件文案、session 结束原因文案、前端自己生成的错误与提示（如日志连接断开提示、`unknown error`）。
+- 前端派生的展示文案：作者标识（`人类`/`系统`）、头像首字、相对时间、用量行（`输入`/`输出`/`缓存读`/`缓存写`）、`verify` 结果文案（`成立/不成立`、`通过/驳回`）、`propose_completion` 与 `control` 的类型徽标文案（`control` 中文"指令"、英文 `instruction`）、exploring 结束原因文案（"主动完成""人类强制终止""agent 已停用""人类释放"）、释放 exploring 的按钮与二次确认文案、session 结束/开始标记中的`结束`/`开始`、状态迁移条目中的`类型`/`状态`、记忆分组名、Composer 的发送要求提示、session 生命周期事件文案、session 结束原因文案、前端自己生成的错误与提示（如日志连接断开提示、`unknown error`）。
 
 ### 1.2 不翻译的内容
 
@@ -29,7 +29,7 @@ Web 前端提供中文与英文两套界面文案，用户通过页面顶栏的�
 | 服务端返回的 `error.message`（RPC/REST 失败的 toast 与内联错误、`loadError`） | 来自后端，前端原样展示 |
 | `authorId === 'system'` 消息的正文 | 服务端写入的数据 |
 | session 日志内容 | 原始 CLI 输出 |
-| 协议标识符：`MessageType` 值（`fact`、`hypothesis`…；`propose_completion` 的徽标文案除外，见 1.1）、消息状态值（`OPEN`、`CANDIDATE`、`VERIFIED`…）、状态迁移中的 type/status 值、`agentId`、`sessionId`、`#N`、session outcome 值（`stopping`、`completed`、`passed`、`error`、`terminated`）及其展示文案 `done`、调度模式值（`parallel`、`sequential`） | 两种语言下都以英文标识符展示。session outcome 标签表中唯一的非标识符项 `running: '运行中'` 属于界面文案，进字典（英文 `running`） |
+| 协议标识符：`MessageType` 值（`fact`、`hypothesis`…；`propose_completion` 与 `control` 的徽标文案除外，见 1.1）、消息状态值（`OPEN`、`CANDIDATE`、`VERIFIED`…）、状态迁移中的 type/status 值、`agentId`、`sessionId`、`#N`、session outcome 值（`stopping`、`completed`、`passed`、`error`、`terminated`）及其展示文案 `done`、调度模式值（`parallel`、`sequential`） | 两种语言下都以英文标识符展示。session outcome 标签表中唯一的非标识符项 `running: '运行中'` 属于界面文案，进字典（英文 `running`） |
 | 单位缩写 `tok`（`formatTokens`）、费用 `$` | 两种语言通用 |
 | 品牌名 `VioletDagger`、`<title>` | 品牌名不翻译 |
 | 代码注释、CSS 注释 | 不属于界面 |

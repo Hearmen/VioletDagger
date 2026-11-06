@@ -118,6 +118,9 @@ export function messageLabel(m: Message, goalMessageId: number | null): string |
     case 'verify':
       label = m.verifyVerdict ? 'verify/通过' : 'verify/不通过';
       break;
+    case 'control':
+      label = m.targetAgentId ? `指令→@${m.targetAgentId}` : '指令';
+      break;
     default:
       label = m.type;
   }

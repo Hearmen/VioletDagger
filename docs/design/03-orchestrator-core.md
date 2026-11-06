@@ -14,6 +14,7 @@
 | `hypothesis` | 是 |
 | `chain` 且 `chainStatus === 'CANDIDATE'` | 是 |
 | `challenge` | 是（没有状态，写入即触发一次派发） |
+| `control`（只有人类能写入，需求 4.3） | 是（人类调度指令，写入即触发一次派发） |
 | `fact`、`boundary`、`CLOSED` 的 `open_question`、`VERIFIED`/`CHALLENGED`/`REJECT` 的 `chain`、`verify`、`exploring`、`propose_completion`、无 type 消息、系统占位 | 否 |
 
 另有两条规则，优先于上表：
@@ -153,6 +154,7 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 | `exploring` | 必填，T 的当前 type 为 `open_question` 或 `hypothesis` | 只允许 agent 作者，`author.kind === 'human'` 时拒绝（需求 3.5）；同一作者已有 active exploring 时拒绝（`getActiveExploringByAuthor`，需求 4.6）；所属问题 Q（T 为 `open_question` 时 Q = T，T 为 `hypothesis` 时 Q = `getMessageById(T.targetMessageId)`）的 `questionStatus === 'CLOSED'` 时拒绝（需求 4.6），拒绝文案见下 |
 | `propose_completion` | 不允许 | — |
 | `challenge` | 必填，T 为 `fact`/`boundary`，或状态为 `CANDIDATE`/`VERIFIED`/`REJECT` 的 `chain` | — |
+| `control` | 不允许 | 只允许人类作者，`author.kind === 'agent'` 时拒绝，文案"control 只能由人类发送"（需求 4.3）；写入后 type 不再转换 |
 | `verify` | 必填，T 为 `hypothesis`，或状态为 `CANDIDATE`/`CHALLENGED` 的 `chain` | `verifyVerdict` 必填；agent 作者时 `T.sessionSeq !== author.sessionSeq`（同一 session 不能 verify 本 session 的产出；同一 agent 的后续 session 可以；人类不受限） |
 
 **exploring 指向已关闭问题的拒绝文案**：`目标问题 #<Q.id> 已关闭（CLOSED/<Q.questionCloseReason>，收尾 chain #<C>）。请先调用 get_overview 查看当前状态，不要对已关闭的问题开启探索。` 其中 C 按以下方法得出：在 `state_transition_log` 中找到 Q 最近一次转为 `CLOSED/*` 的记录，它的 `trigger_message_id` 是一条 verify，这条 verify 的 `targetMessageId` 就是 C。Q 是 goal 时文案相同。如果找不到对应记录（数据不完整），省略"，收尾 chain #C"这一段。这条拒绝和其他校验失败一样，抛 `SubmitMessageError`，由 MCP 按 `05-mcp-server.md` §2 的统一形式返回 `isError: true`。
@@ -162,6 +164,7 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 - `verifyVerdict` 只允许 `verify` 提供；`closesQuestion`/`chainResolution` 只允许 `chain` 提供。
 - `referencedMessageIds` 只允许有 type 的消息提供；每个 id 必须为正整数且 `getMessageById` 能查到，去重后写入。
 - `targetAgentId` 只允许人类提供，且必须是 `getRoomAgents(roomId)` 中存在的实例标识。
+- 任何消息的 `targetMessageId` 都不能指向 `control`（上表各 type 对 T 的类型要求已排除它，`control` 不是任何一种允许的目标）。
 - 状态约束按目标的**当前**状态校验。两次写入即使"同时"到达也会被事件循环序列化，后到的那次在事务内读到的已是新状态，按新状态重新校验，因此同一状态上不会出现两个相互矛盾的 verify（需求 4.5）。
 - 未知 type、字段类型错误一律拒绝。
 - 人类与 agent 使用同一张校验表，没有放宽或收紧，唯一差异是两处按作者区分的规则：exploring 仅限 agent；同 session 不能 verify 仅约束 agent（需求 3.5）。
@@ -239,7 +242,7 @@ function submitMessage(input: SubmitMessageInput): { message: Message; changedMe
 
 没有自动运行时长/无输出超时；卡住时人类可暂停房间、查看日志并终止。MCP 消息可在调用期间持续产生，CLI stdout/stderr 不参与结果判定、不转为 fact，也不用于任何统计。用量统计与原生会话引用由 04 的原生会话分析适配器在报告 `SessionExitEvent` 之前得出（`04-agent-invocation.md` §7.2），它们不影响这张结算表，只随 `finishSession` 多写几列。正常结束不自动完成 active exploring，不结束 room。
 
-只处理 running/stopping。事务内写 outcome、endedAt、退出元数据、用量统计（`event.usage`）、原生会话引用（`event.native`）及 process_exited，且仅在 currentSessionSeq 等于本 seq 时释放 agent。撤销凭据；`parallel` 房间 outcome 为 error 时按 §1.2"置位"第 2 条恢复标记（与结算同一事务；`sequential` 房间不恢复，§1.7）；更新连续失败计数（§6）；emit `roomStatus` 并执行一次 `checkAndDispatch`。outcome 为 completed 之外的结果时（passed/error/terminated），额外用 `storage.insertMessage` 写一条无 type 的系统占位消息（`authorId` 为该 session 的 agentId、`sessionSeq` 为本次 seq），并 emit `message`——内容按结果分别说明"未发出任何带类型的消息"（passed）、报错原因（error）、"人工终止"（terminated）。事件树（`07-frontend.md` §9）靠这条消息本身留痕，不需要单独的 session 节点。
+只处理 running/stopping。事务内写 outcome、endedAt、退出元数据、用量统计（`event.usage`）、原生会话引用（`event.native`）及 process_exited，且仅在 currentSessionSeq 等于本 seq 时释放 agent。撤销凭据；`parallel` 房间 outcome 为 error 时按 §1.2"置位"第 2 条恢复标记（与结算同一事务；`sequential` 房间不恢复，§1.7）；更新连续失败计数（§6，可能在此自动停用）；该 agent 此时处于停用状态时按 §6"停用释放"完成它的 active exploring；emit `roomStatus` 并执行一次 `checkAndDispatch`。outcome 为 completed 之外的结果时（passed/error/terminated），额外用 `storage.insertMessage` 写一条无 type 的系统占位消息（`authorId` 为该 session 的 agentId、`sessionSeq` 为本次 seq），并 emit `message`——内容按结果分别说明"未发出任何带类型的消息"（passed）、报错原因（error）、"人工终止"（terminated）。事件树（`07-frontend.md` §9）靠这条消息本身留痕，不需要单独的 session 节点。
 
 ## 3. `terminateAgentSession(roomId, seq)`
 
@@ -257,6 +260,15 @@ function onSessionExitProgress(roomId: number, seq: number,
 5. 最终释放后只检查派发一次；terminate 不暂停 room，需停止后续工作时先 `pauseRoom`。
 
 stopping 只用于人工终止过程，不是正常完成的必经状态。所有清理事件由核心落盘并推送 roomStatus，不进入协作消息或记忆。终态不被迟到回调覆盖。
+
+### 3.1 `releaseExploring(roomId, messageId)`（需求 4.6"人类释放"）
+
+人类结束一条作者已不会再继续的 active exploring（例如作者的 session 中途被中断、没有调用 `complete_exploring`）。
+
+1. `getMessageById(roomId, messageId)` 不存在、当前 type 不是 `exploring`、或 `exploringStatus !== 'active'` 时拒绝，抛 `ReleaseExploringError`，文案分别为"消息不存在""不是 exploring""该 exploring 已结束"。
+2. 作者 agent（`authorId`）的状态为 `running`/`stopping` 时拒绝，文案"作者 agent 正在运行，请用终止 session 结束它"。
+3. `storage.completeExploring(roomId, messageId, { reason: 'human_released', note: '人类释放' })`，`resetStuckCount(roomId, authorId)`，emit `memoryUpdate`（`messageId` 为该 exploring）。
+4. 执行一次 `checkAndDispatch`：被避让的方向已经空出，按现有标记或续派规则决定是否派发；不为此置位任何标记。
 
 ## 4. 房间生命周期控制
 
@@ -306,6 +318,7 @@ async function deleteRoom(roomId: number): Promise<{ nativeDeleteFailures: Nativ
 - `submitMessage` 写入一条新的 `exploring`（§1.4 第 6 步）。
 - `complete_exploring` 成功（`05-mcp-server.md` §5 调用）。
 - `terminateAgentSession` 强制完成 exploring（§3 第 3 步）。
+- 停用释放（§6）或 `releaseExploring`（§3.1）完成 exploring。
 
 **展示**：`stuckCount >= N` 且该 agent 当前有 active `exploring` 时，`getRoomStatus` 里对应 agent 标记"疑似卡住"，前端展示提醒，不自动处理；没有 active `exploring` 时不展示（无论计数是多少）。默认 `N = 3`，可通过服务端配置调整（需求第 9 节）。
 
@@ -322,7 +335,8 @@ async function deleteRoom(roomId: number): Promise<{ nativeDeleteFailures: Nativ
 - **结算更新**：`onSessionEnded` 结算为 `error` 时 `failureCount + 1`；结算为其他终态（`completed`/`passed`/`terminated`）时清零。
 - **自动停用**：`failureCount` 达到阈值（默认 3，服务端配置可调）时，调用 `storage.setAgentEnabled(roomId, agentId, false)`，清零计数，`emit('roomStatus')`。停用状态持久化在 `room_agents.dispatch_enabled`，重启后仍生效。停用发生在 §2 恢复标记之后：`parallel` 房间里，被停用 agent 的 broadcast session 失败所恢复的房间标记，会在紧接着的 `checkAndDispatch` 里派给其他 agent；`sequential` 房间不恢复标记，紧接着的检查按 §1.7 轮到下一个启用的 agent。
 - **派发跳过**：`checkAndDispatch` 扫描时跳过 `dispatchEnabled === false` 的 agent（§1.2 第 3、4 步），继续看后面的；停用不终止正在运行的 session。它的定向标记保留，要等人类重新启用后才会被派发。
-- **人工启停**：`setAgentEnabled(roomId, agentId, enabled)` 是人类显式操作。启用时清零 `failureCount`、`emit('roomStatus')` 并调用一次 `checkAndDispatch`；停用只 `emit('roomStatus')`。系统不自动恢复。
+- **人工启停**：`setAgentEnabled(roomId, agentId, enabled)` 是人类显式操作。启用时清零 `failureCount`、`emit('roomStatus')` 并调用一次 `checkAndDispatch`；停用时该 agent 若为 `idle`，按下条"停用释放"完成它的 active exploring，然后 `emit('roomStatus')` 并调用一次 `checkAndDispatch`（释放出的方向可能需要续派）。系统不自动恢复。
+- **停用释放**（需求 4.6）：agent 处于停用状态且空闲时，它的 active exploring（`getActiveExploringByAuthor`）由 `storage.completeExploring(roomId, id, { reason: 'agent_disabled', note: 'agent 已停用' })` 完成，`resetStuckCount` 并 emit `memoryUpdate`。执行时机只有两个：`setAgentEnabled(false)` 时 agent 为 `idle`；`onSessionEnded` 结算后该 agent 处于停用状态（包括这次结算刚触发自动停用，§2）。停用时 session 还在运行则不打断，等这次 session 结算时释放。没有 active exploring 时什么都不做。
 - **展示**：`getRoomStatus` 暴露每个 agent 的 `enabled` 与 `failureCount`，前端展示"连续失败，已停用派发"并提供启用/停用控件（`07-frontend.md` §5）。
 
 这条机制避免"配额/凭据失效等持续失败"时在短时间内烧完 `maxSessions` 配额。
@@ -343,6 +357,7 @@ function getStuckAgents(roomId: number): { agentId: string; stuckCount: number }
 function resetStuckCount(roomId: number, agentId: string): void;
 function getAgentFailures(roomId: number): { agentId: string; failureCount: number }[];
 function setAgentEnabled(roomId: number, agentId: string, enabled: boolean): void;
+function releaseExploring(roomId: number, messageId: number): void; // §3.1
 function isDispatchIdle(roomId: number): boolean; // §1.6
 function getNextTurnAgent(roomId: number): string | null; // §1.7；parallel 房间恒为 null
 ```

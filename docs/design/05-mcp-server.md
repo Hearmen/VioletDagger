@@ -50,6 +50,8 @@ post_message(params: {
 
 工具参数不包含 `targetAgentId`：定向是人类专属能力（需求 3.3.2），agent 之间不能互相定向。
 
+`type` 不包含 `control`：调度指令是人类专属（需求 4.3）。工具的参数 schema 不列出 `control`，传入时被参数校验拒绝；核心另按 `03-orchestrator-core.md` §1.4 拒绝 agent 作者的 `control`（文案"control 只能由人类发送"），两道校验任一生效都不会写入。
+
 1. 通用校验 + Session 绑定（第 2、3 节），得到固定身份 `{ roomId, agentId, sessionSeq }`。
 2. 调用 `orchestratorCore.submitMessage({ roomId, author: { kind: 'agent', agentId, sessionSeq }, content, type, targetMessageId, referencedMessageIds, verifyVerdict, closesQuestion, chainResolution, summary })`。字段与状态校验、插入、知识状态转换、事件推送、stuck 计数清零、派发检查全部在核心完成（`03-orchestrator-core.md` §1.4），本工具不重复实现。
 3. 核心抛出 `SubmitMessageError` 时，把错误文案按第 2 节的统一形式返回。

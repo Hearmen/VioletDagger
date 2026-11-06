@@ -78,7 +78,8 @@ export function RoomDashboardPage() {
   // 每次重拉都整体替换 sessions 与 treeMessages（07 §13）。
   function applyEventTree(tree: EventTreePayload) {
     setEventTree(tree);
-    setTreeMessages(tree.messages);
+    // 人类调度指令不进入事件树（需求 3.5、07 §9.1）。
+    setTreeMessages(tree.messages.filter((message) => message.type !== 'control'));
   }
   const refreshEventTree = () => socket.call<EventTreePayload>('getEventTree').then(applyEventTree).catch(reportLoadError);
   const refreshStatus = () => socket.call<RoomStatusPayload>('getRoomStatus').then(setStatus).catch(reportLoadError);
@@ -105,6 +106,7 @@ export function RoomDashboardPage() {
   useEffect(() => {
     const unsubMessage = socket.subscribe('newMessage', (message: Message) => {
       setMessages((prev) => [...prev, message]);
+      if (message.type === 'control') return; // 只进消息流，不进事件树与记忆（07 §13）
       setTreeMessages((prev) => (prev.some((item) => item.id === message.id) ? prev : [...prev, message]));
       if (message.type != null) {
         refreshMemory();
@@ -301,7 +303,16 @@ export function RoomDashboardPage() {
           }
         />
         {memory ? (
-          <MemoryPanel memory={memory} onJumpToMessage={setJumpToMessageId} />
+          <MemoryPanel
+            memory={memory}
+            onJumpToMessage={setJumpToMessageId}
+            canReleaseExploring={(message) => room.status !== 'completed'
+              && !status.agents.some((agent) => agent.agentId === message.authorId
+                && (agent.state === 'running' || agent.state === 'stopping'))}
+            onReleaseExploring={(messageId) => {
+              socket.call('releaseExploring', { messageId }).catch(reportActionError);
+            }}
+          />
         ) : (
           <div className="panel memory-panel">
             <header className="panel__head">

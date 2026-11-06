@@ -46,6 +46,8 @@ describe('splitMessage', () => {
 describe('labels', () => {
   it('renders the §7.3 labels', () => {
     expect(messageLabel(msg({ type: null }), null)).toBeNull();
+    expect(messageLabel(msg({ type: 'control' }), null)).toBe('指令');
+    expect(messageLabel(msg({ type: 'control', targetAgentId: 'codex-1' }), null)).toBe('指令→@codex-1');
     expect(messageLabel(msg({ id: 1, type: 'open_question', questionStatus: 'OPEN' }), 1)).toBe('open_question/OPEN 目标');
     expect(messageLabel(msg({ type: 'open_question', questionStatus: 'CLOSED', questionCloseReason: 'RESOLVED' }), null))
       .toBe('open_question/CLOSED·RESOLVED');

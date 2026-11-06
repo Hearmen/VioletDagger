@@ -136,7 +136,8 @@ export function MessageStreamPanel(props: {
                 message.type === 'propose_completion' ? 'message--propose' : '',
                 highlightId === message.id ? 'message--highlight' : '',
               ].join(' ')}
-              onClick={() => toggleTarget(message.id)}
+              // 调度指令不能作为任何消息的目标（需求 4.3）。
+              onClick={message.type === 'control' ? undefined : () => toggleTarget(message.id)}
             >
               <div
                 className={`message__avatar ${avatarClass(message)}`}

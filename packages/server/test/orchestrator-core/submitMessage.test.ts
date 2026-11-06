@@ -352,3 +352,44 @@ describe('submitMessage — events and dispatch', () => {
     expect(stuckCounter.get(room.id, 'codex')).toBe(0);
   });
 });
+
+// 人类调度指令 control（需求 4.3，03 §1.1/§1.4）。
+describe('submitMessage — control messages', () => {
+  it('an untargeted human control sets the room flag and dispatches', () => {
+    const { db, room, human, startSession } = setup(['codex']);
+    human({ content: 'goal' });
+    setAgentState(db, room.id, 'codex', 'running', 1);
+    human({ content: '继续', type: 'control' });
+    expect(getRoom(db, room.id)).toMatchObject({ dispatchPending: true, pendingAuthorId: 'human' });
+
+    setAgentState(db, room.id, 'codex', 'idle');
+    startSession.mockClear();
+    human({ content: '继续', type: 'control' });
+    expect(startSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('a directed control sets only the target\'s directed flag', () => {
+    const { db, room, human } = setup(['codex', 'claude']);
+    human({ content: 'goal' });
+    setAgentState(db, room.id, 'codex', 'running', 1);
+    setAgentState(db, room.id, 'claude', 'running', 2);
+    human({ content: '先验证 #1', type: 'control', targetAgentId: 'claude' });
+    expect(getRoom(db, room.id)!.dispatchPending).toBe(false);
+    expect(getRoomAgents(db, room.id).map((a) => a.directedPending)).toEqual([false, true]);
+  });
+
+  it('rejects control from an agent and control with a targetMessageId', () => {
+    const { human, agent, agentSession } = setup(['codex']);
+    human({ content: 'goal' });
+    expectRejected(() => agent('codex', agentSession('codex'), { content: 'go', type: 'control' }), 'control 只能由人类发送');
+    expectRejected(() => human({ content: 'go', type: 'control', targetMessageId: 1 }), 'targetMessageId is not allowed');
+  });
+
+  it('no message can target a control', () => {
+    const { human } = setup(['codex']);
+    human({ content: 'goal' });
+    const control = human({ content: '继续', type: 'control' });
+    expectRejected(() => human({ content: 'x', type: 'challenge', targetMessageId: control.id }), 'challenge target');
+    expectRejected(() => human({ content: 'x', type: 'fact', targetMessageId: control.id }), 'must refer to an open_question');
+  });
+});

@@ -104,8 +104,8 @@ SQLite（WAL 模式），`better-sqlite3` 原生 SQL，不引入 ORM。`rooms`/`
 | chain_resolution | TEXT | 仅 `closes_question=1` 的 chain 有值：`RESOLVED` / `UNRESOLVED`，即关闭目标问题时写入的关闭原因 |
 | verify_verdict | INTEGER | 仅 `verify` 有值：1 = true，0 = false；按目标类型解释（hypothesis：true→fact、false→boundary；chain：true→VERIFIED、false→REJECT） |
 | exploring_status | TEXT | 仅 `exploring` 有值：`active` / `completed`；插入时写 `active`，只允许一次 active → completed，并同时写入结束信息 |
-| exploring_note | TEXT | 结束时的系统备注（如"人类强制终止"） |
-| exploring_end_reason | TEXT | `explicit`（`complete_exploring`）/ `human_terminated`（`terminateAgentSession` 强制完成） |
+| exploring_note | TEXT | 结束时的系统备注（"人类强制终止""agent 已停用""人类释放"） |
+| exploring_end_reason | TEXT | `explicit`（`complete_exploring`）/ `human_terminated`（`terminateAgentSession` 强制完成）/ `agent_disabled`（作者派发停用时自动完成，见 `03-orchestrator-core.md` §6）/ `human_released`（`releaseExploring` 人类释放，见 `03-orchestrator-core.md` §3.1） |
 | exploring_result_summary | TEXT | 主动完成时的结果摘要，允许描述无结论；强制完成时为 NULL |
 | exploring_result_message_ids | TEXT NOT NULL DEFAULT '[]' | 结果消息 ID 的 JSON 数组，同 room |
 | created_at | TEXT NOT NULL | ISO8601，毫秒精度 |
@@ -264,7 +264,8 @@ type SessionOutcome = Session['outcome'];
 
 type MessageType =
   | 'fact' | 'hypothesis' | 'boundary' | 'open_question' | 'chain'
-  | 'exploring' | 'propose_completion' | 'challenge' | 'verify';
+  | 'exploring' | 'propose_completion' | 'challenge' | 'verify'
+  | 'control';   // 人类专属的调度指令，不进入记忆（需求 4.3）
 
 type QuestionStatus = 'OPEN' | 'CLOSED';
 type CloseReason = 'RESOLVED' | 'UNRESOLVED';
@@ -303,7 +304,7 @@ interface Message {
   verifyVerdict: boolean | null;               // 仅 verify
   exploringStatus: 'active' | 'completed' | null;  // 仅 exploring
   exploringNote: string | null;
-  exploringEndReason: 'explicit' | 'human_terminated' | null;
+  exploringEndReason: 'explicit' | 'human_terminated' | 'agent_disabled' | 'human_released' | null;
   exploringResultSummary: string | null;
   exploringResultMessageIds: number[];
   createdAt: string;
@@ -399,12 +400,13 @@ function getMessagesBySession(roomId: number, seq: number): Message[]; // 供 Se
 function listMessages(roomId: number, cursor?: number, limit?: number): { messages: Message[]; nextCursor: number | null };
 function getMessagesByType(roomId: number, type: MessageType): Message[]; // 按当前 type
 function getRoomMessages(roomId: number): Message[]; // 批量读取 room 全部消息（按 id 升序），供记忆投影一次性建表、事件树（06 getEventTree）一次取全量，避免逐条查询
-function getRecentRawMessages(roomId: number, n: number): Message[];
+function getRecentRawMessages(roomId: number, n: number): Message[]; // 最近 n 条非 control 消息，按 id 升序
+function getRecentControlMessages(roomId: number, n: number): Message[]; // 最近 n 条 control 消息，按 id 升序
 function getActiveExploring(roomId: number): Message[];
 function getActiveExploringByAuthor(roomId: number, authorId: string): Message | null; // 核心校验"exploring 不可叠加"用
 function completeExploring(roomId: number, messageId: number,
   end: { reason: 'explicit'; resultSummary: string; resultMessageIds?: number[] }
-     | { reason: 'human_terminated'; note: string }): void;
+     | { reason: 'human_terminated' | 'agent_disabled' | 'human_released'; note: string }): void;
 // 只允许 active → completed 一次；已 completed 时抛错
 
 // 状态转换（每个函数在同一事务内追加一条 state_transition_log）

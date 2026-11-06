@@ -83,6 +83,7 @@ postHumanMessage(params: {
 // 校验由核心统一完成；SubmitMessageError 转为 RPC error，文案原样返回。
 // 房间首条消息的 type 由核心强制设为 open_question（需求 3.1），且首条消息不能带 targetAgentId。
 // type: 'exploring' 由核心拒绝（人类不发送 exploring，需求 3.5）。
+// type: 'control' 是人类调度指令（需求 4.3），不允许 targetMessageId，写入即按广播或定向触发派发（03 §1.1）。
 // targetAgentId 必须是本房间的 agent 实例标识（需求 3.3.2）。是否派发、按广播还是定向处理，全部在核心的 checkAndDispatch 中决定，这里不做任何特判。
 
 // 记忆视图（全文，不是摘要）
@@ -120,7 +121,7 @@ getEventTree(): {
     inputTokens: number | null; outputTokens: number | null;
     cacheReadTokens: number | null; cacheWriteTokens: number | null; costUsd: number | null;
   }[]; // 按 seq 升序；纯查表，不是时间线结构。用量字段让事件树的 session 标签不用再单独请求就能显示 token 数（见 07 §9）
-  messages: Message[]; // 房间全部消息（含 referencedMessageIds），按 id 升序；不分页
+  messages: Message[]; // 房间全部消息（含 referencedMessageIds），按 id 升序；不分页；包含 control，前端事件树展示时过滤（07 §9）
 };
 // 依赖 01-storage.md 的 listSessions(roomId): Session[] 与 getRoomMessages(roomId): Message[]
 
@@ -150,6 +151,7 @@ getRoomReport(): RoomReport; // roomReport.getRoomReport(roomId)
 // 控制操作
 terminateAgentSession(params: { sessionId: number }): { ok: true }; // 仅确认退出或已终态时成功；清理未确认返回 RPC error  // orchestratorCore.terminateAgentSession(roomId, sessionId)
 setAgentEnabled(params: { agentId: string; enabled: boolean }): { ok: true }; // 人类启停某个 agent 的派发（见 03 §6）
+releaseExploring(params: { messageId: number }): { ok: true }; // 人类释放一条作者不在运行的 active exploring（orchestratorCore.releaseExploring，03 §3.1）；ReleaseExploringError 转为 RPC error，文案原样返回
 pauseRoom(): { ok: true };                                            // orchestratorCore.pauseRoom(roomId)
 resumeRoom(params: { additionalSessions?: number }): { ok: true };    // orchestratorCore.resumeRoom(roomId, additionalSessions)
 confirmCompletion(): { ok: true };                                    // orchestratorCore.confirmCompletion(roomId)
@@ -157,7 +159,7 @@ confirmCompletion(): { ok: true };                                    // orchest
 
 ## 5. 事件树依赖的存储函数
 
-`getEventTree`（第 4 节）依赖 `01-storage.md` 的两个函数：`listSessions(roomId): Session[]`（按 seq 升序列出一个 room 的全部 session，供事件树给每条消息的 session 标签查出 outcome/起止时间/用量）；`getRoomMessages(roomId): Message[]`（按 id 升序批量读取房间全部消息，作为事件树的消息来源，与消息流的 `listMessages` 分页互不相干）。
+`getEventTree`（第 4 节）依赖 `01-storage.md` 的两个函数：`listSessions(roomId): Session[]`（按 seq 升序列出一个 room 的全部 session，供事件树给每条消息的 session 标签查出 outcome/起止时间/用量）；`getRoomMessages(roomId): Message[]`（按 id 升序批量读取房间全部消息，作为事件树的消息来源，与消息流的 `listMessages` 分页互不相干）。`getEventTree` 原样返回全部消息（含 control），是否展示由调用方决定。
 
 ## 6. 对外依赖
 

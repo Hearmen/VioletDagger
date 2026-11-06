@@ -3,7 +3,7 @@ import { renderMemory, renderOverviewText, OVERVIEW_GUIDANCE, MEMORY_HINT } from
 import type { OverviewPayload, MessageSummary, QuestionOverview, KnowledgeOverview } from '../../src/memory';
 
 const summary = (id: number, type: MessageSummary['type'], text: string, extra: Partial<MessageSummary> = {}): MessageSummary => ({
-  id, type, source: 'agent', summary: text, targetMessageId: null, referencedMessageIds: [],
+  id, type, source: 'agent', summary: text, targetMessageId: null, referencedMessageIds: [], targetAgentId: null,
   createdAt: '2026-01-01T00:00:00.000Z', ...extra,
 });
 const knowledge = (current: MessageSummary, extra: Partial<KnowledgeOverview> = {}): KnowledgeOverview => ({
@@ -24,6 +24,7 @@ const baseOverview: OverviewPayload = {
   }],
   completedExploring: [],
   completionProposals: [],
+  controlMessages: [],
   recentRawMessages: [summary(1, 'open_question', 'build the thing', { source: 'human' })],
   guidance: OVERVIEW_GUIDANCE,
 };
@@ -268,5 +269,17 @@ describe('renderOverviewText', () => {
     expect(text.startsWith('任务目标：\nbuild the thing, in full detail\n\n')).toBe(true);
     expect(text).toContain(renderMemory(baseOverview));
     expect(text.endsWith(`\n\n${OVERVIEW_GUIDANCE}`)).toBe(true);
+  });
+});
+
+describe('renderMemory — human control messages', () => {
+  it('renders the control group before recent messages, with the @ agent when present', () => {
+    const text = renderMemory({
+      ...baseOverview,
+      controlMessages: [summary(7, 'control', '先验证 #3', { source: 'human', targetAgentId: 'codex' })],
+    });
+    expect(text).toContain('### 人类调度指令\n- [#7] @codex：先验证 #3');
+    expect(text.indexOf('### 人类调度指令')).toBeLessThan(text.indexOf('### 最近消息'));
+    expect(renderMemory(baseOverview)).toContain('### 人类调度指令\n（无）');
   });
 });

@@ -114,11 +114,12 @@ export type SessionOutcome = Session['outcome'];
 
 export type MessageType =
   | 'fact' | 'hypothesis' | 'boundary' | 'open_question' | 'chain'
-  | 'exploring' | 'propose_completion' | 'challenge' | 'verify';
+  | 'exploring' | 'propose_completion' | 'challenge' | 'verify'
+  | 'control'; // 人类专属的调度指令，不进入记忆（需求 4.3）
 
 export const MESSAGE_TYPES: readonly MessageType[] = [
   'fact', 'hypothesis', 'boundary', 'open_question', 'chain',
-  'exploring', 'propose_completion', 'challenge', 'verify',
+  'exploring', 'propose_completion', 'challenge', 'verify', 'control',
 ];
 
 export type QuestionStatus = 'OPEN' | 'CLOSED';
@@ -158,7 +159,7 @@ export interface Message {
   verifyVerdict: boolean | null;               // 仅 verify
   exploringStatus: 'active' | 'completed' | null;  // 仅 exploring
   exploringNote: string | null;
-  exploringEndReason: 'explicit' | 'human_terminated' | null;
+  exploringEndReason: 'explicit' | 'human_terminated' | 'agent_disabled' | 'human_released' | null;
   exploringResultSummary: string | null;
   exploringResultMessageIds: number[];
   createdAt: string;

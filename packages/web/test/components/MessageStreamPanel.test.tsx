@@ -279,3 +279,35 @@ describe('MessageStreamPanel', () => {
     });
   });
 });
+
+describe('MessageStreamPanel — control (human instruction)', () => {
+  it('offers control first without a target and sends it without a targetMessageId', () => {
+    const onSend = vi.fn();
+    renderPanel({ onSend });
+    fireEvent.click(screen.getByRole('button', { name: '选择消息类型' }));
+    const options = screen.getAllByRole('option');
+    expect(options[0]).toHaveAccessibleName('指令');
+
+    fireEvent.click(screen.getByRole('option', { name: '指令' }));
+    expect(screen.getByLabelText('发送要求')).toHaveTextContent('发送后立即唤醒 agent');
+    fireEvent.change(screen.getByLabelText('content'), { target: { value: '继续' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ content: '继续', type: 'control' }));
+    expect(onSend.mock.calls[0][0].targetMessageId).toBeUndefined();
+  });
+
+  it('does not offer control once a target is selected, and selecting a target clears it', () => {
+    renderPanel({ messages: [makeMessage({ id: 5, type: 'open_question', questionStatus: 'OPEN', content: 'the question' })] });
+    fireEvent.click(screen.getByRole('button', { name: '选择消息类型' }));
+    fireEvent.click(screen.getByRole('option', { name: '指令' }));
+    fireEvent.click(screen.getByText('the question'));
+    expect(screen.queryByRole('button', { name: '清除类型' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: '指令' })).not.toBeInTheDocument();
+  });
+
+  it('a control message row cannot be selected as a target', () => {
+    renderPanel({ messages: [makeMessage({ id: 9, type: 'control', authorId: 'human', content: 'go on' })] });
+    fireEvent.click(screen.getByText('go on'));
+    expect(screen.queryByRole('button', { name: '取消回复目标' })).not.toBeInTheDocument();
+  });
+});

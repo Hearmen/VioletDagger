@@ -68,6 +68,11 @@ export function parsePlainText(text: string): PostHumanMessageParams {
   return params;
 }
 
+// /go：等同于 /post type=control <正文>；正文以 @agentId 开头时定向（11-telegram-bot.md §7.1）。
+export function parseGoArgs(text: string): PostHumanMessageParams {
+  return { ...parsePlainText(text.trim()), type: 'control' };
+}
+
 export function parsePostArgs(input: string): PostHumanMessageParams {
   const { params, rest } = parseKeyValuePrefix(input);
   const result: PostHumanMessageParams = { content: rest };

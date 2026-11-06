@@ -7,6 +7,7 @@
 - **按当前状态投影**：消息的当前 type 与状态（`questionStatus`、`chainStatus`、`exploringStatus` 等）直接取自 `Message` 列，转换历史取自 `state_transition_log`。本层不从消息关系推断任何状态（需求 4.4）。
 - **一次批量读取**：每次构建只调用 `getRoomMessages(roomId)` 与 `getRoomStateTransitions(roomId)` 各一次，在内存里建 `id → Message` 表和反向索引，不逐条查询。
 - **摘要不含作者**：`MessageSummary` 只用 `source` 区分人类与 agent，不带 `authorId`；`ExploringOverview.agentId` 是占用状态，属于例外。原始消息和 `get_detail` 仍保留作者，供追溯。
+- **control 不进入记忆**：人类调度指令（`control`，需求 4.3）只出现在概览的 `controlMessages` 中；各分组都按 type 取数，control 不属于任何分组；它不带 `targetMessageId`、也不能被指向，因此不会出现在 `reactionsByTarget`/`answersByQuestion` 中；`recentRawMessages` 显式排除它。`RoomIndex` 仍包含它，`buildDetail` 按 id 或 list 模式查询时照常返回。
 - **历史不伪造**：引用的 id 不存在时直接跳过，不生成占位；不推测回填缺失的关系。
 
 ## 2. 共享索引
@@ -38,7 +39,8 @@ interface OverviewPayload {
   activeExploring: ExploringOverview[];
   completedExploring: ExploringOverview[];
   completionProposals: MessageSummary[];
-  recentRawMessages: MessageSummary[];       // 最近若干条不分类型的原始消息，默认 4 条
+  controlMessages: MessageSummary[];         // 最近若干条人类调度指令（control），默认 1 条
+  recentRawMessages: MessageSummary[];       // 最近若干条不分类型的原始消息（不含 control），默认 4 条
   guidance: string;                          // 固定引导语
 }
 
@@ -49,6 +51,7 @@ interface MessageSummary {
   summary: string;
   targetMessageId: number | null;
   referencedMessageIds: number[];
+  targetAgentId: string | null;              // 人类定向消息 @ 的 agent；其余为 null
   createdAt: string;
 }
 
@@ -111,7 +114,8 @@ interface ExploringOverview {
 - **KnowledgeOverview / ChainOverview**：`verifies`/`challenges` 取 `reactionsByTarget` 中对应 type 的消息；`transitions` 取 `transitionsByMessage`；`references`/`evidence` 按 `referencedMessageIds` 顺序展开，找不到的 id 跳过。chain 的 `status`/`closesQuestion`/`chainResolution` 直接取列值。chain 一定挂在某个问题下（写入校验保证），因此只出现在 `QuestionOverview.chains`。
 - **activeExploring / completedExploring**：当前 type 为 `exploring`、按 `exploringStatus` 分成两组，各自按 id 升序；`agentId` 为 `authorId`；`target` 为 `targetMessageId` 指向的消息；`resultMessages` 按 `exploringResultMessageIds` 展开。
 - **completionProposals**：全部 `propose_completion`，按 id 升序，不受最近窗口限制。
-- **recentRawMessages**：`getRecentRawMessages(roomId, n)`，n 默认 4，由 `VIOLETDAGGER_RECENT_RAW_MESSAGES` 配置正整数（非法值回落默认 4）；按 id 升序；只提供最近上下文，不承担历史索引职责。
+- **controlMessages**：`getRecentControlMessages(roomId, n)`，n 默认 1，由 `VIOLETDAGGER_RECENT_CONTROL_MESSAGES` 配置正整数（非法值回落默认 1）；按 id 升序。
+- **recentRawMessages**：`getRecentRawMessages(roomId, n)`（不含 control），n 默认 4，由 `VIOLETDAGGER_RECENT_RAW_MESSAGES` 配置正整数（非法值回落默认 4）；按 id 升序；只提供最近上下文，不承担历史索引职责。
 - **guidance**：固定文案"以上是当前任务的记忆状态。已确认的 fact、boundary 和 VERIFIED 的 chain 可以直接引用，不需要重复研究；如果你认为其中某条有误或不完整，用 challenge 指出，再以新的 chain 给出你的方案，不要绕开已有结论另起一套。"（需求第 5 节）。
 
 所有数组只提供摘要/索引，不提供全文；需要全文时使用 `get_detail`。
@@ -139,7 +143,7 @@ interface ExploringOverview {
 
 把 `OverviewPayload`（§3.1）按固定顺序、固定标题渲染成文本，本节只定义"渲染成什么文字"，取数规则见 §3.2。分组顺序：
 
-`### 任务目标（goal）` → `### 其他问题`（questions）→ `### 未挂在问题下的知识`（unattachedKnowledge）→ `### 正在探索的方向`（activeExploring）→ `### 已结束探索`（completedExploring）→ `### 完成提议`（completionProposals）→ `### 最近消息`（recentRawMessages）。
+`### 任务目标（goal）` → `### 其他问题`（questions）→ `### 未挂在问题下的知识`（unattachedKnowledge）→ `### 正在探索的方向`（activeExploring）→ `### 已结束探索`（completedExploring）→ `### 完成提议`（completionProposals）→ `### 人类调度指令`（controlMessages）→ `### 最近消息`（recentRawMessages）。
 
 `renderMemory` 输出的第一行是固定提示"以下各条只给摘要；需要某条的全文，或已关闭问题下未列出的回答与 exploring 时，用 get_detail 按 #id 查看。"，空一行后再接各分组。
 
@@ -209,6 +213,8 @@ verify 的结论不单独渲染：它造成的结果体现在 chain 的 `[{statu
   结束：{resultSummary ?? '未记录结果'}；结果引用：#id …      ← 仅 completedExploring
 ```
 
+**人类调度指令**：`- [#id]{ @targetAgentId}：{summary}`，`targetAgentId` 为 null 时省略" @…"部分。没有 control 时显示"（无）"。
+
 **完成提议**与**最近消息**：`- [#id] {type ?? '聊天'}{（人类）}：{summary}`，`source === 'human'` 时追加"（人类）"。最近消息按 `recentRawMessages` 原有顺序渲染，不重新排序。已经在前面任一分组中以 `- [#id]` 条目行渲染过的消息跳过；只以 `#id` 引用形式出现过的不算。全部跳过时显示"（无）"。跳过不会扩大最近消息的窗口。
 
 ## 4. 详情 `buildDetail(roomId, params)`
@@ -264,7 +270,7 @@ interface MemoryViewPayload {
 }
 ```
 
-- 每个分组按 id 升序；每条消息只出现在它当前 type 对应的一组。
+- 每个分组按 id 升序；每条消息只出现在它当前 type 对应的一组。`control` 不属于任何分组，不出现在记忆视图中。
 - 分组里是完整 `Message`（含全部状态列与 `targetAgentId`），前端用 id 表自行关联问题与回答、目标与 challenge/verify、引用与反向引用，不依赖消息流面板已加载的分页范围。
 - 面板不显示作者；原始消息流和 session 详情仍可追溯作者。
 
@@ -284,5 +290,5 @@ function buildMemoryView(roomId: number): MemoryViewPayload;
 function renderOverviewText(goalContent: string, overview: OverviewPayload): string;
 
 // 依赖（01-storage.md）
-getRoomMessages, getRoomStateTransitions, getFirstMessage, getRecentRawMessages
+getRoomMessages, getRoomStateTransitions, getFirstMessage, getRecentRawMessages, getRecentControlMessages
 ```

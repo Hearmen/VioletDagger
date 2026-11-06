@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  ArgError, parseKeyValuePrefix, parseNewRoomArgs, parsePlainText, parsePostArgs, parsePositiveIntArg,
+  ArgError, parseGoArgs, parseKeyValuePrefix, parseNewRoomArgs, parsePlainText, parsePostArgs, parsePositiveIntArg,
 } from '../src/args';
 
 describe('parseKeyValuePrefix', () => {
@@ -80,5 +80,16 @@ describe('parsePositiveIntArg', () => {
   it('accepts an optional # prefix', () => {
     expect(parsePositiveIntArg('roomId', ' #12 ')).toBe(12);
     expect(() => parsePositiveIntArg('roomId', '')).toThrow(/roomId/);
+  });
+});
+
+describe('parseGoArgs', () => {
+  it('sends a control, directed when the text starts with @agentId', () => {
+    expect(parseGoArgs('继续')).toEqual({ content: '继续', type: 'control' });
+    expect(parseGoArgs(' @codex-1 验证 #106')).toEqual({ content: '验证 #106', targetAgentId: 'codex-1', type: 'control' });
+  });
+
+  it('rejects an empty instruction', () => {
+    expect(() => parseGoArgs('  ')).toThrow(ArgError);
   });
 });

@@ -9,7 +9,7 @@ vi.mock('node:fs/promises', () => ({
 }));
 
 const summary = (id: number, type: MessageSummary['type'], text: string, extra: Partial<MessageSummary> = {}): MessageSummary => ({
-  id, type, source: 'agent', summary: text, targetMessageId: null, referencedMessageIds: [],
+  id, type, source: 'agent', summary: text, targetMessageId: null, referencedMessageIds: [], targetAgentId: null,
   createdAt: '2026-01-01T00:00:00.000Z', ...extra,
 });
 const question = (id: number, text: string, extra: Partial<QuestionOverview> = {}): QuestionOverview => ({
@@ -27,6 +27,7 @@ const baseOverview: OverviewPayload = {
   }],
   completedExploring: [],
   completionProposals: [],
+  controlMessages: [],
   recentRawMessages: [summary(1, 'open_question', 'build the thing', { source: 'human' })],
   guidance: OVERVIEW_GUIDANCE,
 };

@@ -49,7 +49,7 @@ React + Vite。只消费 `06-orchestrator-api.md` 的 REST + WebSocket 接口，
 - **agent 身份色**：`colorForAgent(agentId)` 对 `agentId`（**agent 实例标识**，见 `00-overview.md`）做稳定 hash 映射到色相，`hsl(h 65% 62%)`。同一实例在 agent 卡片、消息头像、事件树节点上颜色一致；同一 agent 的不同实例因标识不同而得到不同色相。
 - **保留作者身份**：`authorId === 'human'` 固定 violet + "人类"标识；`authorId === 'system'` 固定 `--text-muted` + "系统"标识（系统错误消息）。两者都不参与身份色 hash。
 - **状态色**：room `active`→`--ok`，`paused_limit`/`paused_manual`→`--warn`，`completed`→`--text-muted`；agent `running`→其身份色，`idle`→`--text-faint`，`stopping`→`--warn`，`stuck`→`--warn`（图标 + 卡片描边）；**已停用派发**的 agent 整卡降为 `--text-muted` + "已停用派发"。
-- **消息类型徽标**：每种 `MessageType` 一个双色（前景 + 半透明背景）小徽标：`fact` 绿、`hypothesis` 蓝、`boundary` 橙红、`open_question` 琥珀、`chain` 紫、`exploring` 青、`propose_completion` 翠绿高亮、`challenge` 红、`verify` 蓝。无 `type` 的纯聊天不显示徽标。徽标始终显示消息的**当前** type。
+- **消息类型徽标**：每种 `MessageType` 一个双色（前景 + 半透明背景）小徽标：`fact` 绿、`hypothesis` 蓝、`boundary` 橙红、`open_question` 琥珀、`chain` 紫、`exploring` 青、`propose_completion` 翠绿高亮、`challenge` 红、`verify` 蓝、`control` 用人类的 violet（文案"指令"）。无 `type` 的纯聊天不显示徽标。徽标始终显示消息的**当前** type。
 - **状态徽标**：紧跟类型徽标，只用于有状态的类型。`open_question`：`OPEN` 琥珀描边、`CLOSED/RESOLVED` `--ok`、`CLOSED/UNRESOLVED` `--text-muted`；`chain`：`CANDIDATE` `--text-muted`、`VERIFIED` `--ok`、`CHALLENGED` `--warn`、`REJECT` `--danger`；`verify`：`true`/`false`（目标为 hypothesis 显示"成立/不成立"，目标为 chain 显示"通过/驳回"）。
 - 面板标题栏统一：左侧标题 + 数量徽标，右侧可选动作，`position: sticky; top: 0`。
 
@@ -149,6 +149,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - 类型与状态徽标见 §2，按消息的当前值显示；消息被 Scheduler 转换过 type 或状态时（`memoryUpdate` 推送后重拉），行内徽标随之更新，转换历史在 MemoryPanel 条目层查看（§8）。房间首条消息额外带一个"goal"标签。
 - `targetAgentId` 非空的消息（需求 3.3.2，@ 定向消息），在类型徽标之后追加一个"→ @agentId"小徽标（身份色描边，`--mono`），让所有人一眼看出这条消息是定向发的；不影响该消息其余的正常渲染，事件树/记忆面板同样可见。
 - `propose_completion` 渲染为整行高亮卡片（翠绿左边框 + "提议完成"徽标），并配合第 4 节的顶栏提醒条一起构成需求 3.5/7 的"前端提醒"，复用已有 `newMessage` 推送，不需要额外接口。
+- **`control`（人类调度指令）**：带 violet"指令"徽标，@ 了 agent 时同样追加"→ @agentId"徽标；它不能作为任何消息的目标，点击不会设为发送目标。
 - **目标选择**：点击消息行 = 设为发送目标（`targetMessageId`），再点一次取消；Composer 顶部显示"正在回复 #id ✕"，并据此浮出反应类选项（见 §7）。
 - **滚动锚定**：新消息到达时，若视口距底部 ≤ 80px 则自动贴底；否则不打断阅读，在右下角浮出"↓ N 条新消息"按钮，点击回底。进入房间时定位到底部。
 - **向上翻页**：滚动到顶时用 `listMessages({ cursor: nextCursor })` 加载更早一页，前插后用 `prevScrollHeight` 补偿保持滚动位置；`nextCursor === null` 时顶部显示"没有更早的消息了"。
@@ -158,9 +159,10 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 固定在消息面板底部：
 
 - **首条消息**：房间还没有任何消息时，Composer 顶部显示提示"第一条消息就是任务目标"，类型固定为 `open_question`（类型选择器和 @ 候选都不显示），发送时不带 `type`，由服务端强制写为 `open_question`（`03-orchestrator-core.md` §1.4）。
-- **默认即纯聊天**：之后初始只有文本框 + 发送按钮，发出的消息 `type` 为空；无 type 的消息不触发调度（需求 3.3）。
+- **默认即纯聊天**：之后初始只有文本框 + 发送按钮，发出的消息 `type` 为空；无 type 的消息不触发调度（需求 3.3）。要让 agent 继续或按指定方式工作时选"指令"（`control`）。
 - **类型选择器按需展开**：文本框左侧一个不显眼的"＋ 类型"按钮，点击展开；选中后按钮显示该类型徽标，可一键清除回到纯聊天。
 - **不需要目标的类型**：`open_question`、`fact`、`boundary`、`propose_completion`（fact/boundary 未选目标时即为不挂在问题下的知识）。
+- **指令（`control`）**：只在未选目标时出现在类型列表里，排在第一位；已选中 `control` 时再点选消息作为目标，自动清除 `control` 回到纯聊天（`control` 不允许 `targetMessageId`，需求 4.3）。可以和 @ 定向同时使用。
 - **需要目标的类型**：点选一条消息（§6"目标选择"）后，按目标的当前 type 与状态追加可选类型，规则与服务端校验一致（`03-orchestrator-core.md` §1.4）：
   - 目标为 `OPEN` 或 `CLOSED` 的 `open_question`：`hypothesis`、`fact`、`boundary`、`chain`。
   - 目标为 `fact`/`boundary`：`challenge`。
@@ -178,6 +180,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
   - `challenge`：写明质疑点和依据
   - `verify`：必须采用独立且有实质差异的方法，并给出结论
   - `propose_completion`：只有 goal 已得到充分回答、且没有明显其他方向时发送
+  - `control`：告诉 agent 接下来做什么，例如"继续""先验证 #106"；不进入记忆，发送后立即唤醒 agent（@ 某个 agent 时只唤醒它）
 
   这些要求只做提示，不阻止发送。结构性约束由服务端校验，失败时 toast 展示错误并保留输入。
 - **@ 定向某个 agent**（需求 3.3.2，人类专属）：文本框内输入 `@` 弹出内联候选列表，按 `joinOrder` 列出当前房间的 agent 实例（颜色复用 `colorForAgent`），方向键/点击选中后插入 `@agentId ` 文本 token 并把 `targetAgentId` 记入组件状态；选中后 Composer 顶部追加一个"发送给 @agentId ✕"提示 chip（与"正在回复 #id ✕"chip 并列显示，可同时存在）；点 ✕ 或删除输入框里的 token 都清除该状态。未选类型或所选类型不是触发型时，chip 旁显示一行 `--text-muted` 提示"这条消息不会唤醒 @agentId"（触发型判定见 `03-orchestrator-core.md` §1.1），不阻止发送。房间没有 agent 时 `@` 不弹出候选。
@@ -202,7 +205,8 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 - 允许同时展开多个类别（各自独立折叠），但初始态是全部折叠——"渐进式"指按需展开，不做懒请求。
 - 带 `targetMessageId` 的 `↳ #id` 点击后在消息流里滚动定位并短暂高亮该消息。
 - 面板 body 始终显示细滚动条（见 §3），内容过长时可滚动查看，不截断。**实现坑**：`.memory-view` 既是滚动容器又是 flex 列容器，而 `.memory-group` 带 `overflow:hidden`——按 flex 规范后者的"自动最小尺寸"失效，会被 `flex-shrink` 压扁、内容被裁掉。必须禁止子项收缩：`.memory-view > * { flex: 0 0 auto; }`。
-- `exploring` 类别（需求 4.6/3.5）：条目层按消息 ID 展示，不按作者分组。`exploringStatus === 'active'` 正常展示（青色徽标）；`'completed'` 整条降为 `--text-muted` + "已完成"标签，同时展示结束原因（`explicit` 显示"主动完成"，`human_terminated` 显示"人类强制终止"）、结果摘要（`exploringResultSummary`，为空显示"未记录结果"）、结果引用（`exploringResultMessageIds`）及 `exploringNote`（如有）。**保留可见、不从视图消失**。
+- `exploring` 类别（需求 4.6/3.5）：条目层按消息 ID 展示，不按作者分组。`exploringStatus === 'active'` 正常展示（青色徽标）；`'completed'` 整条降为 `--text-muted` + "已完成"标签，同时展示结束原因（`explicit` 显示"主动完成"，`human_terminated` 显示"人类强制终止"，`agent_disabled` 显示"agent 已停用"，`human_released` 显示"人类释放"）、结果摘要（`exploringResultSummary`，为空显示"未记录结果"）、结果引用（`exploringResultMessageIds`）及 `exploringNote`（如有）。**保留可见、不从视图消失**。
+- **释放 exploring**（需求 4.6"人类释放"）：`active` 的 exploring 在条目层显示一个"释放"按钮，仅当作者 agent 在 `getRoomStatus().agents` 中的 `state` 不是 `running`/`stopping` 时显示，`completed` 房间不显示。点击后弹二次确认（"释放后其他 agent 不再避让这个方向，作者也不会再继续它。确定释放 #id？"），确认后调用 `releaseExploring({ messageId })`；失败按 §15 toast。成功后由 `memoryUpdate` 推送刷新，本地不做乐观更新。
 - 实时更新（见第 13 节）：收到 `newMessage`/`memoryUpdate`/`roomStatus` 后重拉 `getMemoryView()`——总线计数随之刷新；已展开的类别与条目保持展开状态、内容就地更新。
 
 ## 9. EventTreePanel
@@ -219,7 +223,7 @@ Grid 用 5 列 × 4 行，分隔条各占一条细轨道（`--splitter: 5px`）�
 ### 9.1 标签页
 
 - 标签放在面板标题栏的 `actions` 位（`Panel` 的 `actions` 插槽），`role="tablist"`，两个 `role="tab"` 按钮"时间线"/"Session"，`aria-selected` 标出当前页；选中态用 `--accent` 下边框 + `--accent-soft` 背景。
-- 两页的数据源完全相同：EventTreePanel 自己的事件树消息状态 `treeMessages` + `getEventTree().sessions`，二者都来自 `getEventTree()`，与 MessageStreamPanel 的分页 `messages` 状态相互独立——消息流向上翻页与否不影响事件树。实时更新规则见 §13，切换标签页不重新拉取。标题栏计数 `count` 两页都是 `treeMessages` 的条数，即房间消息总数。
+- 两页的数据源完全相同：EventTreePanel 自己的事件树消息状态 `treeMessages`（`getEventTree().messages` 去掉 `type === 'control'` 的消息，需求 3.5）+ `getEventTree().sessions`，二者都来自 `getEventTree()`，与 MessageStreamPanel 的分页 `messages` 状态相互独立——消息流向上翻页与否不影响事件树。实时更新规则见 §13，切换标签页不重新拉取。标题栏计数 `count` 两页都是 `treeMessages` 的条数，即房间里除 `control` 外的消息总数。
 - 当前选中的标签页写入 `localStorage`（key `vd.eventTree.tab`，值 `timeline` / `sessions`），刷新后沿用；读不到或值非法时回到 `timeline`。读写包在 try/catch 里，失败时只是不记忆，不影响渲染。
 - 未选中的那一页不渲染（不是 `display:none` 隐藏），切回时重新挂载并贴底。
 
@@ -359,7 +363,7 @@ function useSessionLog(roomId: number, seq: number, mode: 'live' | 'replay'): {
 
 四种推送事件的消费方式不同（`data` 格式见 `06-orchestrator-api.md` 第 2 节——WS 连接本身已按房间绑定，推送都不重复携带 `roomId`）：
 
-- **`newMessage`**：`data` 是完整 `Message` 对象——MessageStreamPanel 直接 append 到 `messages` 末尾；同时 append 到 EventTreePanel 的 `treeMessages`（按 id 去重，已存在则忽略），事件树立即出现该消息。若 `message.type != null`，MemoryPanel 增量刷新（直接重新调用一次 `getMemoryView()`），并重新拉一次 `getEventTree()`。
+- **`newMessage`**：`data` 是完整 `Message` 对象——MessageStreamPanel 直接 append 到 `messages` 末尾；`type !== 'control'` 时同时 append 到 EventTreePanel 的 `treeMessages`（按 id 去重，已存在则忽略），事件树立即出现该消息（control 不进入事件树，需求 3.5）。若 `message.type != null` 且不是 `control`，MemoryPanel 增量刷新（直接重新调用一次 `getMemoryView()`），并重新拉一次 `getEventTree()`。
 - **`memoryUpdate`**：`data` 是 `{ messageId }`（某条已有消息的 type 或状态变了）——收到后重新调用 `getMemoryView()`；该消息若在 `messages` 或 `treeMessages` 中，分别用 `getMemoryView()` 返回的同 id 消息替换，使消息流与事件树的徽标同步更新。
 - **`roomStatus`**：`data` 是 `{}`（纯信号）——收到后重新调用 `getRoomStatus()`，并刷新 `GET /api/rooms/:id`、`getEventTree()`。session 结束时 `roomStatus` 一定会到，但 `newMessage` 不一定（`passed` 不产生消息，`error` 会插入一条 system 消息）。人工终止请求、清理进度/失败、`setAgentEnabled` 也触发 roomStatus；当前打开的 SessionDetailModal 按该信号重拉详情；LiveSessionModal 按 08 第 2/8 节刷新固定目标状态。每次 `getEventTree()` 重拉（进入房间、重连、带 type 的 `newMessage`、`roomStatus`）都整体替换 `treeMessages` 与 `sessions`。
 - **`roomDeleted`**：`data` 是 `{}`——终态推送。收到后若 `LiveSessionModal`/`SessionDetailModal`（日志）还开着先关闭，然后 `navigate('/')` 回房间列表。
@@ -376,7 +380,7 @@ GET /api/rooms, GET /api/rooms/:id, POST /api/rooms, DELETE /api/rooms/:id（返
 
 // 06-orchestrator-api.md WS RPC
 listMessages, postHumanMessage, getMemoryView, getRoomStatus, getEventTree, getUsageSummary,
-getSessionDetail, terminateAgentSession, setAgentEnabled, pauseRoom, resumeRoom, confirmCompletion, getRoomReport
+getSessionDetail, terminateAgentSession, setAgentEnabled, releaseExploring, pauseRoom, resumeRoom, confirmCompletion, getRoomReport
 
 // 06-orchestrator-api.md WS 推送
 newMessage, memoryUpdate, roomStatus, roomDeleted
@@ -388,7 +392,7 @@ GET /api/rooms/:roomId/sessions/:seq/logs?mode=live|replay
 ## 15. 错误、加载与连接状态
 
 - **初次加载**：面板级骨架屏（消息列表 3 条占位、记忆分组占位、事件树占位）；`GET /api/rooms/:id` / `getRoomStatus` 失败时顶栏下压一条 `role="alert"` 错误条，不影响其余面板渲染。
-- **RPC 动作失败**（发送、终止、启停 agent、pause/resume/confirm）：右下角 toast 栈，`role="alert"`，展示 `error.message`，约 5 秒自动消失，可手动关闭。"调用失败必须让人看到，不能静默吞掉"。
+- **RPC 动作失败**（发送、终止、启停 agent、释放 exploring、pause/resume/confirm）：右下角 toast 栈，`role="alert"`，展示 `error.message`，约 5 秒自动消失，可手动关闭。"调用失败必须让人看到，不能静默吞掉"。
 - **REST 失败**（RoomListPage 拉列表 / 建房间表单 / 删除房间）：失败时在列表/表单旁内联展示错误文案；删除失败用 toast 展示错误，不跳转、不刷新。
 - **日志连接失败**（第 10 节）：在 `LiveSessionModal` / `SessionDetailModal` 中保留已显示日志并展示错误提示，不静默空白。
 - **连接断开**：见第 4 节顶栏提示条，重连成功后隐藏。

@@ -11,6 +11,7 @@ export interface MessageSummary {
   summary: string;
   targetMessageId: number | null;
   referencedMessageIds: number[];
+  targetAgentId: string | null;              // 人类定向消息 @ 的 agent；其余为 null
   createdAt: string;
 }
 
@@ -70,7 +71,8 @@ export interface OverviewPayload {
   activeExploring: ExploringOverview[];
   completedExploring: ExploringOverview[];
   completionProposals: MessageSummary[];
-  recentRawMessages: MessageSummary[];       // 最近若干条不分类型的原始消息，默认 4 条
+  controlMessages: MessageSummary[];         // 最近若干条人类调度指令（control），默认 1 条
+  recentRawMessages: MessageSummary[];       // 最近若干条不分类型的原始消息（不含 control），默认 4 条
   guidance: string;                          // 固定引导语
 }
 

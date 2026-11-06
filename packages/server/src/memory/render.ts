@@ -108,6 +108,10 @@ function renderExploring(e: ExploringOverview): string {
   return lines.join('\n');
 }
 
+function renderControl(m: MessageSummary): string {
+  return `- [#${m.id}]${m.targetAgentId ? ` @${m.targetAgentId}` : ''}：${oneLine(m.summary)}`;
+}
+
 function renderPlain(m: MessageSummary): string {
   return `- [#${m.id}] ${m.type ?? '聊天'}${m.source === 'human' ? '（人类）' : ''}：${oneLine(m.summary)}`;
 }
@@ -125,6 +129,7 @@ export function renderMemory(overview: OverviewPayload): string {
     ['### 正在探索的方向', visible(overview.activeExploring).map(renderExploring)],
     ['### 已结束探索', visible(overview.completedExploring).map(renderExploring)],
     ['### 完成提议', overview.completionProposals.map(renderPlain)],
+    ['### 人类调度指令', overview.controlMessages.map(renderControl)],
   ];
   // 最近消息跳过前面已作为条目行渲染过的消息（02 §3.4）。
   const rendered = new Set(groups.flatMap(([, items]) => [...items.join('\n').matchAll(ENTRY_ID)].map((m) => Number(m[1]))));

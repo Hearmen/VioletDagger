@@ -69,9 +69,11 @@ export function formatRelative(iso: string, t: TFunction): string {
   return t('format.daysAgo', { n: Math.floor(seconds / 86400) });
 }
 
-// 类型徽标文案：只有 propose_completion 是界面文案，其余就是协议标识符本身（09-frontend-i18n.md §5.2）。
+// 类型徽标文案：只有 propose_completion 与 control 是界面文案，其余就是协议标识符本身（09-frontend-i18n.md §1.1）。
 export function typeLabel(type: MessageType, t: TFunction): string {
-  return type === 'propose_completion' ? t('format.typeProposeCompletion') : type;
+  if (type === 'propose_completion') return t('format.typeProposeCompletion');
+  if (type === 'control') return t('format.typeControl');
+  return type;
 }
 
 export function formatNumber(n: number, locale: Locale): string {
@@ -99,7 +101,7 @@ export function formatUsageParts(usage: UsageTotals, t: TFunction, locale: Local
 // 当前属于触发型的人类新消息类型（03-orchestrator-core.md §1.1）：新写入的 open_question 为 OPEN、
 // chain 为 CANDIDATE，所以只看 type 即可。供 Composer 提示"这条消息不会唤醒 @agentId"。
 export function isTriggeringNewMessageType(type: MessageType | '' | undefined): boolean {
-  return type === 'open_question' || type === 'hypothesis' || type === 'chain' || type === 'challenge';
+  return type === 'control' || type === 'open_question' || type === 'hypothesis' || type === 'chain' || type === 'challenge';
 }
 
 export function truncate(text: string, max = 120): string {

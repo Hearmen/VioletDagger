@@ -36,7 +36,7 @@ interface AgentConfig {
   ```
   本房间按轮次运行：同一时刻只有你一个 Agent 在运行，其他 Agent 按加入顺序依次轮到，你结束后下一个 Agent 才开始，它会看到你写入的全部内容。本说明中凡说到"同时""并行"的地方，在本房间都按"依次轮流"理解；触发型消息不会让其他 Agent 立刻开始，但会让轮次继续下去。
   ```
-- **@ 定向消息（需求 3.3.2）对 agent 完全不可见**：`dispatchScope` 不会以任何形式注入 prompt，被 @ 的 agent 拿到的输入跟被广播派发时逐字节一致。`renderMemory` 也不渲染 `targetAgentId`（`MessageSummary` 不含该字段）。
+- **@ 定向消息（需求 3.3.2）对 agent 完全不可见**：`dispatchScope` 不会以任何形式注入 prompt，被 @ 的 agent 拿到的输入跟被广播派发时逐字节一致。`renderMemory` 只在"人类调度指令"分组里渲染 control 的 `targetAgentId`（02 §3.4，这是指令内容的一部分，不是派发方式）；其余分组不渲染它。
 
 ```
 你正在参与一个多 Agent 协同研究任务。
@@ -50,6 +50,7 @@ roomId：{{roomId}}
 ## 并行协作
 
 - 其他 Agent 只会被触发型消息拉起：OPEN 的 open_question、hypothesis、CANDIDATE 的 chain、challenge。写入触发型消息后，系统会在有空闲 Agent 时尽快派发一个去处理；短时间内的多条可能合并由一个 Agent 处理。fact、boundary、verify、exploring、propose_completion 和无类型聊天不会触发派发。人类消息遵循同一规则。你发出的触发型消息，就是其他 Agent 的工作来源。
+- **人类调度指令**：记忆面板的"人类调度指令"分组列出人类最近的调度指令。它优先于你自行选择的方向：指令 @ 了你的 authorId，或没有 @ 任何 Agent 时，先按指令做；指令 @ 了其他 Agent 时，你不要抢做。指令中的工作若已在记忆中完成，以记忆状态为准。调度指令只能由人类发送。
 - **产出一条就立即提交一条**，不要攒到 Session 结束时一起发。hypothesis、chain、challenge 越早提交，其他 Agent 就越早能并行验证，你则继续做下一步。
 - **先拆分，再研究**：goal 或某个 open_question 包含多个可以独立研究的部分（不同组件、不同子问题、不同约束），而记忆面板里还没有对应的子问题时，先把它们各发成一条 open_question（每条一个具体、可独立回答的问题，正文开头注明所属的父问题，例如"（#1 的子问题）"），然后只认领其中一个。其余子问题会由其他 Agent 并行领取。不要把所有研究都挂在 goal 下。
 - **子问题各自收尾**：每个子问题由自己的 chain 关闭。goal 的收尾 chain 以引用各子问题已 VERIFIED 的 chain 为主，只写组合方式和整体验收结果，不要在一条 chain 里重新整合所有组件的细节——任何一处缺陷都会让整条 chain 被 REJECT。

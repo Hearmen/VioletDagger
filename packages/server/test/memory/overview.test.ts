@@ -118,3 +118,28 @@ describe('buildOverview', () => {
     );
   });
 });
+
+describe('buildOverview — control messages', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('lists only the latest control by default and keeps controls out of recentRawMessages', () => {
+    const { db, room, post } = setup();
+    post({ authorId: 'human', content: 'first', type: 'control' });
+    const latest = post({ authorId: 'human', content: 'second', type: 'control', targetAgentId: 'codex' });
+    post({ content: 'chat' });
+    const overview = buildOverview(db, room.id);
+    expect(overview.controlMessages.map((m) => m.id)).toEqual([latest.id]);
+    expect(overview.controlMessages[0]).toMatchObject({ source: 'human', targetAgentId: 'codex', type: 'control' });
+    expect(overview.recentRawMessages.some((m) => m.type === 'control')).toBe(false);
+  });
+
+  it('reads the control count from VIOLETDAGGER_RECENT_CONTROL_MESSAGES and falls back on invalid values', () => {
+    const { db, room, post } = setup();
+    post({ authorId: 'human', content: 'a', type: 'control' });
+    post({ authorId: 'human', content: 'b', type: 'control' });
+    vi.stubEnv('VIOLETDAGGER_RECENT_CONTROL_MESSAGES', '2');
+    expect(buildOverview(db, room.id).controlMessages).toHaveLength(2);
+    vi.stubEnv('VIOLETDAGGER_RECENT_CONTROL_MESSAGES', 'x');
+    expect(buildOverview(db, room.id).controlMessages).toHaveLength(1);
+  });
+});
